@@ -89,6 +89,7 @@ def main():
     args.add_argument("--intervalo", type=float, default=5.0)
     a = args.parse_args()
 
+    from .attack import sincronizar_attack
     from .regras import sincronizar
 
     indexer, banco, _ = conexoes()
@@ -96,6 +97,11 @@ def main():
     proxima_sincronizacao = 0.0
     while True:
         if time.monotonic() >= proxima_sincronizacao:
+            try:
+                sincronizar_attack(banco)
+            except Exception:
+                # Base pública fora do ar não atrapalha a detecção.
+                log.exception("matriz do ATT&CK não foi carregada")
             sincronizar(banco)
             proxima_sincronizacao = time.monotonic() + INTERVALO_DAS_REGRAS
         total, falhas = rodar_ciclo(indexer, banco, desde=desde)

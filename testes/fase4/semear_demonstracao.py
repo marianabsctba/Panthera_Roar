@@ -11,6 +11,7 @@ import os
 import random
 import secrets
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,8 +23,10 @@ from argon2 import PasswordHasher
 from psycopg.types.json import Jsonb
 
 RAIZ = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(RAIZ / "ueba")]
+sys.path[:0] = [str(RAIZ / "ueba"), str(RAIZ / "ingestao")]
 
+from roar_ingestao import provisao  # noqa: E402
+from roar_ingestao.regras import buscar_regras, linha_da_regra  # noqa: E402
 from roar_ueba.motor import Motor, Parametros  # noqa: E402
 
 ENV = {}
@@ -62,7 +65,7 @@ def main():
     r = random.Random(7)
     antigo = ADMIN.execute("SELECT id FROM clientes WHERE nome = %s", (NOME,)).fetchone()
     if antigo:
-        for tabela in ("ativos", "auditoria", "regras", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades",
+        for tabela in ("regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades",
                        "ueba_cursor", "eventos", "grupos_alerta", "gerenciadores", "usuarios"):
             ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", antigo)
         ADMIN.execute("DELETE FROM clientes WHERE id = %s", antigo)
@@ -164,18 +167,33 @@ def main():
            "sshd: Attempt to login using a non-existent user", nivel=5)
     ev(t + timedelta(minutes=9), "ana.lima", SUCESSO, "003", "10.10.2.20", "5715", "sshd: authentication success.")
 
-    # Catálogo: as regras dos eventos acima, mais algumas sem disparo.
-    catalogo = ADMIN.execute("SELECT DISTINCT regra_id, regra_descricao, max(nivel) FROM eventos WHERE cliente_id = %s"
-                             " GROUP BY 1, 2", (cliente,)).fetchall()
-    catalogo += [("100", "Log file rotated.", 3), ("554", "File added to the system.", 5), ("5503", "PAM: User login failed.", 5),
-                 ("31106", "A web attack returned code 200 (success).", 6), ("92200", "Scripting file created under Windows Temp.", 12)]
-    tecnicas = {"5760": ["T1110.001"], "5710": ["T1110.001"], "40111": ["T1110"], "5402": ["T1548.003"], "100002": ["T1486"]}
-    for regra, descricao, nivel in catalogo:
+    # Catálogo real do Wazuh, guardado da primeira vez em que a demonstração é criada.
+    guardado = Path("/opt/panthera-roar/catalogo-exemplo.json")
+    if not guardado.exists():
+        temporario = provisao.criar(f"catalogo-{secrets.token_hex(3)}")
+        try:
+            for _ in range(60):
+                try:
+                    regras_reais = buscar_regras(temporario["id"])
+                    break
+                except requests.RequestException:
+                    time.sleep(5)
+            guardado.write_text(json.dumps(regras_reais))
+        finally:
+            provisao.remover(temporario["id"])
+    for regra in json.loads(guardado.read_text()):
+        linha = linha_da_regra(regra)
         ADMIN.execute(
-            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo, normas)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'regras.xml', %s)",
-            (cliente, ger, regra, nivel, descricao, ["authentication_failed"] if regra in tecnicas else ["syslog"],
-             MARCAS.get(regra, {}).get("mitre", {}).get("id", []),
+            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo, ativa, normas, detalhes)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", (cliente, ger, *linha))
+    # Regras dos eventos de exemplo que não vêm com o Wazuh.
+    for regra, descricao, nivel in ADMIN.execute(
+            "SELECT DISTINCT regra_id, regra_descricao, max(nivel) FROM eventos WHERE cliente_id = %s GROUP BY 1, 2", (cliente,)).fetchall():
+        ADMIN.execute(
+            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, mitre, normas) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (gerenciador_id, regra_id) DO UPDATE SET mitre = EXCLUDED.mitre, nivel = EXCLUDED.nivel,"
+            " descricao = EXCLUDED.descricao, normas = EXCLUDED.normas",
+            (cliente, ger, regra, nivel, descricao, MARCAS.get(regra, {}).get("mitre", {}).get("id", []),
              Jsonb({k: v for k, v in MARCAS.get(regra, {}).items() if k != "mitre"})))
 
     # Ativos como a sincronização com o gerenciador real traz.
@@ -190,21 +208,6 @@ def main():
                VALUES (%s, %s, %s, %s, %s, %s, 'v4.14.9', %s, '{default}', %s, 'CIS Benchmark', %s, %s, %s)""",
             (cliente, ger, agente, SERVIDORES[agente], ip, sistema, estado_ativo,
              agora_ativo - timedelta(minutes=1 if estado_ativo == "active" else 300), nota, nota * 2, (100 - nota) * 2))
-
-    # Defesas reais do MITRE D3FEND para as técnicas da demonstração.
-    tecnicas = sorted({t for m in MARCAS.values() for t in m["mitre"]["id"]} | {t.split(".")[0] for m in MARCAS.values() for t in m["mitre"]["id"]})
-    for tecnica in tecnicas:
-        try:
-            resposta = requests.get(f"https://d3fend.mitre.org/api/offensive-technique/attack/{tecnica}.json", timeout=30)
-            ligacoes = resposta.json().get("off_to_def", {}).get("results", {}).get("bindings", []) if resposta.ok else []
-        except (requests.RequestException, ValueError):
-            ligacoes = []
-        for b in ligacoes:
-            if "def_tech_id" in b and "def_tech_label" in b:
-                ADMIN.execute(
-                    "INSERT INTO tecnicas_defesa (tecnica, defesa_id, defesa_nome, tatica_defesa) VALUES (%s, %s, %s, %s)"
-                    " ON CONFLICT (tecnica, defesa_id) DO NOTHING",
-                    (tecnica, b["def_tech_id"]["value"], b["def_tech_label"]["value"], b.get("def_tactic_label", {}).get("value")))
 
     # Logs brutos, inclusive os que não viraram alerta, no índice do cliente.
     indexer = requests.Session()

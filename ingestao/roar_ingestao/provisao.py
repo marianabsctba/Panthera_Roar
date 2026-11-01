@@ -230,7 +230,7 @@ def _configuracao_valida(gerenciador_id):
     return r.returncode == 0, {"status": "OK" if r.returncode == 0 else "erro", "saida": (r.stderr or r.stdout)[-400:]}
 
 
-def aplicar_regras(gerenciador_id, nome, xml):
+def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
     """Instala um arquivo de regras. Se a validação reprovar, volta ao anterior e não reinicia.
 
     Copia direto para o contêiner porque a API do Wazuh estoura o tempo com arquivos grandes.
@@ -262,7 +262,8 @@ def aplicar_regras(gerenciador_id, nome, xml):
         else:
             _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", caminho)
         return False, detalhe
-    _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
+    if reiniciar:
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
     return True, detalhe
 
 
@@ -284,7 +285,7 @@ def remover(gerenciador_id, apagar_dados=True):
                                     (gerenciador_id,)).fetchone()
             banco.execute("DELETE FROM sinais WHERE evento_id IN (SELECT id FROM eventos WHERE gerenciador_id = %s)",
                           (gerenciador_id,))
-            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos"):
+            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias"):
                 banco.execute(f"DELETE FROM {tabela} WHERE gerenciador_id = %s", (gerenciador_id,))
             banco.execute("DELETE FROM checkpoints WHERE fonte = %s", (gerenciador_id,))
             banco.execute("DELETE FROM gerenciadores WHERE id = %s", (gerenciador_id,))

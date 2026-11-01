@@ -9,7 +9,9 @@ aceita cliente vindo do navegador, então um id de outro cliente simplesmente n�
 import hashlib
 import json
 import os
+import re
 import secrets
+import sys
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
@@ -25,6 +27,10 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from requests.adapters import HTTPAdapter
+
+# O mesmo conversor que a instalação das regras usa.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
+from roar_ingestao import sigma  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
 ESTATICO = Path(__file__).parent / "estatico"
@@ -344,30 +350,64 @@ def ativos(request: Request, sessao=Depends(sessao_atual)):
     return {"ativos": linhas}
 
 
-@app.get("/api/mitre")
-def mitre(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
-    """Técnicas de ataque observadas no período e as defesas do MITRE D3FEND para cada uma."""
+@app.get("/api/mitre/matriz")
+def matriz_mitre(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+    """A matriz inteira do ATT&CK, com o que foi observado e o que tem regra, somando as subtécnicas."""
     dias = max(1, min(dias, 90))
     with do_cliente(request, sessao) as con:
+        taticas = con.execute("SELECT tatica, nome FROM taticas_attack ORDER BY ordem").fetchall()
         tecnicas = con.execute(
-            """SELECT t.tecnica, count(*) AS total, max(e.ocorrido_em) AS ultimo,
-                      max(e.bruto #>> '{rule,mitre,technique,0}') AS nome,
-                      max(e.bruto #>> '{rule,mitre,tactic,0}') AS tatica
-               FROM eventos e, unnest(e.mitre) AS t(tecnica)
-               WHERE e.ocorrido_em >= now() - make_interval(days => %s)
-               GROUP BY t.tecnica ORDER BY total DESC LIMIT 100""", (dias,)).fetchall()
-        lista = [t["tecnica"] for t in tecnicas]
+            """WITH observadas AS (
+                 SELECT split_part(t, '.', 1) AS tecnica, count(*) AS total
+                 FROM eventos e, unnest(e.mitre) AS t
+                 WHERE e.ocorrido_em >= now() - make_interval(days => %s) GROUP BY 1),
+               cobertas AS (
+                 SELECT split_part(t, '.', 1) AS tecnica, count(DISTINCT r.regra_id) AS total
+                 FROM regras r, unnest(r.mitre) AS t GROUP BY 1),
+               defendidas AS (
+                 SELECT split_part(tecnica, '.', 1) AS tecnica, count(DISTINCT defesa_id) AS total
+                 FROM tecnicas_defesa GROUP BY 1)
+               SELECT a.tecnica, a.nome, a.taticas, coalesce(o.total, 0) AS observados, coalesce(c.total, 0) AS regras,
+                      coalesce(d.total, 0) AS defesas
+               FROM tecnicas_attack a
+                 LEFT JOIN observadas o ON o.tecnica = a.tecnica
+                 LEFT JOIN cobertas c ON c.tecnica = a.tecnica
+                 LEFT JOIN defendidas d ON d.tecnica = a.tecnica
+               WHERE a.pai IS NULL ORDER BY coalesce(o.total, 0) DESC, a.tecnica""", (dias,)).fetchall()
+        versao = con.execute("SELECT max(versao) AS versao FROM tecnicas_attack").fetchone()["versao"]
+    return {"taticas": taticas, "tecnicas": tecnicas, "versao": versao}
+
+
+@app.get("/api/mitre/tecnicas/{tecnica}")
+def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+    """As regras que deram match com a técnica, as que cobrem e ainda não dispararam, e as defesas."""
+    if not re.fullmatch(r"T\d{4}(\.\d{3})?", tecnica):
+        raise HTTPException(status_code=404)
+    dias = max(1, min(dias, 90))
+    familia = [tecnica, f"{tecnica}.%"]
+    with do_cliente(request, sessao) as con:
+        dados = con.execute("SELECT tecnica, nome, taticas, endereco FROM tecnicas_attack WHERE tecnica = %s", (tecnica,)).fetchone()
+        if not dados:
+            raise HTTPException(status_code=404)
+        match = con.execute(
+            """SELECT e.regra_id, max(e.regra_descricao) AS descricao, max(e.nivel) AS nivel, count(*) AS disparos, max(e.ocorrido_em) AS ultimo,
+                      array_agg(DISTINCT t) AS tecnicas
+               FROM eventos e, unnest(e.mitre) AS t
+               WHERE (t = %s OR t LIKE %s) AND e.ocorrido_em >= now() - make_interval(days => %s)
+               GROUP BY e.regra_id ORDER BY disparos DESC LIMIT 100""", (*familia, dias)).fetchall()
+        com_match = [m["regra_id"] for m in match]
+        cobertura = con.execute(
+            """SELECT DISTINCT r.regra_id, r.descricao, r.nivel, r.nivel AS ordem FROM regras r, unnest(r.mitre) AS t
+               WHERE (t = %s OR t LIKE %s) AND NOT (r.regra_id = ANY(%s)) ORDER BY ordem DESC, r.regra_id LIMIT 100""",
+            (*familia, com_match)).fetchall()
+        subtecnicas = con.execute("SELECT tecnica, nome FROM tecnicas_attack WHERE pai = %s ORDER BY tecnica",
+                                  (tecnica,)).fetchall()
         # Subtécnica sem mapeamento próprio herda as defesas da técnica mãe.
         defesas = con.execute(
-            """SELECT tecnica, defesa_id, defesa_nome, tatica_defesa FROM tecnicas_defesa
-               WHERE tecnica = ANY(%s) ORDER BY tatica_defesa, defesa_nome""",
-            (lista + [t.split(".")[0] for t in lista],)).fetchall()
-    por_tecnica = defaultdict(list)
-    for d in defesas:
-        por_tecnica[d["tecnica"]].append({k: d[k] for k in ("defesa_id", "defesa_nome", "tatica_defesa")})
-    for t in tecnicas:
-        t["defesas"] = por_tecnica.get(t["tecnica"]) or por_tecnica.get(t["tecnica"].split(".")[0]) or []
-    return {"tecnicas": tecnicas}
+            """SELECT DISTINCT defesa_id, defesa_nome, tatica_defesa FROM tecnicas_defesa
+               WHERE tecnica = %s OR tecnica LIKE %s OR tecnica = %s ORDER BY tatica_defesa, defesa_nome""",
+            (*familia, tecnica.split(".")[0])).fetchall()
+    return {"tecnica": dados, "match": match, "cobertura": cobertura, "subtecnicas": subtecnicas, "defesas": defesas}
 
 
 NORMAS_CONHECIDAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
@@ -441,6 +481,98 @@ def regras(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias
     return {"regras": linhas, "total_filtrado": linhas[0]["total_filtrado"] if linhas else 0,
             "catalogo": catalogo["total"], "atualizado_em": catalogo["atualizado_em"],
             "comportamento": REGRAS_DE_COMPORTAMENTO}
+
+
+class RegraNova(BaseModel):
+    formato: str = Field(pattern="^(sigma|guiada)$")
+    # Sigma colado pela pessoa.
+    sigma: str = Field(default="", max_length=65536)
+    # Formulário guiado.
+    titulo: str = Field(default="", max_length=200)
+    origem: str = Field(default="", max_length=40)
+    nivel: str = Field(default="medium", max_length=20)
+    condicoes: list[dict] = Field(default_factory=list, max_length=10)
+    tecnicas: list[str] = Field(default_factory=list, max_length=10)
+
+
+def _converter(dados: RegraNova):
+    """Devolve (título, Sigma, XML gerado). Tudo passa pelo mesmo conversor, sem nada instalado ainda."""
+    try:
+        if dados.formato == "guiada":
+            origem = sigma.sigma_da_regra_guiada(dados.titulo, dados.origem, dados.nivel, dados.condicoes, dados.tecnicas)
+        else:
+            origem = dados.sigma
+        resultados = sigma.converter_textos([origem])
+    except sigma.NaoConvertivel as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    if len(resultados) != 1:
+        raise HTTPException(status_code=422, detail="Informe uma regra por vez.")
+    if not resultados[0].xml:
+        raise HTTPException(status_code=422, detail=f"Não foi possível converter: {resultados[0].motivo}")
+    return resultados[0].titulo, origem, "\n".join(resultados[0].xml), len(resultados[0].xml)
+
+
+@app.post("/api/regras/converter")
+def converter_regra(dados: RegraNova, sessao=Depends(sessao_atual)):
+    titulo, origem, xml, ramos = _converter(dados)
+    return {"titulo": titulo, "sigma": origem, "xml": xml, "regras_geradas": ramos}
+
+
+@app.get("/api/regras/proprias")
+def listar_regras_proprias(request: Request, sessao=Depends(sessao_atual)):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            """SELECT id, titulo, formato, estado, mensagem, criada_em, aplicada_em, origem FROM regras_proprias
+               ORDER BY id DESC LIMIT 200""").fetchall()
+    return {"regras": linhas}
+
+
+@app.post("/api/regras/proprias", status_code=201)
+def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(sessao_atual)):
+    titulo, origem, xml, _ = _converter(dados)
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        linha = con.execute(
+            """INSERT INTO regras_proprias (cliente_id, gerenciador_id, titulo, formato, origem, xml_regras, criada_por)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (sessao["cliente_id"], gerenciador["id"], titulo, dados.formato, origem, xml, sessao["usuario_id"])).fetchone()
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_regra', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(linha["id"])))
+    return {"id": linha["id"], "estado": "pendente"}
+
+
+@app.post("/api/regras/proprias/{identificador}/desativar", status_code=204)
+def desativar_regra_propria(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE id = %s RETURNING id", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_regra', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.get("/api/regras/{regra_id}")
+def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+    if not re.fullmatch(r"\d{1,10}", regra_id):
+        raise HTTPException(status_code=404)
+    dias = max(1, min(dias, 90))
+    with do_cliente(request, sessao) as con:
+        regra = con.execute(
+            """SELECT regra_id, nivel, descricao, grupos, mitre, arquivo, ativa, normas, detalhes FROM regras
+               WHERE regra_id = %s LIMIT 1""", (regra_id,)).fetchone()
+        if not regra:
+            raise HTTPException(status_code=404)
+        nomes = con.execute("SELECT tecnica, nome FROM tecnicas_attack WHERE tecnica = ANY(%s)", (regra["mitre"],)).fetchall()
+        disparos = con.execute(
+            """SELECT count(*) AS total, max(ocorrido_em) AS ultimo, count(DISTINCT agente_id) AS ativos FROM eventos
+               WHERE regra_id = %s AND ocorrido_em >= now() - make_interval(days => %s)""", (regra_id, dias)).fetchone()
+        recentes = con.execute(
+            """SELECT id, ocorrido_em, severidade, agente_nome AS ativo, host(ip_origem) AS ip_origem, usuario FROM eventos
+               WHERE regra_id = %s ORDER BY id DESC LIMIT 10""", (regra_id,)).fetchall()
+    return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes}
 
 
 def _inteiro_valido(identificador):

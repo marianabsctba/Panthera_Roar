@@ -223,14 +223,58 @@ th.numero-celula { text-align: right; }
 .botao-tabela { padding: 3px 10px; font-size: .8rem; white-space: nowrap; }
 #mais-eventos, #mais-regras, #mais-logs { display: block; margin: 12px auto 0; }
 
-.ataques { display: grid; gap: 8px; }
-.ataque { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; }
-.ataque summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 12px; cursor: pointer; }
-.ataque-id { font-family: var(--mono); font-size: .85rem; color: var(--rosa-claro); }
-.ataque-nome { flex: 1 1 200px; font-weight: 600; }
-.ataque-conta { color: var(--texto-2); font-size: .85rem; font-variant-numeric: tabular-nums; }
-.defesas { padding: 0 12px 12px; }
+.ataque-cabecalho { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.matriz { display: flex; gap: 6px; padding-bottom: 8px; overflow-x: auto; }
+.coluna-tatica { flex: 0 0 150px; min-width: 0; }
+.coluna-tatica h3 { margin: 0 0 6px; padding: 6px; font-size: .78rem; text-align: center; background: var(--painel-2); border-radius: 6px; }
+.coluna-tatica h3 small { display: block; color: var(--texto-2); font-weight: 400; }
+.celula-tecnica {
+  width: 100%; display: block; margin-bottom: 3px; padding: 5px 6px; color: var(--texto-2); font-size: .72rem; line-height: 1.25;
+  text-align: left; cursor: pointer; overflow-wrap: anywhere;
+  background: var(--fundo); border: 1px solid transparent; border-radius: 5px;
+}
+.celula-tecnica b { display: block; font-family: var(--mono); font-size: .68rem; font-weight: 500; }
+.celula-tecnica:hover, .celula-tecnica:focus-visible { border-color: var(--rosa-claro); }
+.estado-coberta { color: var(--texto); background: var(--painel); border-color: var(--borda); }
+.estado-1 { color: var(--texto); background: #4a1236; }
+.estado-2 { color: #fff; background: #8a1561; }
+.estado-3 { color: #fff; background: #c7178a; }
+.amostra-coberta { background: var(--painel); border: 1px solid var(--borda); }
+.amostra-1 { background: #4a1236; }
+.amostra-2 { background: #8a1561; }
+.amostra-3 { background: #c7178a; }
+.amostra-sem { background: var(--fundo); border: 1px solid var(--painel-2); }
+.titulo-com-acao { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
+.titulo-com-acao .titulo-secao { margin: 0; }
+.titulo-com-acao .botao-primario { padding: 8px 16px; }
+.linha-clicavel { cursor: pointer; }
+.linha-clicavel:hover td { background: var(--painel-2); }
+.formulario-regra { display: grid; gap: 12px; margin-top: 8px; }
+.formulario-regra > div { display: grid; gap: 10px; }
+.formulario-regra label { display: grid; gap: 4px; color: var(--texto-2); font-size: .88rem; }
+.formulario-regra h3 { margin: 4px 0 0; }
+.formulario-regra select, .formulario-regra textarea {
+  width: 100%; padding: 9px 11px; color: var(--texto); font: inherit;
+  background: var(--painel-2); border: 1px solid var(--borda); border-radius: 8px;
+}
+.formulario-regra textarea { font: .85rem/1.5 var(--mono); resize: vertical; }
+.linha-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.condicao { display: grid; grid-template-columns: 1.1fr .9fr 1.6fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.condicao-linux { grid-template-columns: 1fr auto; }
+.acoes-regra { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.acoes-regra .botao-primario { padding: 8px 18px; }
+.chaves { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 4px 12px; margin: 0; font-size: .85rem; }
+.chaves dt { color: var(--texto-2); }
+.chaves dd { margin: 0; font-family: var(--mono); font-size: .82rem; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .condicao { grid-template-columns: 1fr; padding-bottom: 8px; border-bottom: 1px solid var(--borda); }
+}
+.credito { margin-top: 10px; color: var(--texto-2); font-size: .72rem; }
+.conteudo-janela { max-height: calc(100vh - 140px); overflow-y: auto; }
+.conteudo-janela h3 { margin: 16px 0 8px; font-size: .95rem; color: var(--rosa-claro); }
+.conteudo-janela h3:first-child { margin-top: 4px; }
 .defesas h4 { margin: 8px 0 4px; color: var(--texto-2); font-size: .82rem; font-weight: 500; }
+.link-externo { color: var(--rosa-claro); font-size: .85rem; }
 .nota { display: inline-flex; align-items: center; gap: 8px; }
 .nota-barra { width: 60px; height: 6px; background: var(--painel-2); border-radius: 3px; overflow: hidden; }
 .nota-barra span { display: block; height: 100%; background: var(--rosa); }

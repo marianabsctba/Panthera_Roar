@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
+import yaml
 from sigma.collection import SigmaCollection
 from sigma.conditions import (
     ConditionAND,
@@ -230,6 +231,57 @@ def converter_textos(textos, id_inicial=ID_INICIAL):
             resultado, proximo = converter_regra(regra, proximo)
             resultados.append(resultado)
     return resultados
+
+
+CAMPOS_GUIADOS = {
+    "windows_processo": {"Image", "CommandLine", "ParentImage", "ParentCommandLine", "User", "OriginalFileName", "CurrentDirectory"},
+    "windows_seguranca": {"EventID", "TargetUserName", "SubjectUserName", "IpAddress", "LogonType", "WorkstationName", "ServiceName"},
+    "linux_syslog": set(),
+}
+ORIGENS_GUIADAS = {
+    "windows_processo": {"product": "windows", "category": "process_creation"},
+    "windows_seguranca": {"product": "windows", "service": "security"},
+    "linux_syslog": {"product": "linux", "service": "syslog"},
+}
+OPERADORES = {"igual": "", "contem": "|contains", "comeca": "|startswith", "termina": "|endswith"}
+
+
+def sigma_da_regra_guiada(titulo, origem, nivel, condicoes, tecnicas=()):
+    """Monta um Sigma a partir do formulário: a regra guiada passa pelo mesmo conversor das outras."""
+    if origem not in ORIGENS_GUIADAS:
+        raise NaoConvertivel("origem de log desconhecida")
+    if nivel not in NIVEIS:
+        raise NaoConvertivel("severidade desconhecida")
+    if not condicoes or len(condicoes) > 10:
+        raise NaoConvertivel("informe de 1 a 10 condições")
+    selecao, palavras = {}, []
+    for c in condicoes:
+        valor = str(c.get("valor", "")).strip()
+        if not valor:
+            raise NaoConvertivel("condição sem valor")
+        if origem == "linux_syslog":
+            palavras.append(valor)
+            continue
+        campo, operador = c.get("campo"), c.get("operador", "igual")
+        if campo not in CAMPOS_GUIADOS[origem]:
+            raise NaoConvertivel(f"campo {campo} não disponível para esta origem")
+        if operador not in OPERADORES:
+            raise NaoConvertivel(f"operador {operador} desconhecido")
+        chave = f"{campo}{OPERADORES[operador]}"
+        if chave in selecao:
+            raise NaoConvertivel(f"condição repetida em {campo}")
+        selecao[chave] = valor
+    regra = {
+        "title": str(titulo).strip()[:200] or "Regra sem título",
+        "status": "experimental",
+        "logsource": ORIGENS_GUIADAS[origem],
+        "detection": {"selecao": palavras if palavras else selecao, "condition": "selecao"},
+        "level": nivel,
+    }
+    marcas = [f"attack.{t.lower()}" for t in tecnicas if re.fullmatch(r"T\d{4}(\.\d{3})?", t)]
+    if marcas:
+        regra["tags"] = marcas
+    return yaml.safe_dump(regra, allow_unicode=True, sort_keys=False)
 
 
 def arquivo_de_regras(resultados):

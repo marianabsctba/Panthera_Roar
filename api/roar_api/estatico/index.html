@@ -129,8 +129,13 @@
     </section>
 
     <section id="vista-ataques" class="pagina" aria-label="Ataque e defesa" hidden>
-      <p class="texto-secao">O que foi observado nos últimos 30 dias, pela matriz MITRE ATT&amp;CK, e como se defender de cada técnica, pelo MITRE D3FEND.</p>
-      <div id="lista-ataques" class="ataques"></div>
+      <div class="ataque-cabecalho">
+        <p id="resumo-ataques" class="texto-secao"></p>
+        <label class="caixa"><input id="so-observadas" type="checkbox"> Só o que foi observado</label>
+      </div>
+      <div id="legenda-ataques" class="legenda"></div>
+      <div id="matriz-ataques" class="matriz" tabindex="0" aria-label="Matriz de técnicas de ataque"></div>
+      <p id="credito-attack" class="credito"></p>
     </section>
 
     <section id="vista-ativos" class="pagina" aria-label="Ativos" hidden>
@@ -158,6 +163,12 @@
       <p class="texto-secao">Somam pontos no risco de cada pessoa. O alerta abre em 60 pontos, e os pontos caem pela metade a cada 24 horas.</p>
       <div id="regras-comportamento" class="cartoes-regra"></div>
 
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Regras criadas aqui</h2>
+        <button id="nova-regra" type="button" class="botao-primario">Nova regra</button>
+      </div>
+      <div id="tabela-proprias" class="tabela-rolagem"></div>
+
       <h2 class="titulo-secao">Regras de detecção</h2>
       <p id="resumo-regras" class="texto-secao"></p>
       <form id="form-regras" class="filtros" role="search">
@@ -180,6 +191,65 @@
     </div>
     <p id="meta-bruto" class="texto-secao"></p>
     <pre id="conteudo-bruto" class="bruto" tabindex="0"></pre>
+  </dialog>
+
+  <dialog id="janela-tecnica" class="janela" aria-labelledby="titulo-tecnica">
+    <div class="janela-topo">
+      <h2 id="titulo-tecnica"></h2>
+      <button id="fechar-tecnica" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div id="conteudo-tecnica" class="conteudo-janela"></div>
+  </dialog>
+
+  <dialog id="janela-regra" class="janela" aria-labelledby="titulo-regra">
+    <div class="janela-topo">
+      <h2 id="titulo-regra">Nova regra</h2>
+      <button id="fechar-regra" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div class="conteudo-janela">
+      <div class="periodo" role="group" aria-label="Como criar">
+        <button type="button" data-modo="guiada" aria-pressed="true">Guiada</button>
+        <button type="button" data-modo="sigma" aria-pressed="false">Colar Sigma</button>
+      </div>
+      <form id="form-regra" class="formulario-regra">
+        <div id="campos-guiada">
+          <label>O que esta regra detecta <input id="regra-titulo" maxlength="200" placeholder="Ex.: PowerShell iniciado pelo Excel"></label>
+          <div class="linha-campos">
+            <label>Onde olhar
+              <select id="regra-origem">
+                <option value="windows_processo">Windows: processos iniciados</option>
+                <option value="windows_seguranca">Windows: log de segurança</option>
+                <option value="linux_syslog">Linux: logs do sistema</option>
+              </select>
+            </label>
+            <label>Severidade
+              <select id="regra-nivel">
+                <option value="low">Baixa</option>
+                <option value="medium" selected>Média</option>
+                <option value="high">Alta</option>
+                <option value="critical">Crítica</option>
+              </select>
+            </label>
+            <label>Técnica MITRE (opcional) <input id="regra-tecnica" maxlength="9" placeholder="T1059.001"></label>
+          </div>
+          <h3>Quando</h3>
+          <div id="regra-condicoes"></div>
+          <button id="mais-condicao" type="button" class="botao-discreto botao-tabela">Adicionar condição</button>
+        </div>
+        <div id="campos-sigma" hidden>
+          <label>Regra Sigma <textarea id="regra-sigma" rows="14" spellcheck="false" placeholder="title: Minha regra&#10;logsource:&#10;  product: windows&#10;  category: process_creation&#10;detection:&#10;  selecao:&#10;    Image|endswith: '\powershell.exe'&#10;  condition: selecao&#10;level: high"></textarea></label>
+        </div>
+        <p id="erro-regra" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="previa-regra" type="button" class="botao-discreto">Ver como fica</button>
+          <button type="submit" class="botao-primario">Criar regra</button>
+        </div>
+        <div id="previa-saida" hidden>
+          <h3 id="previa-titulo"></h3>
+          <pre id="previa-xml" class="bruto" tabindex="0"></pre>
+        </div>
+      </form>
+    </div>
   </dialog>
 
   <div id="dica" class="dica" role="status" hidden></div>

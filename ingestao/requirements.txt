@@ -1,2 +1,4 @@
 psycopg[binary]>=3.2,<3.3
 requests
+pysigma>=1,<2
+pyyaml

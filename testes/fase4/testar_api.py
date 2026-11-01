@@ -89,7 +89,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("ativos", "auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -203,6 +203,7 @@ def main():
             ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, estado, sca_nota) VALUES (%s, %s, %s, %s, 'active', 70)",
                           (cliente["id"], cliente["ger"], agente, nome))
         registrar("ativos só do cliente", [x["nome"] for x in http.get("/api/ativos").json()["ativos"]] == ["servidor-a"])
+        ADMIN.execute("UPDATE regras SET mitre = '{T1110}' WHERE cliente_id = %s AND regra_id = '5712'", (a["id"],))
         ADMIN.execute("UPDATE eventos SET mitre = '{T1110.001}', regra_grupos = '{syscheck}', bruto = bruto || %s WHERE cliente_id = %s",
                       (Jsonb({"rule": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},
                                        "gdpr": ["IV_32.2"], "pci_dss": "nao-e-lista"},
@@ -211,17 +212,81 @@ def main():
                       (Jsonb({"rule": {"gdpr": ["SEGREDO_B"]}}), b["id"]))
         ADMIN.execute("INSERT INTO tecnicas_defesa (tecnica, defesa_id, defesa_nome, tatica_defesa) VALUES"
                       " ('T1110', 'D3-TESTE', 'Defesa de teste', 'Harden') ON CONFLICT DO NOTHING")
-        tecnicas = http.get("/api/mitre").json()["tecnicas"]
-        registrar("técnica observada só do cliente", [t["tecnica"] for t in tecnicas] == ["T1110.001"])
-        registrar("subtécnica herda a defesa D3FEND da técnica mãe", tecnicas[0]["defesas"][0]["defesa_id"] == "D3-TESTE"
-                  if tecnicas and tecnicas[0]["defesas"] else False)
+        criar_attack = ADMIN.execute("SELECT count(*) FROM tecnicas_attack").fetchone()[0] == 0
+        if criar_attack:
+            ADMIN.execute("INSERT INTO taticas_attack VALUES ('credential-access', 'Credential Access', 0)")
+            ADMIN.execute("INSERT INTO tecnicas_attack VALUES ('T1110', 'Brute Force', '{credential-access}', NULL, NULL, 'teste'),"
+                          " ('T1110.001', 'Password Guessing', '{credential-access}', 'T1110', NULL, 'teste'),"
+                          " ('T9999', 'Tecnica de B', '{credential-access}', NULL, NULL, 'teste')")
+        matriz = http.get("/api/mitre/matriz").json()
+        linha = next((t for t in matriz["tecnicas"] if t["tecnica"] == "T1110"), {})
+        registrar("matriz soma a subtécnica na técnica mãe", linha.get("observados") == 1, str(linha)[:120])
+        registrar("regra do cliente conta como cobertura", linha.get("regras") == 1)
+        registrar("matriz não traz subtécnica como coluna", not any("." in t["tecnica"] for t in matriz["tecnicas"]))
+        registrar("evento de B não aparece na matriz de A", next((t["observados"] for t in matriz["tecnicas"] if t["tecnica"] == "T9999"), 0) == 0)
+        detalhe = http.get("/api/mitre/tecnicas/T1110").json()
+        registrar("regra que deu match aparece", [m["regra_id"] for m in detalhe["match"]] == ["5712"], str(detalhe["match"])[:160])
+        registrar("regra que cobre sem disparar aparece separada", detalhe["cobertura"] == [])
+        registrar("defesa D3FEND aparece na técnica", any(d["defesa_id"] == "D3-TESTE" for d in detalhe["defesas"]))
+        sub = http.get("/api/mitre/tecnicas/T1110.001").json()
+        registrar("subtécnica herda a defesa da técnica mãe", any(d["defesa_id"] == "D3-TESTE" for d in sub["defesas"]))
+        registrar("match de B não aparece em A", http.get("/api/mitre/tecnicas/T9999").json().get("match", []) == [])
+        registrar("técnica inválida não é encontrada", http.get("/api/mitre/tecnicas/DROP%20TABLE").status_code == 404)
         ADMIN.execute("DELETE FROM tecnicas_defesa WHERE defesa_id = 'D3-TESTE'")
-        registrar("nome e tática vêm do alerta", tecnicas[0]["nome"] == "Password Guessing" and tecnicas[0]["tatica"] == "Credential Access")
+        if criar_attack:
+            ADMIN.execute("DELETE FROM tecnicas_attack WHERE versao = 'teste'")
+            ADMIN.execute("DELETE FROM taticas_attack WHERE tatica = 'credential-access'")
         registrar("controle da norma só do cliente", [c["controle"] for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]] == ["IV_32.2"])
         registrar("campo de norma fora do formato não quebra", http.get("/api/normas", params={"norma": "pci_dss"}).json()["controles"] == [])
         registrar("norma desconhecida é recusada", http.get("/api/normas", params={"norma": "'; DROP TABLE eventos; --"}).status_code == 422)
         registrar("mudança em arquivo aparece", http.get("/api/arquivos").json()["arquivos"][0]["caminho"] == "/etc/passwd")
         registrar("busca de arquivo funciona", http.get("/api/arquivos", params={"busca": "nao-existe"}).json()["arquivos"] == [])
+
+        print("\n== Abrir e criar regras", flush=True)
+        ADMIN.execute("UPDATE regras SET detalhes = %s, normas = %s WHERE cliente_id = %s AND regra_id = '5712'",
+                      (Jsonb({"frequency": "8", "if_matched_sid": "5710"}), Jsonb({"gdpr": ["IV_32.2"]}), a["id"]))
+        aberta = http.get("/api/regras/5712").json()
+        registrar("regra abre com as condições", aberta["regra"]["detalhes"]["frequency"] == "8")
+        registrar("regra mostra os disparos", aberta["disparos"]["total"] == 1 and len(aberta["recentes"]) == 1)
+        registrar("detalhe da regra não traz o bruto", "segredo_do_bruto" not in json.dumps(aberta))
+        registrar("regra de outro cliente não abre", http.get("/api/regras/8888").status_code == 404)
+        registrar("número de regra inválido não abre", http.get("/api/regras/1%20OR%201=1").status_code == 404)
+
+        guiada = {"formato": "guiada", "titulo": "Programa suspeito <b>", "origem": "windows_processo", "nivel": "high",
+                  "tecnicas": ["T1059.001"], "condicoes": [{"campo": "Image", "operador": "termina", "valor": "\\mal.exe"},
+                                                           {"campo": "CommandLine", "operador": "contem", "valor": "-enc"}]}
+        previa = http.post("/api/regras/converter", json=guiada)
+        registrar("prévia da regra guiada funciona", previa.status_code == 200 and "win.eventdata.image" in previa.json()["xml"], previa.text[:160])
+        registrar("prévia não cria nada", ADMIN.execute("SELECT count(*) FROM regras_proprias WHERE cliente_id = %s", (a["id"],)).fetchone()[0] == 0)
+        registrar("técnica entra na regra guiada", "T1059.001" in previa.json()["xml"])
+        registrar("título hostil não vira marcação", "<b>" not in previa.json()["xml"])
+        registrar("campo fora da lista é recusado", http.post("/api/regras/converter", json=dict(
+            guiada, condicoes=[{"campo": "Inventado", "operador": "igual", "valor": "x"}])).status_code == 422)
+        registrar("condição vazia é recusada", http.post("/api/regras/converter", json=dict(guiada, condicoes=[])).status_code == 422)
+        registrar("regra sem valor é recusada", http.post("/api/regras/converter", json=dict(
+            guiada, condicoes=[{"campo": "Image", "operador": "igual", "valor": " "}])).status_code == 422)
+        registrar("origem desconhecida é recusada", http.post("/api/regras/converter", json=dict(guiada, origem="x")).status_code == 422)
+        registrar("formato desconhecido é recusado", http.post("/api/regras/converter", json={"formato": "xml"}).status_code == 422)
+        registrar("Sigma inválido é recusado com motivo", http.post(
+            "/api/regras/converter", json={"formato": "sigma", "sigma": "isto: [nao e sigma"}).status_code == 422)
+        sigma_cidr = ("title: t\nlogsource: {product: windows, service: security}\ndetection:\n  s: {IpAddress|cidr: 10.0.0.0/8}\n"
+                      "  condition: s\nlevel: low\n")
+        motivo = http.post("/api/regras/converter", json={"formato": "sigma", "sigma": sigma_cidr})
+        registrar("o que não converte explica o motivo", motivo.status_code == 422 and "converter" in motivo.json()["detail"], motivo.text[:120])
+
+        criada = http.post("/api/regras/proprias", json=guiada)
+        registrar("regra é criada aguardando aplicação", criada.status_code == 201 and criada.json()["estado"] == "pendente")
+        registrar("criação fica registrada", ADMIN.execute(
+            "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'criar_regra'", (a["id"],)).fetchone()[0] == 1)
+        proprias = http.get("/api/regras/proprias").json()["regras"]
+        registrar("regra aparece na lista", [x["id"] for x in proprias] == [criada.json()["id"]])
+        id_a = criada.json()["id"]
+        http.post("/api/sair"); http.cookies.clear(); entrar(http, b)
+        registrar("outro cliente não vê a regra", http.get("/api/regras/proprias").json()["regras"] == [])
+        registrar("outro cliente não desativa a regra", http.post(f"/api/regras/proprias/{id_a}/desativar").status_code == 404)
+        http.post("/api/sair"); http.cookies.clear(); entrar(http, a)
+        registrar("o dono desativa a regra", http.post(f"/api/regras/proprias/{id_a}/desativar").status_code == 204
+                  and http.get("/api/regras/proprias").json()["regras"][0]["estado"] == "desativada")
 
         print("\n== Entradas e saídas", flush=True)
         registrar("id gigante não vira erro", http.get(f"/api/riscos/{2**70}").status_code == 404)

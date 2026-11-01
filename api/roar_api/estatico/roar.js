@@ -43,6 +43,8 @@ const SINAIS = {
   },
 };
 
+const NOMES_DE_NORMAS = { pci_dss: "PCI DSS", gdpr: "GDPR", hipaa: "HIPAA", nist_800_53: "NIST 800-53", tsc: "TSC", gpg13: "GPG13" };
+
 const TATICAS_DE_DEFESA = {
   Model: "Conhecer", Harden: "Fortalecer", Detect: "Detectar", Isolate: "Isolar",
   Deceive: "Enganar", Evict: "Expulsar", Restore: "Restaurar",
@@ -60,7 +62,7 @@ const DESCRICAO_COMPORTAMENTO = {
 };
 
 const $ = (id) => document.getElementById(id);
-const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [], logs: [], proximoLog: null, norma: "gdpr" };
+const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [], logs: [], proximoLog: null, norma: "gdpr", matriz: null, modoRegra: "guiada" };
 
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
@@ -541,33 +543,127 @@ $("mais-logs").addEventListener("click", () => carregarLogs(true));
 
 // ------------------------------------------------------------------ ataque e defesa
 
-async function carregarAtaques() {
-  const r = await pedir("/api/mitre");
-  const { tecnicas } = await r.json();
-  const destino = $("lista-ataques");
-  if (!tecnicas.length) {
-    destino.replaceChildren(el("p", "vazio", "Nenhuma técnica observada no período."));
-    return;
-  }
-  destino.replaceChildren(...tecnicas.map((t) => {
-    const item = el("details", "ataque");
-    const titulo = el("summary");
-    const vezes = Number(t.total).toLocaleString("pt-BR");
-    titulo.append(el("span", "ataque-id", t.tecnica), el("span", "ataque-nome", t.nome ?? "Técnica"),
-      el("span", "etiqueta", t.tatica ?? "Sem tática"), el("span", "ataque-conta", `${vezes} ${t.total === 1 ? "evento" : "eventos"}`));
-    const corpo = el("div", "defesas");
-    if (!t.defesas.length) {
-      corpo.append(el("p", "texto-secao", "Sem defesas catalogadas para esta técnica."));
-    } else {
-      const porTatica = Map.groupBy(t.defesas, (d) => d.tatica_defesa ?? "Outras");
-      for (const [tatica, lista] of porTatica) {
-        corpo.append(el("h4", null, TATICAS_DE_DEFESA[tatica] ?? tatica), etiquetas(lista.map((d) => d.defesa_nome), 40));
-      }
+function estadoDaTecnica(t) {
+  if (t.observados >= 50) return "estado-3";
+  if (t.observados >= 10) return "estado-2";
+  if (t.observados > 0) return "estado-1";
+  return t.regras > 0 ? "estado-coberta" : "";
+}
+
+function desenharMatriz() {
+  const { taticas, tecnicas } = estado.matriz;
+  const so = $("so-observadas").checked;
+  $("matriz-ataques").replaceChildren(...taticas.map((tatica) => {
+    const coluna = el("div", "coluna-tatica");
+    const daTatica = tecnicas.filter((t) => t.taticas.includes(tatica.tatica) && (!so || t.observados > 0));
+    const titulo = el("h3", null, tatica.nome);
+    titulo.append(el("small", null, `${daTatica.length} técnicas`));
+    coluna.append(titulo);
+    for (const t of daTatica) {
+      const botao = el("button", `celula-tecnica ${estadoDaTecnica(t)}`);
+      botao.type = "button";
+      botao.append(el("b", null, t.tecnica), t.nome);
+      comDica(botao, `${t.tecnica} ${t.nome}`, [["Eventos", Number(t.observados).toLocaleString("pt-BR")],
+        ["Regras", Number(t.regras).toLocaleString("pt-BR")], ["Defesas", Number(t.defesas).toLocaleString("pt-BR")]]);
+      botao.addEventListener("click", () => abrirTecnica(t.tecnica));
+      coluna.append(botao);
     }
-    item.append(titulo, corpo);
-    return item;
+    return coluna;
   }));
 }
+
+async function carregarAtaques() {
+  const r = await pedir("/api/mitre/matriz");
+  estado.matriz = await r.json();
+  const { tecnicas, versao } = estado.matriz;
+  const observadas = tecnicas.filter((t) => t.observados > 0).length;
+  const cobertas = tecnicas.filter((t) => t.regras > 0).length;
+  $("resumo-ataques").textContent = tecnicas.length
+    ? `${observadas} técnicas observadas em 30 dias · ${cobertas} de ${tecnicas.length} com regra de detecção. Clique numa técnica para ver as regras e as defesas.`
+    : "A matriz ainda não foi carregada.";
+  $("credito-attack").textContent = versao
+    ? `MITRE ATT&CK® v${versao} e MITRE D3FEND. © 2026 The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE Corporation.`
+    : "";
+  desenharMatriz();
+}
+
+function verEventosDaRegra(regra) {
+  $("janela-tecnica").close();
+  $("busca-eventos").value = regra;
+  $("severidade-eventos").value = "";
+  trocarVista("eventos");
+  carregarEventos();
+}
+
+async function abrirTecnica(tecnica) {
+  esconderDica();
+  const r = await pedir(`/api/mitre/tecnicas/${encodeURIComponent(tecnica)}`);
+  if (!r.ok) return;
+  const d = await r.json();
+  $("titulo-tecnica").textContent = `${d.tecnica.tecnica} ${d.tecnica.nome}`;
+  const corpo = [];
+
+  corpo.push(el("h3", null, `Regras que deram match em 30 dias (${d.match.length})`));
+  if (d.match.length) {
+    corpo.push(montarTabela([["Regra"], ["Severidade"], ["O que detecta"], ["Disparos", "numero-celula"], ["Último"], [""]], d.match.map((m) => {
+      const botao = el("button", "botao-discreto botao-tabela", "Ver eventos");
+      botao.type = "button";
+      botao.addEventListener("click", () => verEventosDaRegra(m.regra_id));
+      return [el("td", "mono", m.regra_id), celula(selo(severidadeDoNivel(m.nivel))), el("td", null, m.descricao ?? "-"),
+        el("td", "numero-celula", Number(m.disparos).toLocaleString("pt-BR")), el("td", null, quando(m.ultimo)), celula(botao)];
+    })));
+  } else {
+    corpo.push(el("p", "texto-secao", "Nenhuma regra disparou para esta técnica no período."));
+  }
+
+  corpo.push(el("h3", null, `Como se defender, pelo D3FEND (${d.defesas.length})`));
+  if (d.defesas.length) {
+    const blocos = el("div", "defesas");
+    const porTatica = new Map();
+    d.defesas.forEach((x) => {
+      const chave = x.tatica_defesa ?? "Outras";
+      porTatica.set(chave, [...(porTatica.get(chave) ?? []), x.defesa_nome]);
+    });
+    porTatica.forEach((nomes, tatica) => blocos.append(el("h4", null, TATICAS_DE_DEFESA[tatica] ?? tatica), etiquetas(nomes, 60)));
+    corpo.push(blocos);
+  } else {
+    corpo.push(el("p", "texto-secao", "Sem defesas catalogadas para esta técnica."));
+  }
+
+  corpo.push(el("h3", null, `Regras que cobrem e ainda não dispararam (${d.cobertura.length})`));
+  if (d.cobertura.length) {
+    corpo.push(montarTabela([["Regra"], ["Severidade"], ["O que detecta"]], d.cobertura.map((c) => [
+      el("td", "mono", c.regra_id), celula(selo(severidadeDoNivel(c.nivel))), el("td", null, c.descricao ?? "-")])));
+  } else if (!d.match.length) {
+    corpo.push(el("p", "texto-secao", "Nenhuma regra cobre esta técnica. Aqui existe um ponto cego."));
+  } else {
+    corpo.push(el("p", "texto-secao", "Todas as regras desta técnica já dispararam."));
+  }
+
+  if (d.subtecnicas.length) {
+    corpo.push(el("h3", null, `Subtécnicas (${d.subtecnicas.length})`));
+    const lista = el("div");
+    d.subtecnicas.forEach((s) => {
+      const b = el("button", "botao-discreto botao-tabela", `${s.tecnica} ${s.nome}`);
+      b.type = "button";
+      b.style.margin = "0 4px 4px 0";
+      b.addEventListener("click", () => abrirTecnica(s.tecnica));
+      lista.append(b);
+    });
+    corpo.push(lista);
+  }
+  $("conteudo-tecnica").replaceChildren(...corpo);
+  if (!$("janela-tecnica").open) $("janela-tecnica").showModal();
+}
+
+$("so-observadas").addEventListener("change", desenharMatriz);
+$("fechar-tecnica").addEventListener("click", () => $("janela-tecnica").close());
+$("legenda-ataques").replaceChildren(...[["amostra-3", "Muitos eventos"], ["amostra-2", "Vários eventos"], ["amostra-1", "Poucos eventos"],
+  ["amostra-coberta", "Tem regra, sem eventos"], ["amostra-sem", "Sem regra"]].map(([classe, rotulo]) => {
+  const item = el("span");
+  item.append(el("i", classe), rotulo);
+  return item;
+}));
 
 // ------------------------------------------------------------------ ativos
 
@@ -697,14 +793,227 @@ async function carregarRegras(continuar = false) {
   if (!estado.regras.length) {
     destino.replaceChildren(el("p", "vazio", dados.catalogo ? "Nenhuma regra encontrada." : "Nada para mostrar ainda."));
   } else {
-    destino.replaceChildren(montarTabela(COLUNAS_REGRAS, estado.regras.map((x) => [
-      el("td", "mono", x.regra_id), celula(selo(severidadeDoNivel(x.nivel))), el("td", null, x.descricao ?? "-"),
-      celula(etiquetas(x.grupos)), celula(etiquetas(x.mitre)),
-      el("td", "numero-celula", Number(x.disparos).toLocaleString("pt-BR")),
-    ])));
+    destino.replaceChildren(montarTabela(COLUNAS_REGRAS, estado.regras.map((x) => {
+      const abrir = el("button", "botao-discreto botao-tabela", x.regra_id);
+      abrir.type = "button";
+      abrir.setAttribute("aria-label", `Abrir a regra ${x.regra_id}`);
+      abrir.addEventListener("click", () => abrirRegra(x.regra_id));
+      return [celula(abrir), celula(selo(severidadeDoNivel(x.nivel))), el("td", null, x.descricao ?? "-"),
+        celula(etiquetas(x.grupos)), celula(etiquetas(x.mitre)),
+        el("td", "numero-celula", Number(x.disparos).toLocaleString("pt-BR"))];
+    })));
   }
   $("mais-regras").hidden = estado.regras.length >= dados.total_filtrado;
+  carregarRegrasProprias();
 }
+
+// O que o gerenciador informa sobre as condições de uma regra.
+const ROTULOS_CONDICAO = {
+  if_sid: "Depois da regra", if_group: "Depois do grupo", if_matched_sid: "Se repetir a regra", if_matched_group: "Se repetir o grupo",
+  frequency: "Quantas vezes", timeframe: "Em quantos segundos", ignore: "Silêncio depois de disparar (s)", match: "Texto no log",
+  regex: "Padrão no log", decoded_as: "Tipo de log", category: "Categoria", same_source_ip: "Mesma origem", options: "Opções",
+  noalert: "Não gera alerta", program_name: "Programa", srcip: "Origem", user: "Usuário", id: "Identificador",
+};
+
+function textoDaCondicao(valor) {
+  if (valor === "") return "sim";
+  if (valor && typeof valor === "object") return valor.pattern ?? JSON.stringify(valor);
+  return String(valor);
+}
+
+function listaDeChaves(pares) {
+  const lista = el("dl", "chaves");
+  pares.forEach(([rotulo, valor]) => lista.append(el("dt", null, rotulo), el("dd", null, valor)));
+  return lista;
+}
+
+async function abrirRegra(regraId) {
+  esconderDica();
+  const r = await pedir(`/api/regras/${encodeURIComponent(regraId)}`);
+  if (!r.ok) return;
+  const { regra, tecnicas, disparos, recentes } = await r.json();
+  $("titulo-tecnica").textContent = `Regra ${regra.regra_id}`;
+  const corpo = [];
+  const cab = el("h2");
+  cab.append(el("span", null, regra.descricao ?? "Sem descrição"), selo(severidadeDoNivel(regra.nivel)));
+  corpo.push(cab);
+  const fatos = el("div", "fatos");
+  fatos.append(fato("Disparos em 30 dias", Number(disparos.total).toLocaleString("pt-BR")), fato("Ativos", disparos.ativos),
+    fato("Último disparo", quando(disparos.ultimo)), fato("Estado", regra.ativa ? "Ativa" : "Desligada"), fato("Arquivo", regra.arquivo ?? "-"));
+  corpo.push(fatos);
+
+  const condicoes = Object.entries(regra.detalhes ?? {});
+  corpo.push(el("h3", null, "Quando dispara"));
+  corpo.push(condicoes.length
+    ? listaDeChaves(condicoes.map(([k, v]) => [ROTULOS_CONDICAO[k] ?? k, textoDaCondicao(v)]))
+    : el("p", "texto-secao", "As condições desta regra não estão disponíveis."));
+
+  if (tecnicas.length) {
+    corpo.push(el("h3", null, "Técnicas MITRE"));
+    const lista = el("div");
+    tecnicas.forEach((t) => {
+      const b = el("button", "botao-discreto botao-tabela", `${t.tecnica} ${t.nome}`);
+      b.type = "button";
+      b.style.margin = "0 4px 4px 0";
+      b.addEventListener("click", () => abrirTecnica(t.tecnica));
+      lista.append(b);
+    });
+    corpo.push(lista);
+  }
+  const normas = Object.entries(regra.normas ?? {});
+  if (normas.length) {
+    corpo.push(el("h3", null, "Normas"));
+    corpo.push(listaDeChaves(normas.map(([k, v]) => [NOMES_DE_NORMAS[k] ?? k, v.join(", ")])));
+  }
+  if ((regra.grupos ?? []).length) {
+    corpo.push(el("h3", null, "Grupos"), etiquetas(regra.grupos, 30));
+  }
+  corpo.push(el("h3", null, "Disparos recentes"));
+  if (recentes.length) {
+    corpo.push(montarTabela([["Quando"], ["Ativo"], ["Usuário"], ["Origem"], [""]], recentes.map((e) => [
+      el("td", null, quando(e.ocorrido_em)), el("td", null, e.ativo ?? "-"), el("td", "mono", e.usuario ?? "-"),
+      el("td", "mono ip", e.ip_origem ?? "-"), celula(botaoBruto(e.id))])));
+  } else {
+    corpo.push(el("p", "texto-secao", "Esta regra ainda não disparou."));
+  }
+  $("conteudo-tecnica").replaceChildren(...corpo);
+  if (!$("janela-tecnica").open) $("janela-tecnica").showModal();
+}
+
+// ------------------------------------------------------------------ nova regra
+
+const CAMPOS_DA_ORIGEM = {
+  windows_processo: [["Image", "Programa"], ["CommandLine", "Linha de comando"], ["ParentImage", "Programa pai"],
+    ["ParentCommandLine", "Linha de comando do pai"], ["User", "Usuário"], ["OriginalFileName", "Nome original do arquivo"], ["CurrentDirectory", "Pasta atual"]],
+  windows_seguranca: [["EventID", "Número do evento"], ["TargetUserName", "Conta afetada"], ["SubjectUserName", "Conta que agiu"],
+    ["IpAddress", "Endereço"], ["LogonType", "Tipo de logon"], ["WorkstationName", "Estação"], ["ServiceName", "Serviço"]],
+};
+const OPERADORES_DA_TELA = [["contem", "contém"], ["igual", "é igual a"], ["comeca", "começa com"], ["termina", "termina com"]];
+
+function opcoes(select, pares) {
+  select.replaceChildren(...pares.map(([valor, rotulo]) => {
+    const o = el("option", null, rotulo);
+    o.value = valor;
+    return o;
+  }));
+  return select;
+}
+
+function novaCondicao() {
+  const origem = $("regra-origem").value;
+  const linha = el("div", `condicao ${origem === "linux_syslog" ? "condicao-linux" : ""}`);
+  if (origem !== "linux_syslog") {
+    linha.append(opcoes(el("select", "condicao-campo"), CAMPOS_DA_ORIGEM[origem]), opcoes(el("select", "condicao-operador"), OPERADORES_DA_TELA));
+  }
+  const valor = el("input", "condicao-valor");
+  valor.placeholder = origem === "linux_syslog" ? "Texto que aparece no log" : "Valor";
+  valor.maxLength = 500;
+  const remover = el("button", "botao-discreto botao-tabela", "Remover");
+  remover.type = "button";
+  remover.addEventListener("click", () => linha.remove());
+  linha.append(valor, remover);
+  $("regra-condicoes").append(linha);
+}
+
+function reiniciarCondicoes() {
+  $("regra-condicoes").replaceChildren();
+  novaCondicao();
+}
+
+function dadosDaRegra() {
+  if (estado.modoRegra === "sigma") return { formato: "sigma", sigma: $("regra-sigma").value };
+  const tecnica = $("regra-tecnica").value.trim().toUpperCase();
+  return {
+    formato: "guiada",
+    titulo: $("regra-titulo").value,
+    origem: $("regra-origem").value,
+    nivel: $("regra-nivel").value,
+    tecnicas: tecnica ? [tecnica] : [],
+    condicoes: [...document.querySelectorAll("#regra-condicoes .condicao")].map((c) => ({
+      campo: c.querySelector(".condicao-campo")?.value,
+      operador: c.querySelector(".condicao-operador")?.value,
+      valor: c.querySelector(".condicao-valor").value,
+    })),
+  };
+}
+
+async function enviarRegra(rota) {
+  const erro = $("erro-regra");
+  erro.hidden = true;
+  const r = await pedir(rota, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(dadosDaRegra()),
+  });
+  const corpo = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    erro.textContent = typeof corpo.detail === "string" ? corpo.detail : "Confira os campos da regra.";
+    erro.hidden = false;
+    $("previa-saida").hidden = true;
+    return null;
+  }
+  return corpo;
+}
+
+const ESTADOS_DA_REGRA = { pendente: "Aguardando aplicação", ativa: "Ativa", recusada: "Recusada", desativada: "Desativada" };
+
+async function carregarRegrasProprias() {
+  const r = await pedir("/api/regras/proprias");
+  const { regras } = await r.json();
+  const destino = $("tabela-proprias");
+  if (!regras.length) {
+    destino.replaceChildren(el("p", "texto-secao", "Nenhuma regra criada ainda."));
+    return;
+  }
+  destino.replaceChildren(montarTabela([["Regra"], ["Estado"], ["Formato"], ["Criada em"], ["Observação"], [""]], regras.map((x) => {
+    const acao = el("td");
+    if (x.estado === "ativa" || x.estado === "pendente") {
+      const b = el("button", "botao-discreto botao-tabela", "Desativar");
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        await pedir(`/api/regras/proprias/${x.id}/desativar`, { method: "POST" });
+        carregarRegrasProprias();
+      });
+      acao.append(b);
+    }
+    return [el("td", null, x.titulo), el("td", null, ESTADOS_DA_REGRA[x.estado] ?? x.estado),
+      el("td", null, x.formato === "sigma" ? "Sigma" : "Guiada"), el("td", null, quando(x.criada_em)), el("td", null, x.mensagem ?? "-"), acao];
+  })));
+}
+
+function escolherModo(modo) {
+  estado.modoRegra = modo;
+  document.querySelectorAll("#janela-regra [data-modo]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.modo === modo)));
+  $("campos-guiada").hidden = modo !== "guiada";
+  $("campos-sigma").hidden = modo !== "sigma";
+}
+
+document.querySelectorAll("#janela-regra [data-modo]").forEach((b) => b.addEventListener("click", () => escolherModo(b.dataset.modo)));
+$("regra-origem").addEventListener("change", reiniciarCondicoes);
+$("mais-condicao").addEventListener("click", novaCondicao);
+$("fechar-regra").addEventListener("click", () => $("janela-regra").close());
+$("nova-regra").addEventListener("click", () => {
+  $("form-regra").reset();
+  $("erro-regra").hidden = true;
+  $("previa-saida").hidden = true;
+  escolherModo("guiada");
+  reiniciarCondicoes();
+  $("janela-regra").showModal();
+});
+$("previa-regra").addEventListener("click", async () => {
+  const corpo = await enviarRegra("/api/regras/converter");
+  if (!corpo) return;
+  $("previa-titulo").textContent = `Como a regra fica (${corpo.regras_geradas} ${corpo.regras_geradas === 1 ? "regra gerada" : "regras geradas"})`;
+  $("previa-xml").textContent = corpo.xml;
+  $("previa-saida").hidden = false;
+});
+$("form-regra").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (await enviarRegra("/api/regras/proprias")) {
+    $("janela-regra").close();
+    carregarRegrasProprias();
+  }
+});
 
 $("form-eventos").addEventListener("submit", (ev) => { ev.preventDefault(); carregarEventos(); });
 $("mais-eventos").addEventListener("click", () => carregarEventos(true));
