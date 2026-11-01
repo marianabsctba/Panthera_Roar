@@ -173,7 +173,9 @@ Limites da automação:
 - **Ações:** só bloquear, avisar e registrar. O catálogo das integrações e os scripts em contêiner isolado ainda não estão ligados à tela.
 - **Serviço:** `roar_motor.disparo` ainda é iniciado à mão, e gerenciadores criados antes desta versão precisam ser recriados para ter os prazos de bloqueio.
 
-Falta nesta fase: credenciais por cliente, cifradas, e cadastro de usuários pela tela (hoje só direto no banco).
+Guarda de credenciais (`ingestao/roar_ingestao/cofre.py`): a API só tem a chave pública, então grava e troca segredos, mas não os lê. Quem abre é o serviço que configura o gerenciador, com a chave privada, que fica em `/opt/panthera-roar/cofre` e nunca vai ao banco. O cliente e o nome da credencial entram na autenticação, então copiar um valor cifrado para outro cliente faz a abertura falhar. `testes/fase4/testar_cofre.py` comprova isso. Limites: quem tem root no servidor lê a chave privada, e os módulos de nuvem do Wazuh exigem a credencial aberta dentro do gerenciador daquele cliente.
+
+Falta nesta fase: cadastro de usuários pela tela (hoje só direto no banco).
 
 Limites da primeira parte:
 

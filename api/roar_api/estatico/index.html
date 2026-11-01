@@ -45,6 +45,7 @@
       <button type="button" data-vista="eventos">Eventos</button>
       <button type="button" data-vista="logs">Logs brutos</button>
       <button type="button" data-vista="ataques">Ataque e defesa</button>
+      <button type="button" data-vista="fontes">Fontes de dados</button>
       <button type="button" data-vista="ativos">Ativos</button>
       <button type="button" data-vista="arquivos">Arquivos</button>
       <button type="button" data-vista="normas">Normas</button>
@@ -183,6 +184,40 @@
       <div id="legenda-ataques" class="legenda"></div>
       <div id="matriz-ataques" class="matriz" tabindex="0" aria-label="Matriz de técnicas de ataque"></div>
       <p id="credito-attack" class="credito"></p>
+    </section>
+
+    <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Ativos com agente</h2>
+        <button id="instalar-agente" type="button" class="botao-primario">Instalar em um ativo</button>
+      </div>
+      <p id="resumo-agentes" class="texto-secao"></p>
+      <div id="instalacao-agente" hidden></div>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Syslog</h2>
+        <button id="nova-fonte" type="button" class="botao-primario">Adicionar equipamento</button>
+      </div>
+      <p class="texto-secao">Para firewall, switch e outros equipamentos que não aceitam agente. O syslog não é cifrado: use em rede de confiança.</p>
+      <form id="form-fonte" class="formulario-regra" hidden novalidate>
+        <div class="linha-campos">
+          <label>Nome <input id="fonte-nome" type="text" maxlength="120" placeholder="Firewall da matriz"></label>
+          <label>Protocolo <select id="fonte-protocolo">
+            <option value="tcp">TCP (recomendado)</option>
+            <option value="udp">UDP</option>
+          </select></label>
+        </div>
+        <label>Endereços que podem enviar, um por linha
+          <textarea id="fonte-origens" rows="3" spellcheck="false" placeholder="192.168.10.1&#10;10.20.0.0/24"></textarea>
+        </label>
+        <p id="fonte-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="fonte-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Salvar</button>
+        </div>
+      </form>
+      <p id="destino-syslog" class="texto-secao"></p>
+      <div id="tabela-fontes" class="tabela-rolagem"></div>
     </section>
 
     <section id="vista-ativos" class="pagina" aria-label="Ativos" hidden>

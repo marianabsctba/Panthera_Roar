@@ -1020,15 +1020,22 @@ async function carregarRegras(continuar = false) {
   if (!estado.regras.length) {
     destino.replaceChildren(el("p", "vazio", dados.catalogo ? "Nenhuma regra encontrada." : "Nada para mostrar ainda."));
   } else {
-    destino.replaceChildren(montarTabela(COLUNAS_REGRAS, estado.regras.map((x) => {
+    const tabela = montarTabela(COLUNAS_REGRAS, estado.regras.map((x) => {
       const abrir = el("button", "botao-discreto botao-tabela", x.regra_id);
       abrir.type = "button";
       abrir.setAttribute("aria-label", `Abrir a regra ${x.regra_id}`);
-      abrir.addEventListener("click", () => abrirRegra(x.regra_id));
-      return [celula(abrir), celula(selo(severidadeDoNivel(x.nivel))), el("td", null, x.descricao ?? "-"),
+      const descricao = el("td", null, x.descricao ?? "-");
+      if (x.ajuste) descricao.append(" ", el("span", "etiqueta", x.ajuste === "desligada" ? "Desativada" : "Editada"));
+      return [celula(abrir), celula(selo(severidadeDoNivel(x.nivel))), descricao,
         celula(etiquetas(x.grupos)), celula(etiquetas(x.mitre)),
         el("td", "numero-celula", Number(x.disparos).toLocaleString("pt-BR"))];
-    })));
+    }));
+    // A linha inteira abre a regra; o botão continua para quem navega pelo teclado.
+    [...tabela.tBodies[0].rows].forEach((linha, i) => {
+      linha.classList.add("linha-clicavel");
+      linha.addEventListener("click", () => abrirRegra(estado.regras[i].regra_id));
+    });
+    destino.replaceChildren(tabela);
   }
   $("mais-regras").hidden = estado.regras.length >= dados.total_filtrado;
   carregarRegrasProprias();
@@ -1054,11 +1061,38 @@ function listaDeChaves(pares) {
   return lista;
 }
 
+function textoDoAjuste(regra, ajuste) {
+  if (!ajuste) return regra.ativa ? "Ativa" : "Desligada";
+  if (ajuste.estado === "pendente") return ajuste.desligada ? "Desativando..." : "Aplicando sua versão...";
+  if (ajuste.estado === "recusada") return "Última versão recusada";
+  return ajuste.desligada ? "Desativada por você" : "Editada por você";
+}
+
+async function ajustarRegra(regraId, acao) {
+  await pedir(`/api/regras/${encodeURIComponent(regraId)}/${acao}`, { method: "POST" });
+  await abrirRegra(regraId);
+  carregarRegras();
+}
+
+function editarRegraDoCatalogo(regraId, xml) {
+  $("janela-tecnica").close();
+  estado.regraEditando = null;
+  estado.regraDoCatalogo = regraId;
+  $("form-regra").reset();
+  $("erro-regra").hidden = true;
+  $("previa-saida").hidden = true;
+  reiniciarCondicoes();
+  escolherModo("xml");
+  $("regra-xml").value = xml;
+  $("titulo-regra").textContent = `Editar a regra ${regraId}`;
+  $("janela-regra").showModal();
+}
+
 async function abrirRegra(regraId) {
   esconderDica();
   const r = await pedir(`/api/regras/${encodeURIComponent(regraId)}`);
   if (!r.ok) return;
-  const { regra, tecnicas, disparos, recentes, xml } = await r.json();
+  const { regra, tecnicas, disparos, recentes, xml, ajuste } = await r.json();
   $("titulo-tecnica").textContent = `Regra ${regra.regra_id}`;
   const corpo = [];
   const cab = el("h2");
@@ -1066,7 +1100,7 @@ async function abrirRegra(regraId) {
   corpo.push(cab);
   const fatos = el("div", "fatos");
   fatos.append(fato("Disparos em 30 dias", Number(disparos.total).toLocaleString("pt-BR")), fato("Ativos", disparos.ativos),
-    fato("Último disparo", quando(disparos.ultimo)), fato("Estado", regra.ativa ? "Ativa" : "Desligada"), fato("Arquivo", regra.arquivo ?? "-"));
+    fato("Último disparo", quando(disparos.ultimo)), fato("Estado", textoDoAjuste(regra, ajuste)), fato("Arquivo", regra.arquivo ?? "-"));
   corpo.push(fatos);
 
   const condicoes = Object.entries(regra.detalhes ?? {});
@@ -1096,16 +1130,28 @@ async function abrirRegra(regraId) {
     corpo.push(el("h3", null, "Grupos"), etiquetas(regra.grupos, 30));
   }
   if (xml) {
+    const editada = ajuste && !ajuste.desligada;
+    if (ajuste?.estado === "recusada") corpo.push(el("p", "erro", `O gerenciador recusou a última versão: ${ajuste.mensagem ?? "sem detalhes"}`));
+    if (editada) corpo.push(el("h3", null, "Sua versão, em uso"), el("pre", "bruto", ajuste.origem));
     corpo.push(el("h3", null, "Regra original"), el("pre", "bruto", xml));
     const acoes = el("div", "acoes-regra");
-    const copiar = el("button", "botao-primario", "Copiar e personalizar");
-    copiar.type = "button";
-    copiar.addEventListener("click", () => personalizarRegra(xml));
-    const exportar = el("button", "botao-discreto", `Baixar ${regra.arquivo}`);
-    exportar.type = "button";
-    exportar.addEventListener("click", () => baixar(`/api/regras/arquivos/${encodeURIComponent(regra.arquivo)}`, regra.arquivo));
-    acoes.append(exportar, copiar);
-    corpo.push(acoes);
+    const botao = (texto, classe, aoClicar) => {
+      const b = el("button", classe, texto);
+      b.type = "button";
+      b.addEventListener("click", aoClicar);
+      return b;
+    };
+    acoes.append(botao(`Baixar ${regra.arquivo}`, "botao-discreto", () => baixar(`/api/regras/arquivos/${encodeURIComponent(regra.arquivo)}`, regra.arquivo)),
+      botao("Usar como base de uma regra nova", "botao-discreto", () => personalizarRegra(xml)));
+    if (ajuste) acoes.append(botao("Restaurar a original", "botao-discreto", () => ajustarRegra(regra.regra_id, "restaurar")));
+    if (!ajuste?.desligada) acoes.append(botao("Desativar", "botao-discreto", () => ajustarRegra(regra.regra_id, "desligar")));
+    acoes.append(botao("Editar", "botao-primario", () => editarRegraDoCatalogo(regra.regra_id, editada ? ajuste.origem : xml)));
+    corpo.push(acoes, el("p", "texto-secao", "O arquivo original nunca é alterado. Sua versão vale no lugar dele, e restaurar volta ao original. Desativada, a regra para de alertar, mas as que dependem dela continuam funcionando."));
+  } else {
+    corpo.push(el("h3", null, "Regra original"),
+      el("p", "texto-secao", regra.arquivo
+        ? "O texto desta regra ainda não foi carregado do gerenciador. Ele aparece aqui depois da próxima sincronização, e então dá para editar uma cópia."
+        : "Esta regra não veio de um arquivo do catálogo, então não há texto para abrir."));
   }
   corpo.push(el("h3", null, "Disparos recentes"));
   if (recentes.length) {
@@ -1177,11 +1223,11 @@ function dadosDaRegra() {
   };
 }
 
-async function enviarRegra(rota) {
+async function enviarRegra(rota, metodo = "POST") {
   const erro = $("erro-regra");
   erro.hidden = true;
   const r = await pedir(rota, {
-    method: "POST",
+    method: metodo,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(dadosDaRegra()),
   });
@@ -1208,6 +1254,10 @@ async function carregarRegrasProprias() {
   }
   destino.replaceChildren(montarTabela([["Regra"], ["Estado"], ["Formato"], ["Criada em"], ["Observação"], [""]], regras.map((x) => {
     const acao = el("td");
+    const editar = el("button", "botao-discreto botao-tabela", "Abrir e editar");
+    editar.type = "button";
+    editar.addEventListener("click", () => editarRegraPropria(x));
+    acao.append(editar, " ");
     if (x.estado === "ativa" || x.estado === "pendente") {
       const b = el("button", "botao-discreto botao-tabela", "Desativar");
       b.type = "button";
@@ -1230,9 +1280,26 @@ function escolherModo(modo) {
   $("campos-xml").hidden = modo !== "xml";
 }
 
+// A regra guiada fica guardada em Sigma, então volta a abrir em Sigma; XML volta a abrir em XML.
+function editarRegraPropria(x) {
+  $("form-regra").reset();
+  $("erro-regra").hidden = true;
+  $("previa-saida").hidden = true;
+  reiniciarCondicoes();
+  const modo = x.formato === "xml" ? "xml" : "sigma";
+  escolherModo(modo);
+  $(modo === "xml" ? "regra-xml" : "regra-sigma").value = x.origem;
+  estado.regraEditando = x.id;
+  $("titulo-regra").textContent = `Editar: ${x.titulo}`;
+  $("janela-regra").showModal();
+}
+
 // Copia uma regra do catálogo para o editor, para personalizar sem mexer na original.
 function personalizarRegra(xml) {
   $("janela-tecnica").close();
+  estado.regraEditando = null;
+  estado.regraDoCatalogo = null;
+  $("titulo-regra").textContent = "Nova regra";
   $("form-regra").reset();
   $("erro-regra").hidden = true;
   $("previa-saida").hidden = true;
@@ -1342,6 +1409,9 @@ $("regra-origem").addEventListener("change", reiniciarCondicoes);
 $("mais-condicao").addEventListener("click", novaCondicao);
 $("fechar-regra").addEventListener("click", () => $("janela-regra").close());
 $("nova-regra").addEventListener("click", () => {
+  estado.regraEditando = null;
+  estado.regraDoCatalogo = null;
+  $("titulo-regra").textContent = "Nova regra";
   $("form-regra").reset();
   $("erro-regra").hidden = true;
   $("previa-saida").hidden = true;
@@ -1358,8 +1428,20 @@ $("previa-regra").addEventListener("click", async () => {
 });
 $("form-regra").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  if (await enviarRegra("/api/regras/proprias")) {
+  const doCatalogo = estado.regraDoCatalogo;
+  // Editando, o estado anterior não pode decidir para onde a regra vai ao trocar de modo no formulário.
+  const salvou = doCatalogo
+    ? await enviarRegra(`/api/regras/${encodeURIComponent(doCatalogo)}/versao`, "PUT")
+    : estado.regraEditando
+      ? await enviarRegra(`/api/regras/proprias/${estado.regraEditando}`, "PUT")
+      : await enviarRegra("/api/regras/proprias");
+  if (salvou) {
     $("janela-regra").close();
+    if (doCatalogo) {
+      estado.regraDoCatalogo = null;
+      carregarRegras();
+      return;
+    }
     carregarRegrasProprias();
   }
 });
@@ -1374,6 +1456,94 @@ $("copiar-bruto").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("conteudo-bruto").textContent);
   $("copiar-bruto").textContent = "Copiado";
   setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
+});
+
+// ------------------------------------------------------------------ fontes de dados
+
+const SAUDE_DA_FONTE = {
+  recebendo: "● Recebendo", parada: "▲ Parada", nunca_recebeu: "○ Nada recebido ainda", desconhecida: "? Não foi possível conferir",
+};
+const ESTADOS_DE_FONTE = { pendente: "Aplicando...", recusada: "Recusada", ativa: "Ativa" };
+
+async function carregarFontes() {
+  const r = await pedir("/api/fontes");
+  const { fontes, agentes, endereco, porta_syslog: porta } = await r.json();
+  $("resumo-agentes").textContent = agentes.total
+    ? `${agentes.total} ativos inscritos, ${agentes.conectados} conectados agora.`
+    : "Nenhum ativo inscrito ainda.";
+  $("destino-syslog").textContent = porta ? `Aponte os equipamentos para ${endereco}, porta ${porta}.` : "";
+  $("tabela-fontes").replaceChildren(fontes.length ? montarTabela(
+    [["Nome"], ["Protocolo"], ["Origens"], ["Estado"], ["Dados"], ["Último dado"], [""]],
+    fontes.map((f) => {
+      const acoes = el("td");
+      acoes.append(botaoDeTabela("Desativar", "botao-discreto", async () => {
+        await pedir(`/api/fontes/${f.id}/desativar`, { method: "POST" });
+        await carregarFontes();
+      }));
+      return [el("td", null, f.nome), el("td", null, f.config.protocolo.toUpperCase()), el("td", "mono ip", f.config.origens.join(", ")),
+        el("td", null, f.mensagem ?? ESTADOS_DE_FONTE[f.estado] ?? f.estado), el("td", null, SAUDE_DA_FONTE[f.saude] ?? "-"),
+        el("td", null, quando(f.ultimo_dado)), acoes];
+    })) : el("p", "vazio", "Nenhum equipamento configurado."));
+}
+
+async function mostrarInstalacao() {
+  const area = $("instalacao-agente");
+  if (!area.hidden) {
+    area.hidden = true;
+    area.replaceChildren();
+    return;
+  }
+  const r = await pedir("/api/fontes/instalacao");
+  if (!r.ok) {
+    area.replaceChildren(el("p", "erro", await detalheDoErro(r, "Não foi possível montar o comando.")));
+    area.hidden = false;
+    return;
+  }
+  const { sistemas } = await r.json();
+  area.replaceChildren(el("p", "texto-secao", "Estes comandos trazem a senha de inscrição da sua organização: não os publique. Depois de rodar, o ativo aparece aqui em alguns minutos."),
+    ...sistemas.map((s) => {
+      const bloco = el("div", "comando");
+      const copiar = botaoDeTabela("Copiar", "botao-discreto", async () => {
+        await navigator.clipboard.writeText(s.comando);
+        copiar.textContent = "Copiado";
+      });
+      const topo = el("div", "bloco-topo");
+      topo.append(el("strong", null, s.provado ? s.nome : `${s.nome} (comando ainda não testado aqui)`), copiar);
+      bloco.append(topo, el("pre", "bruto", s.comando));
+      return bloco;
+    }));
+  area.hidden = false;
+}
+
+$("instalar-agente").addEventListener("click", mostrarInstalacao);
+$("nova-fonte").addEventListener("click", () => {
+  $("form-fonte").hidden = false;
+  $("fonte-nome").focus();
+});
+$("fonte-cancelar").addEventListener("click", () => { $("form-fonte").hidden = true; });
+$("form-fonte").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const erro = $("fonte-erro");
+  erro.hidden = true;
+  const nome = $("fonte-nome").value.trim();
+  if (!nome) {
+    erro.textContent = "Dê um nome ao equipamento.";
+    erro.hidden = false;
+    return;
+  }
+  const r = await pedir("/api/fontes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nome, protocolo: $("fonte-protocolo").value, origens: $("fonte-origens").value.split("\n").map((l) => l.trim()).filter(Boolean) }),
+  });
+  if (!r.ok) {
+    erro.textContent = await detalheDoErro(r, "Confira os endereços.");
+    erro.hidden = false;
+    return;
+  }
+  $("form-fonte").reset();
+  $("form-fonte").hidden = true;
+  await carregarFontes();
 });
 
 // ------------------------------------------------------------------ automação
@@ -1813,9 +1983,10 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "ativos", "arquivos", "normas", "regras", "automacao"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "normas", "regras", "automacao"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
+  if (vista === "fontes") carregarFontes();
   if (vista === "automacao") carregarAutomacao();
   if (vista === "logs" && !estado.logs.length) carregarLogs();
   if (vista === "ataques") carregarAtaques();

@@ -200,10 +200,12 @@ def aplicar_regras_proprias(banco, gerenciador_id, cliente):
     with banco.con.transaction():
         banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
         linhas = banco.con.execute(
-            "SELECT id, formato, origem, estado FROM regras_proprias WHERE gerenciador_id = %s AND estado IN ('ativa', 'pendente') ORDER BY id",
+            """SELECT id, formato, origem, estado, substitui, desligada FROM regras_proprias
+               WHERE gerenciador_id = %s AND estado IN ('ativa', 'pendente') ORDER BY id""",
             (gerenciador_id,)).fetchall()
-    partes = {i: _xml_da_regra_propria(i, formato, origem) for i, formato, origem, _ in linhas}
-    linhas = [(i, origem, estado) for i, _, origem, estado in linhas]
+    partes = {i: xml_proprio.substituicao(origem, substitui, desligada) if substitui else _xml_da_regra_propria(i, formato, origem)
+              for i, formato, origem, _, substitui, desligada in linhas}
+    linhas = [(i, origem, estado) for i, _, origem, estado, _, _ in linhas]
     desejado = hashlib.sha256("".join(p for p in partes.values() if p).encode()).hexdigest()
     marca = PASTA_GERENCIADORES / gerenciador_id / "roar_proprias.aplicado"
     if marca.exists() and marca.read_text() == desejado:

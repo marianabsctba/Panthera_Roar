@@ -345,6 +345,8 @@ th.numero-celula { text-align: right; }
   overflow-wrap: anywhere; background: var(--fundo); border: 1px solid var(--borda); border-radius: 8px;
 }
 
+.comando { margin-bottom: 10px; }
+.comando .bruto { margin-top: 6px; max-height: 160px; }
 .botao-automatizar { margin: 12px 0 4px; }
 .modelos { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .modelo {

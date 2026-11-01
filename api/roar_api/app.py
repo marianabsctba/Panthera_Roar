@@ -7,6 +7,7 @@ aceita cliente vindo do navegador, então um id de outro cliente simplesmente n�
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -34,6 +35,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
+from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
 
@@ -48,6 +50,12 @@ NIVEL_MINIMO_NA_FILA = 5
 TAMANHO_DA_PAGINA = 100
 DIAS_DE_SIMULACAO = 7
 REGRA_DE_BLOQUEIO_CONFIRMADO = "651"
+DIAS_DE_SAUDE = 7
+MINUTOS_ATE_PARADA = 15
+DESLOCAMENTO_SYSLOG = 3
+VERSAO_DO_AGENTE = "4.14.9"
+# Endereço que os ativos e equipamentos do cliente usam para chegar a este servidor.
+ENDERECO_PUBLICO = os.getenv("ROAR_ENDERECO_PUBLICO", "ENDERECO_DESTE_SERVIDOR")
 LIMITE_DE_SIMULACAO = 5000
 # Os mesmos pesos do UEBA; o teste confere que não divergem.
 REGRAS_DE_COMPORTAMENTO = [
@@ -539,6 +547,8 @@ def regras(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias
                   SELECT gerenciador_id, regra_id, count(*) AS total, max(ocorrido_em) AS ultimo FROM eventos
                   WHERE ocorrido_em >= now() - make_interval(days => %s) GROUP BY gerenciador_id, regra_id)
                 SELECT r.regra_id, r.nivel, r.descricao, r.grupos, r.mitre, r.arquivo, r.ativa,
+                       (SELECT CASE WHEN p.desligada THEN 'desligada' ELSE 'editada' END FROM regras_proprias p
+                        WHERE p.substitui = r.regra_id AND p.estado IN ('ativa', 'pendente') LIMIT 1) AS ajuste,
                        coalesce(d.total, 0) AS disparos, d.ultimo, count(*) OVER () AS total_filtrado
                 FROM regras r LEFT JOIN disparos d ON d.gerenciador_id = r.gerenciador_id AND d.regra_id = r.regra_id
                 WHERE {' AND '.join(condicoes)}
@@ -597,7 +607,7 @@ def listar_regras_proprias(request: Request, sessao=Depends(sessao_atual)):
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             """SELECT id, titulo, formato, estado, mensagem, criada_em, aplicada_em, origem FROM regras_proprias
-               ORDER BY id DESC LIMIT 200""").fetchall()
+               WHERE substitui IS NULL ORDER BY id DESC LIMIT 200""").fetchall()
     return {"regras": linhas}
 
 
@@ -612,6 +622,22 @@ def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(sessa
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_regra', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(novo)))
     return {"id": novo, "estado": "pendente"}
+
+
+@app.put("/api/regras/proprias/{identificador}")
+def editar_regra_propria(identificador: int, dados: RegraNova, request: Request, sessao=Depends(sessao_atual)):
+    """Volta a ser pendente: a versão editada passa pela mesma validação no gerenciador."""
+    _inteiro_valido(identificador)
+    titulo, origem, xml, _ = _converter(dados)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            """UPDATE regras_proprias SET titulo = %s, formato = %s, origem = %s, xml_regras = %s, estado = 'pendente', mensagem = NULL
+               WHERE id = %s AND substitui IS NULL RETURNING id""", (titulo, dados.formato, origem, xml, identificador)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'editar_regra', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+    return {"id": identificador, "estado": "pendente"}
 
 
 @app.post("/api/regras/proprias/{identificador}/desativar", status_code=204)
@@ -672,7 +698,7 @@ def importar_regras(dados: ImportacaoDeRegras, request: Request, sessao=Depends(
 def exportar_regras(request: Request, sessao=Depends(sessao_atual)):
     """As regras criadas aqui, cada uma no formato de origem."""
     with do_cliente(request, sessao) as con:
-        linhas = con.execute("SELECT titulo, formato, origem, xml_regras, estado FROM regras_proprias ORDER BY id").fetchall()
+        linhas = con.execute("SELECT titulo, formato, origem, xml_regras, estado FROM regras_proprias WHERE substitui IS NULL ORDER BY id").fetchall()
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_regras', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(len(linhas))))
     return Response(json.dumps({"regras": linhas}, ensure_ascii=False, indent=2, default=str), media_type="application/json",
@@ -754,8 +780,179 @@ def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(sessao_atua
             """SELECT id, ocorrido_em, severidade, agente_nome AS ativo, host(ip_origem) AS ip_origem, usuario FROM eventos
                WHERE regra_id = %s ORDER BY id DESC LIMIT 10""", (regra_id,)).fetchall()
         arquivo = con.execute("SELECT conteudo FROM arquivos_de_regras WHERE arquivo = %s", (regra["arquivo"],)).fetchone()
+        ajuste = con.execute(
+            """SELECT id, origem, estado, mensagem, desligada, aplicada_em FROM regras_proprias
+               WHERE substitui = %s AND estado <> 'desativada' ORDER BY id DESC LIMIT 1""", (regra_id,)).fetchone()
     xml = xml_proprio.trecho_da_regra(arquivo["conteudo"], regra_id) if arquivo else None
-    return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes, "xml": xml}
+    return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes, "xml": xml, "ajuste": ajuste}
+
+
+class VersaoDaRegra(BaseModel):
+    xml: str = Field(max_length=200_000)
+
+
+def _original_da_regra(con, regra_id):
+    if not re.fullmatch(r"\d{1,10}", regra_id):
+        raise HTTPException(status_code=404)
+    regra = con.execute("SELECT descricao, arquivo FROM regras WHERE regra_id = %s LIMIT 1", (regra_id,)).fetchone()
+    arquivo = regra and con.execute("SELECT conteudo FROM arquivos_de_regras WHERE arquivo = %s", (regra["arquivo"],)).fetchone()
+    xml = arquivo and xml_proprio.trecho_da_regra(arquivo["conteudo"], regra_id)
+    if not xml:
+        raise HTTPException(status_code=404, detail="O texto desta regra ainda não foi carregado.")
+    return regra, xml
+
+
+def _gravar_ajuste(con, sessao, regra_id, regra, origem, desligada, acao):
+    """Troca a versão em uso, para o gerenciador instalar de novo. O gerenciador é o mais recente do cliente."""
+    gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+    con.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE substitui = %s AND estado <> 'desativada'", (regra_id,))
+    novo = con.execute(
+        """INSERT INTO regras_proprias (cliente_id, gerenciador_id, titulo, formato, origem, criada_por, substitui, desligada)
+           VALUES (%s, %s, %s, 'substituicao', %s, %s, %s, %s) RETURNING id""",
+        (sessao["cliente_id"], gerenciador["id"], f"Regra {regra_id}: {regra['descricao'] or ''}"[:200], origem,
+         sessao["usuario_id"], regra_id, desligada)).fetchone()["id"]
+    con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, %s)",
+                (sessao["cliente_id"], sessao["usuario_id"], acao, regra_id))
+    return {"id": novo, "estado": "pendente"}
+
+
+@app.put("/api/regras/{regra_id}/versao")
+def editar_regra_do_catalogo(regra_id: str, dados: VersaoDaRegra, request: Request, sessao=Depends(sessao_atual)):
+    with do_cliente(request, sessao) as con:
+        regra, original = _original_da_regra(con, regra_id)
+        try:
+            origem = xml_proprio.validar_substituicao(dados.xml, regra_id, original)
+        except xml_proprio.XmlInvalido as erro:
+            raise HTTPException(status_code=422, detail=str(erro))
+        return _gravar_ajuste(con, sessao, regra_id, regra, origem, False, "editar_regra_do_catalogo")
+
+
+@app.post("/api/regras/{regra_id}/desligar")
+def desligar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(sessao_atual)):
+    """Nível 0: a regra para de alertar, mas as que dependem dela continuam funcionando."""
+    with do_cliente(request, sessao) as con:
+        regra, original = _original_da_regra(con, regra_id)
+        return _gravar_ajuste(con, sessao, regra_id, regra, original, True, "desligar_regra_do_catalogo")
+
+
+@app.post("/api/regras/{regra_id}/restaurar", status_code=204)
+def restaurar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(sessao_atual)):
+    if not re.fullmatch(r"\d{1,10}", regra_id):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE substitui = %s AND estado <> 'desativada' RETURNING id", (regra_id,)).fetchall():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'restaurar_regra_do_catalogo', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], regra_id))
+
+
+class FonteNova(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    protocolo: str = "tcp"
+    origens: list[str] = Field(max_length=200)
+
+
+def _agregar_origens_de_syslog(request, gerenciador_id):
+    """Última vez que cada endereço mandou algo. Sem dado no índice, a tela diz que nunca recebeu."""
+    corpo = {"size": 0, "query": {"range": {"timestamp": {"gte": f"now-{DIAS_DE_SAUDE}d"}}},
+             "aggs": {"origens": {"terms": {"field": "location", "size": 500}, "aggs": {"ultimo": {"max": {"field": "timestamp"}}}}}}
+    try:
+        r = request.app.state.indexer.post(f"{INDEXER_URL}/wazuh-archives-4.x-{gerenciador_id}-*/_search", json=corpo, timeout=20)
+        r.raise_for_status()
+    except requests.RequestException:
+        return None
+    return [(b["key"], b["ultimo"]["value"]) for b in r.json().get("aggregations", {}).get("origens", {}).get("buckets", [])]
+
+
+def _saude_da_fonte(fonte, origens):
+    """Recebendo, parada ou nunca recebeu. Sem resposta do índice, diz que não sabe, em vez de chutar."""
+    if origens is None:
+        return {"saude": "desconhecida", "ultimo_dado": None}
+    redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
+    ultimos = []
+    for local, ultimo in origens:
+        try:
+            if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
+                ultimos.append(ultimo)
+        except ValueError:
+            continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
+    if not ultimos:
+        return {"saude": "nunca_recebeu", "ultimo_dado": None}
+    ultimo = max(ultimos) / 1000
+    return {"saude": "recebendo" if time.time() - ultimo < MINUTOS_ATE_PARADA * 60 else "parada",
+            "ultimo_dado": datetime.fromtimestamp(ultimo, timezone.utc).isoformat()}
+
+
+@app.get("/api/fontes")
+def listar_fontes(request: Request, sessao=Depends(sessao_atual)):
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id, porta_base FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        fontes = con.execute(
+            "SELECT id, tipo, nome, config, estado, mensagem, criada_em, aplicada_em FROM fontes WHERE estado <> 'desativada' ORDER BY id DESC LIMIT 200").fetchall()
+        agentes = con.execute(
+            """SELECT count(*) AS total, count(*) FILTER (WHERE estado = 'active') AS conectados
+               FROM ativos WHERE agente_id <> '000' AND gerenciador_id = %s""", (gerenciador["id"] if gerenciador else "",)).fetchone()
+    origens = _agregar_origens_de_syslog(request, gerenciador["id"]) if gerenciador and fontes else []
+    for fonte in fontes:
+        fonte.update(_saude_da_fonte(fonte, origens) if fonte["estado"] == "ativa" else {"saude": None, "ultimo_dado": None})
+    return {"fontes": fontes, "agentes": agentes, "endereco": ENDERECO_PUBLICO,
+            "porta_syslog": gerenciador["porta_base"] + DESLOCAMENTO_SYSLOG if gerenciador else None}
+
+
+@app.post("/api/fontes", status_code=201)
+def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(sessao_atual)):
+    try:
+        origens = fontes_de_dados.validar_syslog(dados.protocolo, dados.origens)
+    except fontes_de_dados.FonteInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        nova = con.execute(
+            "INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, criada_por) VALUES (%s, %s, 'syslog', %s, %s, %s) RETURNING id",
+            (sessao["cliente_id"], gerenciador["id"], dados.nome, json.dumps({"protocolo": dados.protocolo, "origens": origens}), sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
+    return {"id": nova, "estado": "pendente"}
+
+
+@app.post("/api/fontes/{identificador}/desativar", status_code=204)
+def desativar_fonte(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE fontes SET estado = 'desativada' WHERE id = %s RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.get("/api/fontes/instalacao")
+def instalacao_de_agente(request: Request, sessao=Depends(sessao_atual)):
+    """Traz a senha de inscrição do cliente, então cada consulta fica registrada."""
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            """SELECT g.porta_base, i.senha FROM gerenciadores g JOIN inscricao_de_agentes i ON i.gerenciador_id = g.id
+               ORDER BY g.criado_em DESC LIMIT 1""").fetchone()
+        if not linha:
+            raise HTTPException(status_code=409, detail="Este cliente ainda não tem como inscrever ativos.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ver_instalacao_de_agente', '')",
+                    (sessao["cliente_id"], sessao["usuario_id"]))
+    variaveis = {"WAZUH_MANAGER": ENDERECO_PUBLICO, "WAZUH_MANAGER_PORT": linha["porta_base"], "WAZUH_REGISTRATION_SERVER": ENDERECO_PUBLICO,
+                 "WAZUH_REGISTRATION_PORT": linha["porta_base"] + 1, "WAZUH_REGISTRATION_PASSWORD": linha["senha"]}
+    unix = " ".join(f"{k}='{v}'" for k, v in variaveis.items())
+    janelas = " ".join(f'{k}="{v}"' for k, v in variaveis.items())
+    return {"sistemas": [
+        {"nome": "Linux, Debian e Ubuntu", "provado": True, "comando":
+            f"curl -so agente.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_{VERSAO_DO_AGENTE}-1_amd64.deb && "
+            f"sudo {unix} dpkg -i ./agente.deb && sudo systemctl enable --now wazuh-agent"},
+        {"nome": "Linux, Red Hat e derivados", "provado": False, "comando":
+            f"curl -so agente.rpm https://packages.wazuh.com/4.x/yum/wazuh-agent-{VERSAO_DO_AGENTE}-1.x86_64.rpm && "
+            f"sudo {unix} rpm -ihv agente.rpm && sudo systemctl enable --now wazuh-agent"},
+        {"nome": "Windows (PowerShell como administrador)", "provado": False, "comando":
+            f"Invoke-WebRequest -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-{VERSAO_DO_AGENTE}-1.msi -OutFile agente.msi; "
+            f"msiexec.exe /i agente.msi /q {janelas}; Start-Sleep 20; NET START WazuhSvc"},
+    ]}
 
 
 class PlaybookEntrada(BaseModel):

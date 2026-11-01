@@ -183,13 +183,16 @@ def criar(nome, endereco_portas="127.0.0.1"):
 
     with banco_admin(env) as banco:
         cliente = banco.execute("INSERT INTO clientes (nome) VALUES (%s) RETURNING id", (nome,)).fetchone()[0]
-        porta = banco.execute("SELECT coalesce(max(porta_base) + 3, %s) FROM gerenciadores",
+        porta = banco.execute("SELECT coalesce(max(porta_base) + 4, %s) FROM gerenciadores",
                               (PORTA_INICIAL,)).fetchone()[0]
         banco.execute("INSERT INTO gerenciadores (id, cliente_id, porta_base) VALUES (%s, %s, %s)",
                       (gerenciador_id, cliente, porta))
 
     senha_indexer, senha_api, senha_inscricao = senha_forte(), senha_forte(), gerar()
     usuario = _permissoes_do_indexer(indexer, gerenciador_id, senha_indexer)
+    with banco_admin(env) as banco:
+        banco.execute("INSERT INTO inscricao_de_agentes (gerenciador_id, cliente_id, senha) VALUES (%s, %s, %s)",
+                      (gerenciador_id, cliente, senha_inscricao))
 
     pasta.mkdir(parents=True, mode=0o700)
     origem = RAIZ / "infra/wazuh/gerenciador"
@@ -204,7 +207,7 @@ def criar(nome, endereco_portas="127.0.0.1"):
     variaveis = {
         "WAZUH_VERSAO": WAZUH_VERSAO, "GERENCIADOR_ID": gerenciador_id, "REDE": REDE,
         "PORTAS_ENDERECO": endereco_portas, "PORTA_EVENTOS": porta, "PORTA_INSCRICAO": porta + 1,
-        "PORTA_API": porta + 2, "INDEXER_USUARIO": usuario, "INDEXER_SENHA": senha_indexer,
+        "PORTA_API": porta + 2, "PORTA_SYSLOG": porta + 3, "INDEXER_USUARIO": usuario, "INDEXER_SENHA": senha_indexer,
         "API_SENHA": senha_api, "INDICE": indice_do(gerenciador_id),
         "INDICE_BRUTO": indice_bruto_do(gerenciador_id), "CERTIFICADOS": CERTIFICADOS,
     }
@@ -230,14 +233,17 @@ def _api_do_gerenciador(gerenciador_id, metodo, rota):
     return r.json()
 
 
-def _configuracao_valida(gerenciador_id):
+def _configuracao_valida(gerenciador_id, programas=("wazuh-analysisd",)):
     # Usa o binário do Wazuh: a validação pela API estoura o tempo com milhares de regras.
     # Na dúvida, reprova: quem chama volta ao arquivo anterior e não reinicia nada.
     pasta = DESTINO / "gerenciadores" / gerenciador_id
-    r = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
-                        "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-analysisd", "-t"],
-                       capture_output=True, text=True, timeout=600)
-    return r.returncode == 0, {"status": "OK" if r.returncode == 0 else "erro", "saida": (r.stderr or r.stdout)[-400:]}
+    for programa in programas:
+        r = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                            "exec", "-T", "gerenciador", f"/var/ossec/bin/{programa}", "-t"],
+                           capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            return False, {"status": "erro", "saida": (r.stderr or r.stdout)[-400:]}
+    return True, {"status": "OK", "saida": ""}
 
 
 def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
@@ -277,6 +283,45 @@ def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
     return True, detalhe
 
 
+def aplicar_configuracao(gerenciador_id, fragmento):
+    """Troca o trecho das fontes de dados. Se reprovar, volta ao arquivo anterior e não reinicia."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    caminho = "/var/ossec/etc/ossec.conf"
+    montado, anterior = pasta / "ossec.conf", pasta / "ossec.conf.anterior"
+    anterior.write_bytes(subprocess.run(
+        ["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+         "exec", "-T", "gerenciador", "cat", caminho], capture_output=True, check=True).stdout)
+
+    def instalar(arquivo):
+        _compose(pasta, gerenciador_id, "cp", str(arquivo), f"gerenciador:{caminho}")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "root:wazuh", caminho)
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
+
+    novo = pasta / "ossec.conf.novo"
+    novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text()) + fragmento)
+    instalar(novo)
+    # O analisador sozinho aprova um syslog inválido, que só derrubaria o recebimento ao reiniciar.
+    valida, detalhe = _configuracao_valida(gerenciador_id, ("wazuh-analysisd", "wazuh-remoted"))
+    if not valida:
+        instalar(anterior)
+        return False, detalhe
+
+    def reiniciar():
+        return subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                               "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart"],
+                              capture_output=True, text=True, timeout=600)
+
+    resultado = reiniciar()
+    if resultado.returncode != 0:
+        # A coleta do cliente não pode ficar parada: volta ao que funcionava e sobe de novo.
+        instalar(anterior)
+        reiniciar()
+        return False, {"status": "erro", "saida": (resultado.stderr or resultado.stdout)[-400:]}
+    # O arquivo montado é o que o contêiner copia ao ser recriado.
+    shutil.copy(novo, montado)
+    return True, detalhe
+
+
 def remover(gerenciador_id, apagar_dados=True):
     env = ler_env(DESTINO / ".env")
     indexer = indexer_admin(env)
@@ -295,7 +340,10 @@ def remover(gerenciador_id, apagar_dados=True):
                                     (gerenciador_id,)).fetchone()
             banco.execute("DELETE FROM sinais WHERE evento_id IN (SELECT id FROM eventos WHERE gerenciador_id = %s)",
                           (gerenciador_id,))
-            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias"):
+            banco.execute("DELETE FROM aprovacoes WHERE execucao_id IN (SELECT id FROM execucoes WHERE gerenciador_id = %s)",
+                          (gerenciador_id,))
+            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias", "fontes",
+                           "inscricao_de_agentes", "execucoes"):
                 banco.execute(f"DELETE FROM {tabela} WHERE gerenciador_id = %s", (gerenciador_id,))
             banco.execute("DELETE FROM checkpoints WHERE fonte = %s", (gerenciador_id,))
             banco.execute("DELETE FROM gerenciadores WHERE id = %s", (gerenciador_id,))
@@ -303,7 +351,7 @@ def remover(gerenciador_id, apagar_dados=True):
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
                 for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
-                               "auditoria"):
+                               "auditoria", "aprovacoes", "execucoes", "playbooks", "soar_cursor"):
                     banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))
 

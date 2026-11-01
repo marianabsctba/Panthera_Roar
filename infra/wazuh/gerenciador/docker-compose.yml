@@ -16,6 +16,9 @@ services:
       - "${PORTAS_ENDERECO}:${PORTA_EVENTOS}:1514"
       - "${PORTAS_ENDERECO}:${PORTA_INSCRICAO}:1515"
       - "127.0.0.1:${PORTA_API}:55000"
+      # Só recebe quando o cliente cadastra um equipamento; sem isso, nada escuta nesta porta.
+      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/tcp"
+      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/udp"
     environment:
       - INDEXER_URL="https://wazuh.indexer:9200"
       - INDEXER_USERNAME=${INDEXER_USUARIO}

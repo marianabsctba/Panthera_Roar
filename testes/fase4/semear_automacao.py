@@ -55,6 +55,7 @@ def preparar(admin, cliente):
     print("gerenciador no ar:", esperar_gerenciador(g), flush=True)
     # O gerenciador novo passa a ser do cliente de demonstração, que assim mantém o mesmo acesso.
     admin.execute("UPDATE gerenciadores SET cliente_id = %s WHERE id = %s", (cliente, g["id"]))
+    admin.execute("UPDATE inscricao_de_agentes SET cliente_id = %s WHERE gerenciador_id = %s", (cliente, g["id"]))
     admin.execute("DELETE FROM clientes WHERE id = %s", (g["cliente"],))
     PASTA.mkdir(mode=0o755, exist_ok=True)
     conf, passe, log = PASTA / "agente.conf", PASTA / "authd.pass", PASTA / "ataque.log"
