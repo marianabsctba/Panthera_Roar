@@ -59,7 +59,7 @@ git -C "$DESTINO/apps" checkout -q FETCH_HEAD
 if [ ! -x "$DESTINO/venv/bin/python" ]; then
   python3 -m venv "$DESTINO/venv"
 fi
-"$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/ingestao/requirements.txt"
+"$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/ingestao/requirements.txt" -r "$RAIZ/ueba/requirements.txt" -r "$RAIZ/api/requirements.txt"
 
 PYTHONPATH="$RAIZ/ingestao" "$DESTINO/venv/bin/python" -m roar_ingestao.provisao preparar
 

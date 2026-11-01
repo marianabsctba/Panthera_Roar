@@ -108,11 +108,38 @@ Limites:
 
 ### Fase 2: UEBA
 
-1. Ligar cada evento a uma pessoa e a um host, usando AD ou IAM.
-2. Regras simples: primeira vez neste host, viagem impossível, horário fora do padrão.
-3. Baseline por entidade e por grupo de pares.
-4. Score acumulado com decaimento, que só gera alerta acima de um limite.
-5. Modelos de anomalia entram depois, como mais um sinal no score.
+Primeira versão concluída, só com os logs do Wazuh. `testes/fase2/testar_ueba.py` comprova com cenários, uma simulação e um agente Wazuh real.
+
+| Sinal | Peso | Quando |
+|---|---|---|
+| `sucesso_apos_falhas` | 50 | Login depois de 5 falhas ou mais do mesmo IP, no mesmo host, em 10 minutos |
+| `viagem_impossivel` | 40 | Mais de 500 km a mais de 1000 km/h entre dois logins |
+| `primeiro_privilegio` | 30 | Primeiro sudo daquela pessoa naquele host e como aquele usuário |
+| `pico_de_falhas` | 20 | Falhas na hora muito acima do histórico, com mínimo de 20 |
+| `primeiro_host` | 15 | Host nunca usado pela pessoa |
+| `horario_incomum` | 15 | Hora local (no fuso do cliente) com menos de 2% do histórico |
+| `primeiro_ip` | 10 | IP nunca usado pela pessoa |
+| `host_raro_no_cliente` | 10 | Host usado por menos de 5% dos usuários do cliente |
+
+O risco é a soma dos pesos, caindo pela metade a cada 24 horas. O alerta abre em 60, vira crítico em 100 e se encerra quando o risco cai abaixo de 30. Cada sinal conta uma vez por dia e aponta para o evento que o gerou, e assim todo alerta se explica.
+
+Defesas contra envenenamento:
+
+- **Falha não cria usuário:** nome inventado por atacante não vira entidade, e há limite de entidades por cliente.
+- **Não se aprende com o ataque:** com risco alto ou depois de força bruta vencida, host, IP e horário não entram no baseline. A volta do atacante ainda é novidade.
+- **Sinais de novidade esperam o aprendizado:** 14 dias e 20 logins. Viagem impossível e força bruta vencida valem desde o início.
+
+O alerta de risco e o grupo de alertas do Wazuh ainda são filas separadas. A tela da Fase 4 as une.
+
+Limites:
+
+- **Simulação não é ambiente real:** em 60 usuários e 30 dias sintéticos, houve 0 alertas sem ataque e os 3 ataques foram detectados. Os pesos e limites foram escolhidos para esse cenário, e o limite de horário foi ajustado depois de ver os testes. Falta validar com dados reais ou públicos, como os conjuntos LANL e CERT, e os pesos precisarão de calibração.
+- **Atacante presente desde o início:** o que ele fizer durante o aprendizado vira normal. Um ataque lento, abaixo do limite, também pode entrar no baseline.
+- **Só autenticação e sudo:** o sinal depende dos grupos das regras do Wazuh. Testamos sshd e sudo reais; os eventos do Windows têm grupos parecidos, mas ainda não foram testados.
+- **Identidade por nome:** sem AD ou IAM, `EMPRESA\maria` e `OUTRA\maria` viram a mesma pessoa, e não há grupo de pares por departamento. Os pares são todos os usuários do cliente.
+- **Atraso de 30 segundos:** falhas que chegarem ao banco depois disso não contam para a força bruta vencida. Numa rodada real sem essa espera o sinal se perdeu; a causa provável é o indexer atualizar os shards em momentos diferentes, mas ela não foi confirmada.
+- **Viagem impossível em eventos reais:** testada com localização simulada, porque o agente real usou IP de documentação, sem geolocalização.
+- **Serviços:** ingestão e UEBA ainda são iniciados à mão (`python -m`), sem supervisão nem reinício automático.
 
 ### Fase 3: IA local
 
@@ -135,5 +162,4 @@ Fica por último. Até aqui, a fila de alertas e a trilha de auditoria cobrem o 
 
 ## Decisões em aberto
 
-- **Licença deste repositório.** Precisa estar definida antes de o código começar a crescer.
 - **Nome.** Falta verificar uso anterior e registro de marca de "Roar" em segurança.
