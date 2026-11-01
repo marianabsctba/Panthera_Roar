@@ -66,20 +66,27 @@ def main():
             [{"campo": "Image", "operador": "termina", "valor": "\\roarteste.exe"},
              {"campo": "CommandLine", "operador": "contem", "valor": "alfa"},
              {"campo": "CommandLine", "operador": "contem", "valor": "beta"}]))
+        # Evento de Windows que não casa nada não gera alerta, e aí nada prova que foi avaliado.
+        # A sentinela tem nível menor que a regra em teste: só aparece se a regra calou.
+        sentinela = criar("Sentinela do Sysmon", "xml",
+                          '<group name="teste,"><rule id="100003" level="3"><if_group>sysmon_event1</if_group>'
+                          '<field name="win.eventdata.processGuid">^marca</field><description>Sentinela do Sysmon</description></rule></group>')
         ruim = criar("Regra ruim", "xml",
                      '<group name="teste,"><rule id="100002" level="10"><if_group>syslog</if_group>'
                      '<field name="x" type="pcre2">(</field><description>Regra ruim</description></rule></group>')
         aceitas = aplicar()
-        registrar("regras boas são instaladas", aceitas == 3 and estado(guiada)[0] == "ativa" and estado(manual)[0] == "ativa"
-                  and estado(windows)[0] == "ativa", f"{aceitas} aceitas")
+        registrar("regras boas são instaladas", aceitas == 4 and estado(guiada)[0] == "ativa" and estado(manual)[0] == "ativa"
+                  and estado(windows)[0] == "ativa" and estado(sentinela)[0] == "ativa", f"{aceitas} aceitas")
 
         def processo(linha):
             marca = f"marca{uuid.uuid4().hex}"
             evento = sysmon("C:\\Temp\\roarteste.exe", "C:\\Windows\\explorer.exe", linha, marca=marca)
             return regra_disparada(g, evento, marca)[0]
 
-        registrar("regra guiada de Windows dispara", "Guiada de Windows" in processo("roarteste alfa beta"))
-        registrar("com duas condições no campo, as duas precisam valer", "Guiada de Windows" not in processo("roarteste alfa"))
+        vistos = processo("roarteste alfa beta")
+        registrar("regra guiada de Windows dispara", "Guiada de Windows" in vistos, str(vistos))
+        vistos = processo("roarteste alfa")
+        registrar("com duas condições no campo, as duas precisam valer", vistos and "Guiada de Windows" not in vistos, str(vistos))
         registrar("regra ruim é recusada com motivo", estado(ruim)[0] == "recusada" and estado(ruim)[1], str(estado(ruim))[:200])
         registrar("regra ruim não derruba as outras nem o gerenciador", esperar_gerenciador(g, 60))
         ok, vistos = dispara("texto com palavra-guiada", "Guiada de teste")

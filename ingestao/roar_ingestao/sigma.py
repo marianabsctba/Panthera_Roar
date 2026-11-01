@@ -24,6 +24,9 @@ from sigma.types import SigmaNumber, SigmaRegularExpression, SigmaString, Specia
 ID_INICIAL = 200000
 LIMITE_DE_RAMOS = 16
 NIVEIS = {"informational": 3, "low": 5, "medium": 8, "high": 12, "critical": 15}
+# O decodificador de eventos de Windows do Wazuh entrega cada barra invertida dobrada:
+# C:\Windows chega à regra como C:\\Windows. Em log de Linux a barra vem simples.
+BARRA_NO_EVENTO = r"\\+"
 # Grupo de regras do Wazuh que precisa ter casado antes, por origem do log.
 ORIGENS = {
     ("windows", "process_creation", None): "sysmon_event1",
@@ -68,10 +71,34 @@ def _padrao_de_texto(valor):
         elif parte == SpecialChars.WILDCARD_SINGLE:
             partes.append(".")
         elif isinstance(parte, str):
-            partes.append(re.escape(parte))
+            partes.append(BARRA_NO_EVENTO.join(re.escape(p) for p in parte.split("\\")))
         else:
             raise NaoConvertivel("marcador especial no valor")
     return "".join(partes)
+
+
+def _barras_na_regex(regex):
+    """Mesma tolerância de BARRA_NO_EVENTO para a barra literal de um regex escrito na regra."""
+    saida, i, classe, classe_com_barra = [], 0, False, False
+    while i < len(regex):
+        c = regex[i]
+        if c == "\\" and i + 1 < len(regex):
+            par = regex[i:i + 2]
+            if par == "\\\\" and classe:
+                classe_com_barra = classe_com_barra or regex[regex.rfind("[", 0, i) + 1] != "^"
+            saida.append(f"(?:{BARRA_NO_EVENTO})" if par == "\\\\" and not classe else par)
+            i += 2
+            continue
+        if c == "[" and not classe:
+            classe, classe_com_barra = True, False
+        elif c == "]" and classe:
+            classe = False
+            # Uma classe casa um caractere só; a barra dobrada do evento pede que ela repita.
+            if classe_com_barra and regex[i + 1:i + 2] not in ("*", "+", "?", "{"):
+                c = "]+"
+        saida.append(c)
+        i += 1
+    return "".join(saida)
 
 
 def _padrao(valor, inteiro=True):
@@ -81,7 +108,7 @@ def _padrao(valor, inteiro=True):
     elif isinstance(valor, SigmaNumber):
         corpo = re.escape(str(valor.number))
     elif isinstance(valor, SigmaRegularExpression):
-        return valor.regexp.original if hasattr(valor.regexp, "original") else str(valor.regexp)
+        return _barras_na_regex(valor.regexp.original if hasattr(valor.regexp, "original") else str(valor.regexp))
     else:
         raise NaoConvertivel(f"tipo de valor {type(valor).__name__}")
     return f"^{corpo}$" if inteiro else corpo
@@ -140,7 +167,9 @@ def _juntar_ramos(ramos):
                 continue
             padrao = "(?:" + "|".join(sorted({l.padrao for _, l in itens})) + ")"
             usados = {id(r) for r, _ in itens}
-            ramos = [r for r in ramos if id(r) not in usados] + [list(resto) + [Literal(campo, padrao)]]
+            # Em ordem fixa: os ids das regras não podem mudar de uma conversão para outra.
+            ordenados = sorted(resto, key=lambda l: (l.campo, l.padrao, l.negado))
+            ramos = [r for r in ramos if id(r) not in usados] + [ordenados + [Literal(campo, padrao)]]
             mudou = True
             break
     return ramos

