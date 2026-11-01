@@ -147,7 +147,23 @@ Triagem separada do fluxo principal, com análise rápida e aprofundamento quand
 
 ### Fase 4: tela e automação
 
-Fila de alertas com aprovar e descartar, criação de playbooks em "quando, se, então", catálogo de ações em português e credenciais por cliente, cifradas.
+Primeira parte pronta, só de leitura: login, panorama com gráficos e fila de alertas com as evidências. `testes/fase4/testar_api.py` comprova o acesso e o isolamento, e `testes/fase4/semear_demonstracao.py` cria dados de exemplo para ver a tela.
+
+- **Cliente vem da sessão:** nenhuma rota aceita cliente enviado pelo navegador. Id de outro cliente responde 404.
+- **Sessão:** cookie `HttpOnly` e `SameSite=Strict`, com só o hash do token no banco. A API não lê usuários nem sessões, só usa funções específicas.
+- **Dado de alerta é hostil:** a tela só monta elementos com `textContent`, e a política de conteúdo bloqueia script de fora. Conferido no navegador com um nome de usuário contendo HTML.
+- **Fila sem ruído:** alertas abaixo do nível 5, como login normal, alimentam o UEBA mas não entram na fila nem nos gráficos.
+- **Cores dos gráficos:** severidade passa nas checagens de daltonismo. Fica de fora só a faixa de brilho, porque amarelo é claro por natureza; legenda, rótulo e tabela de dados também identificam cada faixa.
+
+Falta nesta fase: aprovar e descartar, criação de playbooks em "quando, se, então", catálogo de ações em português, credenciais por cliente, cifradas, e cadastro de usuários pela tela (hoje só direto no banco).
+
+Limites da primeira parte:
+
+- **Bloqueio de login:** fica na memória de um processo e é por e-mail, então quem souber o e-mail de alguém consegue bloquear essa pessoa por 15 minutos.
+- **Sem MFA nem papéis:** todo usuário de um cliente vê tudo do cliente.
+- **Regras em inglês:** as descrições vêm das regras do Wazuh.
+- **Tela local:** roda sem proxy nem HTTPS. O cookie exige HTTPS por padrão, e só o teste local desliga isso (`ROAR_COOKIE_SEGURO=0`).
+- **Consultas do panorama:** não foram medidas com volume real.
 
 ### Fase 5: casos
 

@@ -13,12 +13,20 @@ sudo bash infra/subir.sh
 sudo /opt/panthera-roar/venv/bin/python testes/fase0/testar_motor.py
 sudo /opt/panthera-roar/venv/bin/python testes/fase1/testar_ingestao.py
 sudo /opt/panthera-roar/venv/bin/python testes/fase2/testar_ueba.py
+sudo /opt/panthera-roar/venv/bin/python testes/fase4/testar_api.py
 ```
 
 Cada cliente tem o seu gerenciador do Wazuh:
 
 ```bash
 sudo PYTHONPATH=ingestao /opt/panthera-roar/venv/bin/python -m roar_ingestao.provisao criar --nome acme
+```
+
+Para ver a tela com dados de exemplo (o acesso fica em `/opt/panthera-roar/demonstracao.txt`):
+
+```bash
+sudo /opt/panthera-roar/venv/bin/python testes/fase4/semear_demonstracao.py
+cd api && sudo ROAR_COOKIE_SEGURO=0 /opt/panthera-roar/venv/bin/python -m uvicorn roar_api.app:app --port 8600
 ```
 
 ## Licença

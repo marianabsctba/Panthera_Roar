@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panthera Roar</title>
+  <link rel="icon" href="/estatico/pantera.webp">
+  <link rel="stylesheet" href="/estatico/roar.css">
+</head>
+<body>
+  <main id="entrada" class="entrada" hidden>
+    <form id="form-entrada" class="cartao-entrada" novalidate>
+      <img src="/estatico/pantera.webp" alt="" width="96" height="96">
+      <h1>Panthera <span>Roar</span></h1>
+      <label>E-mail <input id="email" type="email" autocomplete="username" required></label>
+      <label>Senha <input id="senha" type="password" autocomplete="current-password" required></label>
+      <p id="erro-entrada" class="erro" role="alert" hidden></p>
+      <button type="submit" class="botao-primario">Entrar</button>
+    </form>
+  </main>
+
+  <div id="painel" class="painel" hidden>
+    <header class="topo">
+      <div class="marca">
+        <img src="/estatico/pantera.webp" alt="" width="36" height="36">
+        <strong>Panthera <span>Roar</span></strong>
+      </div>
+      <div class="sessao">
+        <span id="cliente" class="cliente"></span>
+        <span id="usuario"></span>
+        <button id="sair" type="button" class="botao-discreto">Sair</button>
+      </div>
+    </header>
+
+    <section class="resumo" aria-label="Resumo">
+      <div class="numero"><b id="n-criticos">0</b><span>riscos críticos</span></div>
+      <div class="numero"><b id="n-altos">0</b><span>riscos altos</span></div>
+      <div class="numero"><b id="n-grupos">0</b><span>grupos de alertas</span></div>
+      <div class="numero"><b id="n-eventos">0</b><span>eventos nos alertas</span></div>
+    </section>
+
+    <nav class="navegacao" aria-label="Seções">
+      <button type="button" data-vista="panorama" aria-current="page">Panorama</button>
+      <button type="button" data-vista="fila">Fila</button>
+    </nav>
+
+    <section id="vista-panorama" class="panorama" aria-label="Panorama">
+      <div class="periodo" role="group" aria-label="Período">
+        <button type="button" data-dias="7">7 dias</button>
+        <button type="button" data-dias="30" aria-pressed="true">30 dias</button>
+        <button type="button" data-dias="90">90 dias</button>
+      </div>
+      <div class="graficos">
+        <figure class="grafico grafico-largo">
+          <figcaption>Alertas por dia</figcaption>
+          <div id="legenda-dias" class="legenda"></div>
+          <div id="grafico-dias" class="area-colunas"></div>
+          <details><summary>Ver dados</summary><div id="tabela-dias" class="tabela-rolagem"></div></details>
+        </figure>
+        <figure class="grafico">
+          <figcaption>Maior risco agora</figcaption>
+          <div id="grafico-riscos"></div>
+        </figure>
+        <figure class="grafico">
+          <figcaption>Sinais de comportamento</figcaption>
+          <div id="grafico-sinais"></div>
+        </figure>
+        <figure class="grafico">
+          <figcaption>Principais origens de alertas</figcaption>
+          <div id="grafico-origens"></div>
+        </figure>
+      </div>
+    </section>
+
+    <div id="vista-fila" class="corpo" hidden>
+      <section class="fila" aria-label="Fila de alertas">
+        <div class="abas" role="tablist">
+          <button type="button" role="tab" data-aba="riscos" aria-selected="true">Risco</button>
+          <button type="button" role="tab" data-aba="grupos" aria-selected="false">Alertas</button>
+        </div>
+        <ul id="lista" class="lista"></ul>
+      </section>
+      <section id="detalhe" class="detalhe" aria-live="polite"></section>
+    </div>
+  </div>
+
+  <div id="dica" class="dica" role="status" hidden></div>
+  <script type="module" src="/estatico/roar.js"></script>
+</body>
+</html>
