@@ -17,7 +17,7 @@ from roar_ingestao.regras import aplicar_regras_proprias, buscar_regras, sincron
 from roar_ingestao.sigma import sigma_da_regra_guiada  # noqa: E402
 from roar_ingestao.xml_proprio import trecho_da_regra  # noqa: E402
 from testar_ingestao import Ambiente, esperar_gerenciador  # noqa: E402
-from testar_sigma import regra_disparada  # noqa: E402
+from testar_sigma import regra_disparada, sysmon  # noqa: E402
 
 RESULTADOS = []
 SYSLOG = "/var/log/syslog"
@@ -61,11 +61,25 @@ def main():
         manual = criar("Manual de teste", "xml",
                        '<group name="teste,"><rule id="100001" level="10"><if_group>syslog</if_group>'
                        "<match>palavra-manual</match><description>Manual de teste</description></rule></group>")
+        windows = criar("Guiada de Windows", "guiada", sigma_da_regra_guiada(
+            "Guiada de Windows", "windows_processo", "high",
+            [{"campo": "Image", "operador": "termina", "valor": "\\roarteste.exe"},
+             {"campo": "CommandLine", "operador": "contem", "valor": "alfa"},
+             {"campo": "CommandLine", "operador": "contem", "valor": "beta"}]))
         ruim = criar("Regra ruim", "xml",
                      '<group name="teste,"><rule id="100002" level="10"><if_group>syslog</if_group>'
                      '<field name="x" type="pcre2">(</field><description>Regra ruim</description></rule></group>')
         aceitas = aplicar()
-        registrar("regras boas são instaladas", aceitas == 2 and estado(guiada)[0] == "ativa" and estado(manual)[0] == "ativa", f"{aceitas} aceitas")
+        registrar("regras boas são instaladas", aceitas == 3 and estado(guiada)[0] == "ativa" and estado(manual)[0] == "ativa"
+                  and estado(windows)[0] == "ativa", f"{aceitas} aceitas")
+
+        def processo(linha):
+            marca = f"marca{uuid.uuid4().hex}"
+            evento = sysmon("C:\\Temp\\roarteste.exe", "C:\\Windows\\explorer.exe", linha, marca=marca)
+            return regra_disparada(g, evento, marca)[0]
+
+        registrar("regra guiada de Windows dispara", "Guiada de Windows" in processo("roarteste alfa beta"))
+        registrar("com duas condições no campo, as duas precisam valer", "Guiada de Windows" not in processo("roarteste alfa"))
         registrar("regra ruim é recusada com motivo", estado(ruim)[0] == "recusada" and estado(ruim)[1], str(estado(ruim))[:200])
         registrar("regra ruim não derruba as outras nem o gerenciador", esperar_gerenciador(g, 60))
         ok, vistos = dispara("texto com palavra-guiada", "Guiada de teste")
@@ -94,7 +108,8 @@ def main():
         marca = f"marca{uuid.uuid4().hex}"
         linha = f"Nov  1 12:00:00 servidor sshd[7]: Failed password for invalid user {marca} from 203.0.113.9 port 4 ssh2"
         descricoes, _ = regra_disparada(g, linha, marca, local=SYSLOG)
-        registrar("original do Wazuh continua existindo ao lado da cópia", any("non-existent user" in d for d in descricoes) or "Personalizada de teste" in descricoes, str(descricoes))
+        # A cópia tem nível maior e passa à frente da original, que segue instalada para os outros casos.
+        registrar("cópia personalizada dispara no lugar da original", descricoes == ["Personalizada de teste"], str(descricoes))
 
         print("\n== Desativar", flush=True)
         amb.admin.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE id = %s", (manual,))

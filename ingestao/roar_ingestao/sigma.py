@@ -260,7 +260,7 @@ def sigma_da_regra_guiada(titulo, origem, nivel, condicoes, tecnicas=()):
         raise NaoConvertivel("severidade desconhecida")
     if not condicoes or len(condicoes) > 10:
         raise NaoConvertivel("informe de 1 a 10 condições")
-    selecao, palavras = {}, []
+    agrupadas, palavras = {}, []
     for c in condicoes:
         valor = str(c.get("valor", "")).strip()
         if not valor:
@@ -273,10 +273,10 @@ def sigma_da_regra_guiada(titulo, origem, nivel, condicoes, tecnicas=()):
             raise NaoConvertivel(f"campo {campo} não disponível para esta origem")
         if operador not in OPERADORES:
             raise NaoConvertivel(f"operador {operador} desconhecido")
-        chave = f"{campo}{OPERADORES[operador]}"
-        if chave in selecao:
-            raise NaoConvertivel(f"condição repetida em {campo}")
-        selecao[chave] = valor
+        agrupadas.setdefault(f"{campo}{OPERADORES[operador]}", []).append(valor)
+    # Todas as condições do formulário precisam valer: mais de um valor no campo vira "todos".
+    selecao = {(chave if len(valores) == 1 else f"{chave}|all"): (valores[0] if len(valores) == 1 else valores)
+               for chave, valores in agrupadas.items()}
     regra = {
         "title": str(titulo).strip()[:200] or "Regra sem título",
         "status": "experimental",

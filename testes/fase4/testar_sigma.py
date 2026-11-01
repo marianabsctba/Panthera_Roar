@@ -99,7 +99,9 @@ INJETOR = """
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 s.connect("/var/ossec/queue/sockets/queue")
-s.send(("1:" + sys.argv[1] + ":" + sys.stdin.read()).encode())
+# O agente Windows usa um prefixo próprio na fila; é ele que define o tipo do evento.
+prefixo = "f" if sys.argv[1] == "EventChannel" else "1"
+s.send((prefixo + ":" + sys.argv[1] + ":" + sys.stdin.read()).encode())
 """
 
 
@@ -107,7 +109,7 @@ CARGA = """
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 s.connect("/var/ossec/queue/sockets/queue")
-m = ("1:EventChannel:" + sys.argv[1]).encode()
+m = ("f:EventChannel:" + sys.argv[1]).encode()
 for _ in range(int(sys.argv[2])):
     s.send(m)
 """

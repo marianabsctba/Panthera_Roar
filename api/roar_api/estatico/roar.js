@@ -621,7 +621,8 @@ function desenharTabelaLogs() {
     destino.replaceChildren(el("p", "vazio", "Nenhum log encontrado."));
     return;
   }
-  const tabela = montarTabela(estado.colunasLog.map((c) => [rotuloDoCampo(c)]), estado.logs.map((item) => estado.colunasLog.map((c) => celulaDeCampo(item, c))));
+  const colunas = estado.colunasDaConsulta ?? estado.colunasLog;
+  const tabela = montarTabela(colunas.map((c) => [rotuloDoCampo(c)]), estado.logs.map((item) => colunas.map((c) => celulaDeCampo(item, c))));
   tabela.classList.add("tabela-logs");
   tabela.querySelectorAll("tbody tr").forEach((tr, i) => {
     tr.tabIndex = 0;
@@ -629,6 +630,44 @@ function desenharTabelaLogs() {
     tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter") abrirLog(estado.logs[i]); });
   });
   destino.replaceChildren(tabela);
+}
+
+// Resultado de "contar por": uma barra por valor, e clicar filtra por ele.
+function desenharContagem(dados) {
+  const { campo, linhas } = dados.contagem;
+  const total = Number(dados.total ?? 0).toLocaleString("pt-BR");
+  $("total-logs").textContent = campo ? `${total} logs, em ${linhas.length} valores de ${rotuloDoCampo(campo)}.` : `${total} logs.`;
+  $("linha-do-tempo").replaceChildren();
+  $("campos-logs").hidden = true;
+  $("mais-logs").hidden = true;
+  const destino = $("tabela-logs");
+  if (!campo) {
+    destino.replaceChildren();
+    return;
+  }
+  if (!linhas.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhum valor encontrado para este campo."));
+    return;
+  }
+  const maximo = Math.max(...linhas.map((l) => l.total), 1);
+  const lista = el("div", "barras");
+  linhas.forEach((l) => {
+    const linha = el("button", "barra");
+    linha.type = "button";
+    linha.title = `Filtrar por ${l.valor}`;
+    linha.style.cursor = "pointer";
+    const trilho = el("div", "barra-trilho");
+    const marca = el("span", "barra-marca");
+    marca.style.width = `calc(${(l.total / maximo) * 100}% - ${(l.total / maximo) * 60}px)`;
+    trilho.append(marca, el("span", "barra-valor", l.total.toLocaleString("pt-BR")));
+    linha.append(el("span", "barra-rotulo", String(l.valor)), trilho);
+    linha.addEventListener("click", () => {
+      $("busca-logs").value = $("busca-logs").value.split("|")[0].trim();
+      alternarFiltro(campo, l.valor);
+    });
+    lista.append(linha);
+  });
+  destino.replaceChildren(lista);
 }
 
 function abrirLog(item) {
@@ -691,14 +730,28 @@ async function carregarLogs(continuar = false) {
   });
   if (continuar && estado.proximoLog) consulta.set("depois_de", estado.proximoLog);
   desenharFiltrosLog();
+  $("erro-consulta").hidden = true;
   const r = await pedir(`/api/logs?${consulta}`);
   if (!r.ok) {
-    $("tabela-logs").replaceChildren(el("p", "vazio", "Não foi possível consultar os logs agora."));
+    const corpo = await r.json().catch(() => ({}));
+    if (r.status === 422 && typeof corpo.detail === "string") {
+      // Erro de escrita na consulta: mantém o resultado anterior na tela para a pessoa corrigir.
+      $("erro-consulta").textContent = corpo.detail;
+      $("erro-consulta").hidden = false;
+    } else {
+      $("tabela-logs").replaceChildren(el("p", "vazio", "Não foi possível consultar os logs agora."));
+    }
     return;
   }
   const dados = await r.json();
   estado.logs = continuar ? [...estado.logs, ...dados.logs] : dados.logs;
   estado.proximoLog = dados.proximo;
+  estado.colunasDaConsulta = dados.colunas?.length ? dados.colunas : null;
+  if (dados.contagem) {
+    desenharContagem(dados);
+    return;
+  }
+  $("campos-logs").hidden = false;
   if (!continuar) {
     const total = Number(dados.total ?? 0).toLocaleString("pt-BR");
     $("total-logs").textContent = `${dados.total_exato === false ? "Mais de " : ""}${total} logs, inclusive os que não viraram alerta. Clique numa linha para ver os campos. Cada busca fica registrada.`;

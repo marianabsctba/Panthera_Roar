@@ -133,8 +133,16 @@ def main():
             registrar("busca fica registrada", amb.um(
                 "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'buscar_logs' AND alvo = %s",
                 a["cliente"], marca_a) == 1)
-            registrar("sintaxe estranha na busca não quebra", http.get(
-                "/api/logs", params={"busca": '"((( AND :: * index:*'}).status_code == 200)
+            registrar("sintaxe estranha é recusada com explicação", http.get(
+                "/api/logs", params={"busca": '"((( AND :: * index:*'}).status_code == 422)
+            registrar("consulta não alcança o índice de outro cliente", http.get(
+                "/api/logs", params={"busca": f"_index=wazuh-archives-4.x-{b['id']}-x"}).status_code == 422)
+            registrar("consulta em português encontra", http.get(
+                "/api/logs", params={"busca": f'ativo={achados[0]["bruto"]["agent"]["name"]} E "{marca_a}"'}).json()["total"] >= 1)
+            contagem = http.get("/api/logs", params={"busca": f'"{marca_a}" | contar por ativo'}).json()["contagem"]
+            registrar("contar por campo funciona", contagem["linhas"] and contagem["linhas"][0]["total"] >= 1, str(contagem)[:120])
+            registrar("marca de B não aparece na consulta de A", http.get(
+                "/api/logs", params={"busca": f'"{marca_b}" | contar por ativo'}).json()["contagem"]["linhas"] == [])
             registrar("cursor inválido é recusado", http.get("/api/logs", params={"depois_de": "{]"}).status_code == 422
                       and http.get("/api/logs", params={"depois_de": '{"a":1}'}).status_code == 422)
             registrar("catálogo aparece na API", http.get("/api/regras").json()["catalogo"] == por_a)

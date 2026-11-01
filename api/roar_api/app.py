@@ -30,6 +30,7 @@ from requests.adapters import HTTPAdapter
 
 # O mesmo conversor que a instalação das regras usa.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
+from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
@@ -326,25 +327,32 @@ def _filtros_de_campo(texto):
 def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
     """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
     dias = max(1, min(dias, 90))
-    busca = busca.strip()[:200]
+    busca = busca.strip()
+    try:
+        pedido = linguagem_de_consulta.analisar(busca)
+    except linguagem_de_consulta.ConsultaInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
     condicoes, exclusoes = _filtros_de_campo(filtros)
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'buscar_logs', %s)",
-                    (sessao["cliente_id"], sessao["usuario_id"], (busca or "*") + (f" {filtros[:400]}" if filtros else "")))
+                    (sessao["cliente_id"], sessao["usuario_id"], (busca or "*")[:800] + (f" {filtros[:400]}" if filtros else "")))
     if not gerenciadores:
-        return {"logs": [], "proximo": None, "total": 0, "linha_do_tempo": [], "campos": {}}
+        return {"logs": [], "proximo": None, "total": 0, "linha_do_tempo": [], "campos": {}, "colunas": pedido.colunas, "contagem": None}
 
     condicoes.append({"range": {"timestamp": {"gte": f"now-{dias}d"}}})
-    if busca:
-        condicoes.append({"simple_query_string": {"query": busca, "fields": ["full_log"], "default_operator": "and", "lenient": True}})
+    condicoes.append(pedido.filtro)
+    ordem = [{pedido.ordem[0]: {"order": pedido.ordem[1], "unmapped_type": "keyword"}}] if pedido.ordem else []
+    tamanho = min(pedido.limite, TAMANHO_DA_PAGINA) if pedido.limite else TAMANHO_DA_PAGINA
     consulta = {
-        "size": TAMANHO_DA_PAGINA,
-        "sort": [{"timestamp": "desc"}, {"_id": "desc"}],
+        "size": 0 if pedido.contar else tamanho,
+        "sort": [*ordem, {"timestamp": "desc"}, {"_id": "desc"}],
         "query": {"bool": {"filter": condicoes, "must_not": exclusoes}},
         "track_total_hits": 100000,
     }
-    if not depois_de:
+    if pedido.contar_por:
+        consulta["aggs"] = {"contagem": {"terms": {"field": pedido.contar_por, "size": min(pedido.limite or 20, linguagem_de_consulta.LIMITE_DE_GRUPOS)}}}
+    elif not depois_de and not pedido.contar:
         # Contagens e linha do tempo só na primeira página: as seguintes pedem só mais linhas.
         consulta["aggs"] = {
             "linha_do_tempo": {"auto_date_histogram": {"field": "timestamp", "buckets": 48}},
@@ -362,14 +370,25 @@ def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: 
     indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
     resposta = request.app.state.indexer.post(f"{INDEXER_URL}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true",
                                               json=consulta, timeout=30)
+    if resposta.status_code == 400:
+        # Pedido bem formado que o tipo do campo não aceita, como contar por um texto longo.
+        raise HTTPException(status_code=422, detail="Este campo não aceita essa operação. Tente outro campo.")
     if not resposta.ok:
         raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.")
     corpo = resposta.json()
     achados = corpo["hits"]["hits"]
     agregados = corpo.get("aggregations", {})
+    contagem = None
+    if pedido.contar:
+        contagem = {"campo": pedido.contar_por,
+                    "linhas": [{"valor": b["key"], "total": b["doc_count"]} for b in agregados.get("contagem", {}).get("buckets", [])]}
+    # Só pagina quando a pessoa não pediu um limite: limite é o tamanho que ela quer ver.
+    tem_mais = len(achados) == TAMANHO_DA_PAGINA and not pedido.limite
     return {
         "logs": [{"id": h["_id"], "bruto": h["_source"]} for h in achados],
-        "proximo": json.dumps(achados[-1]["sort"]) if len(achados) == TAMANHO_DA_PAGINA else None,
+        "proximo": json.dumps(achados[-1]["sort"][-2:]) if tem_mais and not pedido.ordem else None,
+        "colunas": pedido.colunas,
+        "contagem": contagem,
         "total": corpo["hits"]["total"]["value"],
         "total_exato": corpo["hits"]["total"]["relation"] == "eq",
         "linha_do_tempo": [{"quando": b["key_as_string"], "total": b["doc_count"]}

@@ -114,7 +114,7 @@
 
     <section id="vista-logs" class="pagina" aria-label="Logs brutos" hidden>
       <form id="form-logs" class="filtros" role="search">
-        <input id="busca-logs" type="search" placeholder="Palavras no log, como sshd 203.0.113.5" aria-label="Buscar nos logs">
+        <input id="busca-logs" class="campo-consulta" type="search" spellcheck="false" placeholder="ativo=srv-rh E origem!=10.* | contar por usuario" aria-label="Consulta nos logs">
         <select id="dias-logs" aria-label="Período">
           <option value="1">Último dia</option>
           <option value="7" selected>7 dias</option>
@@ -123,6 +123,27 @@
         </select>
         <button type="submit" class="botao-primario">Buscar</button>
       </form>
+      <details class="ajuda-consulta">
+        <summary>Como escrever uma consulta</summary>
+        <div class="ajuda-corpo">
+          <p>Digite palavras para buscar no log, ou combine campos. Em português ou inglês.</p>
+          <dl class="chaves">
+            <dt>sshd falha</dt><dd>logs com as duas palavras</dd>
+            <dt>"falha de login"</dt><dd>a frase exata</dd>
+            <dt>ativo=srv-rh</dt><dd>igual a</dd>
+            <dt>origem!=10.*</dt><dd>diferente de, com * como curinga</dd>
+            <dt>usuario~mar</dt><dd>contém</dd>
+            <dt>nivel&gt;=10</dt><dd>maior ou igual; também &gt;, &lt; e &lt;=</dd>
+            <dt>a=1 E (b=2 OU NAO c=3)</dt><dd>E, OU, NAO e parênteses, ou AND, OR, NOT</dd>
+            <dt>| contar por usuario</dt><dd>quantos logs por valor; ou stats count by, top</dd>
+            <dt>| campos ativo, origem</dt><dd>quais colunas mostrar; ou fields</dd>
+            <dt>| ordenar -quando</dt><dd>ordem, com - para decrescente; ou sort</dd>
+            <dt>| limite 10</dt><dd>quantos resultados; ou head</dd>
+          </dl>
+          <p>Campos com nome simples: ativo, origem, destino, usuario, fonte, tipo, programa, protocolo, log, quando, regra e nivel. Qualquer outro campo vale pelo nome técnico, como data.win.system.eventID.</p>
+        </div>
+      </details>
+      <p id="erro-consulta" class="erro" role="alert" hidden></p>
       <div id="filtros-logs" class="filtros-ativos"></div>
       <div class="logs-resumo">
         <span id="total-logs" class="texto-secao"></span>

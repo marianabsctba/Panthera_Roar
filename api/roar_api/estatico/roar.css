@@ -244,6 +244,13 @@ th.numero-celula { text-align: right; }
 .amostra-2 { background: #8a1561; }
 .amostra-3 { background: #c7178a; }
 .amostra-sem { background: var(--fundo); border: 1px solid var(--painel-2); }
+.campo-consulta { font-family: var(--mono); font-size: .88rem; }
+.ajuda-consulta { margin-bottom: 8px; color: var(--texto-2); font-size: .85rem; }
+.ajuda-consulta summary { cursor: pointer; }
+.ajuda-corpo { display: grid; gap: 8px; margin-top: 6px; padding: 10px 12px; background: var(--painel); border: 1px solid var(--borda); border-radius: 8px; }
+.ajuda-corpo .chaves dt { color: var(--rosa-claro); font-family: var(--mono); }
+.ajuda-corpo .chaves dd { color: var(--texto-2); font-family: inherit; }
+#erro-consulta { margin-bottom: 8px; }
 .filtros-ativos { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .filtros-ativos:empty { display: none; }
 .filtro-ativo {
@@ -289,6 +296,8 @@ th.numero-celula { text-align: right; }
 .campos-do-log button { margin-left: 3px; }
 @media (max-width: 900px) {
   .logs-corpo { grid-template-columns: 1fr; }
+  /* Em tela estreita, a tabela vem antes da lista de campos. */
+  .logs-principal { order: -1; }
 }
 .titulo-com-acao { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
 .titulo-com-acao .titulo-secao { margin: 0; }
