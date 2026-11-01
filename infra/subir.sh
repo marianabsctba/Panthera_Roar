@@ -17,13 +17,19 @@ gerar() { head -c 1024 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-"$1"; }
 mkdir -p "$DESTINO"
 cp -r "$BASE/docker-compose.yml" "$BASE/temporal" "$DESTINO/"
 
-if [ ! -f "$DESTINO/.env" ]; then
-  sed -e "s|^POSTGRES_SENHA=.*|POSTGRES_SENHA=$(gerar 32)|" "$BASE/.env.exemplo" >"$DESTINO/.env"
-  chmod 600 "$DESTINO/.env"
-fi
+# Acrescenta só as chaves que faltam, para instalações existentes manterem as senhas.
+touch "$DESTINO/.env"
+chmod 600 "$DESTINO/.env"
+while IFS='=' read -r chave valor; do
+  case "$chave" in ''|\#*) continue ;; esac
+  grep -q "^$chave=" "$DESTINO/.env" && continue
+  [ "$valor" = "TROCAR" ] && valor="$(gerar 32)"
+  echo "$chave=$valor" >>"$DESTINO/.env"
+done <"$BASE/.env.exemplo"
 
-docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d --wait temporal
+docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d --wait temporal banco
 docker compose --project-directory "$DESTINO" --project-name panthera-roar up temporal-namespace --no-log-prefix
+bash "$BASE/migrar.sh" "$DESTINO/.env"
 
 sysctl -qw vm.max_map_count=262144 2>/dev/null || sudo sysctl -qw vm.max_map_count=262144
 
@@ -36,6 +42,10 @@ if [ ! -f "$WAZUH/config/wazuh_indexer_ssl_certs/root-ca.pem" ]; then
   docker compose --project-directory "$WAZUH" -f "$WAZUH/generate-indexer-certs.yml" run --rm generator
 fi
 docker compose --project-directory "$WAZUH" --project-name panthera-roar-wazuh up -d wazuh.indexer wazuh.manager
+for chave in INDEXER_USERNAME INDEXER_PASSWORD; do
+  grep -q "^WAZUH_$chave=" "$DESTINO/.env" \
+    || echo "WAZUH_$chave=$(grep -m1 "$chave=" "$WAZUH/docker-compose.yml" | cut -d= -f2-)" >>"$DESTINO/.env"
+done
 
 if [ ! -d "$DESTINO/apps/.git" ]; then
   rm -rf "$DESTINO/apps"
@@ -49,6 +59,6 @@ git -C "$DESTINO/apps" checkout -q FETCH_HEAD
 if [ ! -x "$DESTINO/venv/bin/python" ]; then
   python3 -m venv "$DESTINO/venv"
 fi
-"$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt"
+"$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/ingestao/requirements.txt"
 
 echo "Ambiente no ar."

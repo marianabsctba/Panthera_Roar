@@ -76,12 +76,37 @@ Pendências de segurança antes de qualquer dado real:
 
 - Os resultados ficam abertos no histórico do Temporal: cifrar por cliente, com codec de payload.
 - Configurar o autorizador do Temporal e TLS.
-- Trocar as senhas padrão do Wazuh e gerar outras por instalação.
+- Trocar as senhas padrão do Wazuh e gerar outras por instalação, com usuário só de leitura para a ingestão.
+- Exigir senha na inscrição de agentes: hoje qualquer máquina que alcance o gerenciador se inscreve, embora caia na quarentena.
+- Definir retenção de eventos e da quarentena, que hoje crescem sem limite e guardam dado pessoal.
 - A fila nunca pode vir da requisição: um fluxo posto na fila errada é processado pelo worker daquela fila, que vê o conteúdo mesmo sem executar a ação. A API deve derivar a fila do cliente autenticado.
 
 ### Fase 1: ingestão
 
-Evento normalizado, deduplicação e agregação por ativo, origem e dia, com o cliente em cada registro.
+Concluída, com a ressalva da decisão abaixo. `testes/fase1/testar_ingestao.py` comprova, com agentes Wazuh reais:
+
+- **Dono do alerta:** vem de um mapa nosso de `agent.id`, autenticado pelo gerenciador. Nome do agente e conteúdo do log nunca decidem. Agente sem dono e alerta inválido vão para a quarentena, de onde saem quando o agente é mapeado.
+- **Isolamento no banco:** RLS forçado em todas as tabelas de cliente. Sem cliente na transação, nada aparece. O papel da API só lê, e o da ingestão não altera o mapa nem grava em outro cliente.
+- **Grupos:** um por ativo, origem e dia (sem origem, também por regra), com a maior severidade já vista. Ruído não esconde o evento grave.
+- **Reprocessar não duplica:** cada ciclo relê 5 minutos para trás. Atraso maior que isso só entra com `--desde`.
+- **Alerta hostil não trava a fila:** caractere nulo, UTF-8 inválido, estrutura profunda e alerta gigante foram testados.
+- **Vazão:** cerca de 580 alertas por segundo, em um processo, gravando alerta por alerta. Serve para começar; lote em uma só instrução fica para quando o volume pedir.
+
+Limites do isolamento: o RLS protege contra consulta sem filtro, não contra SQL injection, porque quem executa SQL arbitrário pode definir outro cliente. O dado não está cifrado em repouso.
+
+#### Decisão aberta: gerenciador do Wazuh por cliente
+
+Um gerenciador compartilhado não isola a detecção. `testes/fase1/investigar_correlacao.py` mostra, com controle:
+
+| Situação | Resultado |
+|---|---|
+| B sozinho, 10 tentativas | Regra de força bruta dispara em B |
+| A dispara e, logo depois, B sofre 10 tentativas de outro IP | **Nada dispara em B** |
+| Mesmo IP, 5 tentativas em A e 5 em B | Não soma entre agentes |
+
+O silêncio de 60 segundos da regra (`ignore`) vale para o gerenciador inteiro. Quem ataca um cliente pode calar a detecção correlacionada de outro. Além disso, regras e decoders ficam iguais para todos os clientes.
+
+A recomendação é um gerenciador por cliente. A coluna `gerenciador` já existe no mapa de agentes, mas a ingestão ainda lê um só. O alternativo é manter um só e remover o `ignore` das regras, deixando a redução de ruído para os nossos grupos: custa menos memória, mas exige manter regras sobrepostas e não resolve o ajuste por cliente.
 
 ### Fase 2: UEBA
 

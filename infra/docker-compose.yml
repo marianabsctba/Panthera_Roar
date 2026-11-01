@@ -1,5 +1,26 @@
 # Portas só em 127.0.0.1. O servidor de fluxos ainda não tem autorizador configurado.
 services:
+  banco:
+    image: postgres:16
+    container_name: roar-banco
+    environment:
+      POSTGRES_USER: roar_admin
+      POSTGRES_PASSWORD: ${BANCO_SENHA}
+      POSTGRES_DB: roar
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - roar-banco:/var/lib/postgresql/data
+    networks:
+      - roar
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roar_admin -d roar"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
   postgresql:
     image: postgres:16
     container_name: roar-postgresql
@@ -77,6 +98,7 @@ services:
       - roar
 
 volumes:
+  roar-banco:
   roar-postgresql:
 
 networks:
