@@ -7,6 +7,7 @@ aceita cliente vindo do navegador, então um id de outro cliente simplesmente n�
 """
 
 import hashlib
+import json
 import os
 import secrets
 import time
@@ -14,6 +15,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
+import requests
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -22,7 +24,9 @@ from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
+from requests.adapters import HTTPAdapter
 
+INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
 ESTATICO = Path(__file__).parent / "estatico"
 COOKIE = "roar_sessao"
 HORAS_DE_SESSAO = 12
@@ -54,24 +58,39 @@ HASH_FICTICIO = hasher.hash(secrets.token_hex(16))
 falhas_de_login = defaultdict(list)
 
 
-def _url_do_banco():
-    url = os.getenv("ROAR_API_URL")
-    if url:
-        return url
+def _ler_env():
     valores = {}
     with open(os.getenv("ROAR_ENV", "/opt/panthera-roar/.env"), encoding="utf-8") as f:
         for linha in f:
             if "=" in linha and not linha.startswith("#"):
                 k, v = linha.strip().split("=", 1)
                 valores[k] = v
-    return (f"postgresql://roar_api:{valores['ROAR_API_SENHA']}@"
-            f"{os.getenv('ROAR_BANCO_ENDERECO', '127.0.0.1:5433')}/roar")
+    return valores
+
+
+class _NomeDoCertificado(HTTPAdapter):
+    """Conecta em 127.0.0.1 e valida o certificado do indexer pelo nome do serviço."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["assert_hostname"] = "wazuh.indexer"
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _sessao_do_indexer(valores):
+    sessao = requests.Session()
+    sessao.auth = ("roar_leitor", valores["ROAR_LEITOR_SENHA"])
+    sessao.verify = os.getenv("ROAR_INDEXER_CA", "/opt/panthera-roar/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem")
+    sessao.mount("https://", _NomeDoCertificado())
+    return sessao
 
 
 @asynccontextmanager
 async def ciclo_de_vida(app):
-    app.state.banco = ConnectionPool(_url_do_banco(), min_size=1, max_size=10, open=True,
-                                     kwargs={"row_factory": dict_row})
+    valores = _ler_env()
+    url = (f"postgresql://roar_api:{valores['ROAR_API_SENHA']}@"
+           f"{os.getenv('ROAR_BANCO_ENDERECO', '127.0.0.1:5433')}/roar")
+    app.state.banco = ConnectionPool(url, min_size=1, max_size=10, open=True, kwargs={"row_factory": dict_row})
+    app.state.indexer = _sessao_do_indexer(valores)
     yield
     app.state.banco.close()
 
@@ -87,8 +106,8 @@ async def cabecalhos(request: Request, chamada):
         return Response(status_code=403)
     resposta = await chamada(request)
     resposta.headers.update(SEGURANCA)
-    if request.url.path.startswith("/api/"):
-        resposta.headers["Cache-Control"] = "no-store"
+    # Dado de alerta nunca fica guardado; a tela sempre confere se há versão nova.
+    resposta.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
     return resposta
 
 
@@ -271,6 +290,126 @@ def evento_bruto(identificador: int, request: Request, sessao=Depends(sessao_atu
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ver_bruto', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
     return linha
+
+
+@app.get("/api/logs")
+def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 7, depois_de: str = ""):
+    """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
+    dias = max(1, min(dias, 90))
+    busca = busca.strip()[:200]
+    with do_cliente(request, sessao) as con:
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'buscar_logs', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], busca or "*"))
+    if not gerenciadores:
+        return {"logs": [], "proximo": None}
+
+    filtros = [{"range": {"timestamp": {"gte": f"now-{dias}d"}}}]
+    if busca:
+        filtros.append({"simple_query_string": {"query": busca, "fields": ["full_log"], "default_operator": "and", "lenient": True}})
+    consulta = {
+        "size": TAMANHO_DA_PAGINA,
+        "sort": [{"timestamp": "desc"}, {"_id": "desc"}],
+        "query": {"bool": {"filter": filtros}},
+        "track_total_hits": False,
+    }
+    if depois_de:
+        try:
+            cursor = json.loads(depois_de)
+        except ValueError:
+            raise HTTPException(status_code=422)
+        if not (isinstance(cursor, list) and len(cursor) == 2 and all(isinstance(c, (int, str)) for c in cursor)):
+            raise HTTPException(status_code=422)
+        consulta["search_after"] = cursor
+    # O índice vem do banco, sob o RLS do cliente da sessão, nunca da requisição.
+    indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
+    resposta = request.app.state.indexer.post(f"{INDEXER_URL}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true",
+                                              json=consulta, timeout=30)
+    if not resposta.ok:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.")
+    achados = resposta.json()["hits"]["hits"]
+    return {"logs": [{"id": h["_id"], "bruto": h["_source"]} for h in achados],
+            "proximo": json.dumps(achados[-1]["sort"]) if len(achados) == TAMANHO_DA_PAGINA else None}
+
+
+@app.get("/api/ativos")
+def ativos(request: Request, sessao=Depends(sessao_atual)):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            """SELECT a.agente_id, a.nome, a.ip, a.sistema, a.versao, a.estado, a.grupos, a.ultima_conexao, a.sca_politica,
+                      a.sca_nota, a.sca_aprovados, a.sca_reprovados,
+                      (SELECT count(*) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id
+                        AND e.nivel >= %s AND e.ocorrido_em >= now() - interval '7 days') AS alertas_7_dias
+               FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (NIVEL_MINIMO_NA_FILA,)).fetchall()
+    return {"ativos": linhas}
+
+
+@app.get("/api/mitre")
+def mitre(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+    """Técnicas de ataque observadas no período e as defesas do MITRE D3FEND para cada uma."""
+    dias = max(1, min(dias, 90))
+    with do_cliente(request, sessao) as con:
+        tecnicas = con.execute(
+            """SELECT t.tecnica, count(*) AS total, max(e.ocorrido_em) AS ultimo,
+                      max(e.bruto #>> '{rule,mitre,technique,0}') AS nome,
+                      max(e.bruto #>> '{rule,mitre,tactic,0}') AS tatica
+               FROM eventos e, unnest(e.mitre) AS t(tecnica)
+               WHERE e.ocorrido_em >= now() - make_interval(days => %s)
+               GROUP BY t.tecnica ORDER BY total DESC LIMIT 100""", (dias,)).fetchall()
+        lista = [t["tecnica"] for t in tecnicas]
+        # Subtécnica sem mapeamento próprio herda as defesas da técnica mãe.
+        defesas = con.execute(
+            """SELECT tecnica, defesa_id, defesa_nome, tatica_defesa FROM tecnicas_defesa
+               WHERE tecnica = ANY(%s) ORDER BY tatica_defesa, defesa_nome""",
+            (lista + [t.split(".")[0] for t in lista],)).fetchall()
+    por_tecnica = defaultdict(list)
+    for d in defesas:
+        por_tecnica[d["tecnica"]].append({k: d[k] for k in ("defesa_id", "defesa_nome", "tatica_defesa")})
+    for t in tecnicas:
+        t["defesas"] = por_tecnica.get(t["tecnica"]) or por_tecnica.get(t["tecnica"].split(".")[0]) or []
+    return {"tecnicas": tecnicas}
+
+
+NORMAS_CONHECIDAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+
+
+@app.get("/api/normas")
+def normas(request: Request, sessao=Depends(sessao_atual), norma: str = "gdpr", dias: int = 30):
+    """Alertas por controle da norma, como o Wazuh já os marca em cada regra."""
+    if norma not in NORMAS_CONHECIDAS:
+        raise HTTPException(status_code=422)
+    dias = max(1, min(dias, 90))
+    with do_cliente(request, sessao) as con:
+        controles = con.execute(
+            """SELECT c.controle, count(*) AS total, max(e.nivel) AS nivel, max(e.ocorrido_em) AS ultimo,
+                      count(DISTINCT e.agente_id) AS ativos
+               FROM eventos e, jsonb_array_elements_text(
+                      CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(n)s) = 'array' THEN e.bruto -> 'rule' -> %(n)s ELSE '[]' END
+                    ) AS c(controle)
+               WHERE e.ocorrido_em >= now() - make_interval(days => %(d)s)
+               GROUP BY c.controle ORDER BY total DESC LIMIT 200""", {"n": norma, "d": dias}).fetchall()
+        regras_da_norma = con.execute("SELECT count(*) AS total FROM regras WHERE normas ? %s", (norma,)).fetchone()["total"]
+    return {"norma": norma, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma}
+
+
+@app.get("/api/arquivos")
+def arquivos(request: Request, sessao=Depends(sessao_atual), dias: int = 30, busca: str = ""):
+    """Mudanças em arquivos monitorados."""
+    dias = max(1, min(dias, 90))
+    condicao, parametros = "", [dias]
+    busca = busca.strip()[:200]
+    if busca:
+        condicao = "AND (bruto #>> '{syscheck,path}' ILIKE %s OR agente_nome ILIKE %s)"
+        termo = f"%{_sem_curinga(busca)}%"
+        parametros += [termo, termo]
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""SELECT id, ocorrido_em, severidade, agente_nome AS ativo, regra_descricao,
+                       bruto #>> '{{syscheck,path}}' AS caminho, bruto #>> '{{syscheck,event}}' AS mudanca,
+                       bruto #>> '{{syscheck,sha256_after}}' AS sha256, bruto #>> '{{syscheck,uname_after}}' AS dono
+                FROM eventos WHERE 'syscheck' = ANY(regra_grupos) AND ocorrido_em >= now() - make_interval(days => %s) {condicao}
+                ORDER BY id DESC LIMIT %s""", (*parametros, TAMANHO_DA_PAGINA)).fetchall()
+    return {"arquivos": linhas}
 
 
 @app.get("/api/regras")

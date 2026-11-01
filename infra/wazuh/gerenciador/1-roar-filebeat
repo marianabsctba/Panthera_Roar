@@ -1,5 +1,5 @@
 #!/usr/bin/with-contenv bash
-# Roda depois de 1-config-filebeat. O gerenciador grava só no índice do cliente e não
+# Roda depois de 1-config-filebeat. O gerenciador grava só nos índices do cliente e não
 # carrega modelo de índice: isso é feito uma vez, com a credencial de administrador.
 set -e
 
@@ -8,5 +8,10 @@ ARQUIVO=/etc/filebeat/filebeat.yml
 sed -i '/^setup\.template/d' "$ARQUIVO"
 echo 'setup.template.enabled: false' >>"$ARQUIVO"
 
+# Liga o envio dos logs que não viraram alerta.
+sed -i '/^    archives:/{n;s/enabled: false/enabled: true/}' "$ARQUIVO"
+
+# Refeito a cada início: remove o que uma execução anterior tenha escrito.
 sed -i '/^  index: /d' "$ARQUIVO"
-sed -i "s|^output.elasticsearch:|output.elasticsearch:\n  index: '${ROAR_INDICE}%{+yyyy.MM.dd}'|" "$ARQUIVO"
+sed -i '/^  indices:/,+2d' "$ARQUIVO"
+sed -i "s|^output.elasticsearch:|output.elasticsearch:\n  index: '${ROAR_INDICE}%{+yyyy.MM.dd}'\n  indices:\n    - index: '${ROAR_INDICE_BRUTO}%{+yyyy.MM.dd}'\n      when.contains: {log.file.path: archives}|" "$ARQUIVO"

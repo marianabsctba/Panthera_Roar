@@ -135,9 +135,9 @@ td.ip { white-space: nowrap; overflow-wrap: normal; }
 .fato span { display: block; color: var(--texto-2); font-size: .8rem; }
 .fato b { font-weight: 600; overflow-wrap: anywhere; }
 
-.navegacao { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--borda); }
+.navegacao { display: flex; gap: 4px; padding: 8px 16px 0; overflow-x: auto; border-bottom: 1px solid var(--borda); }
 .navegacao button {
-  padding: 8px 16px; color: var(--texto-2); cursor: pointer;
+  flex: none; padding: 8px 14px; color: var(--texto-2); cursor: pointer;
   background: none; border: 0; border-bottom: 2px solid transparent;
 }
 .navegacao button[aria-current="page"] { color: var(--texto); border-bottom-color: var(--rosa); font-weight: 600; }
@@ -221,8 +221,19 @@ td.ip { white-space: nowrap; overflow-wrap: normal; }
 td.numero-celula { font-variant-numeric: tabular-nums; text-align: right; }
 th.numero-celula { text-align: right; }
 .botao-tabela { padding: 3px 10px; font-size: .8rem; white-space: nowrap; }
-#mais-eventos, #mais-regras { display: block; margin: 12px auto 0; }
+#mais-eventos, #mais-regras, #mais-logs { display: block; margin: 12px auto 0; }
 
+.ataques { display: grid; gap: 8px; }
+.ataque { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; }
+.ataque summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 12px; cursor: pointer; }
+.ataque-id { font-family: var(--mono); font-size: .85rem; color: var(--rosa-claro); }
+.ataque-nome { flex: 1 1 200px; font-weight: 600; }
+.ataque-conta { color: var(--texto-2); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.defesas { padding: 0 12px 12px; }
+.defesas h4 { margin: 8px 0 4px; color: var(--texto-2); font-size: .82rem; font-weight: 500; }
+.nota { display: inline-flex; align-items: center; gap: 8px; }
+.nota-barra { width: 60px; height: 6px; background: var(--painel-2); border-radius: 3px; overflow: hidden; }
+.nota-barra span { display: block; height: 100%; background: var(--rosa); }
 .janela {
   width: min(860px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 16px; color: var(--texto);
   background: var(--painel); border: 1px solid var(--borda); border-radius: 12px;

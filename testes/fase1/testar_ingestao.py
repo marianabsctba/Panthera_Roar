@@ -122,8 +122,8 @@ def api_do(g, metodo, rota, **kwargs):
     token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", g["senha_api"]),
                           verify=False, timeout=30)
     token.raise_for_status()
-    r = requests.request(metodo, base + rota, verify=False, timeout=30,
-                         headers={"Authorization": f"Bearer {token.text}"}, **kwargs)
+    cabecalhos = {"Authorization": f"Bearer {token.text}", **kwargs.pop("headers", {})}
+    r = requests.request(metodo, base + rota, verify=False, timeout=120, headers=cabecalhos, **kwargs)
     r.raise_for_status()
     return r.json()
 

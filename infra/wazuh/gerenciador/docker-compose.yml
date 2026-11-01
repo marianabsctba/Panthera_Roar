@@ -27,6 +27,7 @@ services:
       - API_USERNAME=roar
       - API_PASSWORD=${API_SENHA}
       - ROAR_INDICE=${INDICE}
+      - ROAR_INDICE_BRUTO=${INDICE_BRUTO}
     volumes:
       - api:/var/ossec/api/configuration
       - etc:/var/ossec/etc

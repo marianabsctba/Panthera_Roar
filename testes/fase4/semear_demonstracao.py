@@ -6,6 +6,7 @@
 O acesso gerado fica em /opt/panthera-roar/demonstracao.txt, só para root.
 """
 
+import json
 import os
 import random
 import secrets
@@ -15,6 +16,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
+import requests
+import urllib3
 from argon2 import PasswordHasher
 from psycopg.types.json import Jsonb
 
@@ -34,13 +37,32 @@ NOME = "Demonstração"
 SUCESSO, FALHA, SUDO = ["authentication_success"], ["authentication_failed"], ["sudo"]
 PESSOAS = ["maria.silva", "joao.souza", "ana.lima", "pedro.alves", "carla.dias", "rafael.nunes", "beatriz.rocha", "lucas.melo"]
 SERVIDORES = {"001": "srv-financeiro", "002": "srv-rh", "003": "srv-arquivos", "004": "srv-dominio"}
+# Marcações como as regras reais do Wazuh trazem: técnica, tática e normas.
+MARCAS = {
+    "5760": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},
+             "gdpr": ["IV_35.7.d", "IV_32.2"], "pci_dss": ["10.2.4", "10.2.5"], "hipaa": ["164.312.b"], "nist_800_53": ["AU.14", "AC.7"], "tsc": ["CC6.1", "CC7.2"]},
+    "5710": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},
+             "gdpr": ["IV_35.7.d", "IV_32.2"], "pci_dss": ["10.2.4", "10.6.1"], "nist_800_53": ["AU.14", "AC.7"], "tsc": ["CC6.1"]},
+    "40111": {"mitre": {"id": ["T1110"], "technique": ["Brute Force"], "tactic": ["Credential Access"]},
+              "gdpr": ["IV_35.7.d", "IV_32.2"], "pci_dss": ["10.2.4", "11.4"], "hipaa": ["164.312.b"], "nist_800_53": ["SI.4", "AC.7"], "tsc": ["CC7.2"]},
+    "5402": {"mitre": {"id": ["T1548.003"], "technique": ["Sudo and Sudo Caching"], "tactic": ["Privilege Escalation", "Defense Evasion"]},
+             "gdpr": ["IV_32.2"], "pci_dss": ["10.2.5", "10.2.2"], "nist_800_53": ["AU.14", "AC.6"], "tsc": ["CC6.8"]},
+    "100002": {"mitre": {"id": ["T1486"], "technique": ["Data Encrypted for Impact"], "tactic": ["Impact"]},
+               "gdpr": ["IV_32.2", "IV_35.7.d"], "pci_dss": ["11.4"], "hipaa": ["164.308.a.1"], "nist_800_53": ["SI.4"], "tsc": ["CC7.3"]},
+    "550": {"mitre": {"id": ["T1565.001"], "technique": ["Stored Data Manipulation"], "tactic": ["Impact"]},
+            "gdpr": ["II_5.1.f"], "pci_dss": ["11.5"], "hipaa": ["164.312.c.1"], "nist_800_53": ["SI.7"], "tsc": ["PI1.4"]},
+    "31151": {"mitre": {"id": ["T1190"], "technique": ["Exploit Public-Facing Application"], "tactic": ["Initial Access"]},
+              "pci_dss": ["6.5", "11.4"], "nist_800_53": ["SA.11", "SI.4"], "tsc": ["CC6.6"]},
+}
+ARQUIVOS = ["/etc/passwd", "/etc/sudoers", "/etc/ssh/sshd_config", "C:\\Windows\\System32\\drivers\\etc\\hosts",
+            "/var/www/html/index.php", "/usr/local/bin/backup.sh"]
 
 
 def main():
     r = random.Random(7)
     antigo = ADMIN.execute("SELECT id FROM clientes WHERE nome = %s", (NOME,)).fetchone()
     if antigo:
-        for tabela in ("auditoria", "regras", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades",
+        for tabela in ("ativos", "auditoria", "regras", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades",
                        "ueba_cursor", "eventos", "grupos_alerta", "gerenciadores", "usuarios"):
             ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", antigo)
         ADMIN.execute("DELETE FROM clientes WHERE id = %s", antigo)
@@ -48,7 +70,9 @@ def main():
     cliente = ADMIN.execute("INSERT INTO clientes (nome) VALUES (%s) RETURNING id", (NOME,)).fetchone()[0]
     ger = "demonstracao"
     ADMIN.execute("INSERT INTO gerenciadores (id, cliente_id, porta_base) VALUES (%s, %s, 65000)", (ger, cliente))
-    senha = secrets.token_urlsafe(16)
+    # Recriar a demonstração não muda o acesso de quem já está usando.
+    arquivo = Path("/opt/panthera-roar/demonstracao.txt")
+    senha = arquivo.read_text().splitlines()[1] if arquivo.exists() else secrets.token_urlsafe(16)
     email = "demonstracao@exemplo.test"
     ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
                   (cliente, email, PasswordHasher().hash(senha)))
@@ -71,14 +95,17 @@ def main():
              quando, quando)).fetchone()[0]
         ADMIN.execute(
             """INSERT INTO eventos (cliente_id, grupo_id, gerenciador_id, origem, origem_id, ocorrido_em, nivel, severidade,
-                 regra_id, regra_descricao, regra_grupos, agente_id, agente_nome, ip_origem, usuario, bruto)
-               VALUES (%s, %s, %s, 'wazuh', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (cliente, grupo, ger, f"d{n[0]}", quando, nivel, severidade, regra, descricao, grupos, agente,
+                 regra_id, regra_descricao, regra_grupos, mitre, agente_id, agente_nome, ip_origem, usuario, bruto)
+               VALUES (%s, %s, %s, 'wazuh', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (cliente, grupo, ger, f"d{n[0]}", quando, nivel, severidade, regra, descricao, grupos,
+             MARCAS.get(regra, {}).get("mitre", {}).get("id", []), agente,
              SERVIDORES[agente], ip, usuario, Jsonb({
                  "timestamp": quando.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
                  "agent": {"id": agente, "name": SERVIDORES[agente]},
                  "manager": {"name": f"gerenciador-{ger}"},
-                 "rule": {"id": regra, "level": nivel, "description": descricao, "groups": grupos},
+                 "rule": {"id": regra, "level": nivel, "description": descricao, "groups": grupos, **MARCAS.get(regra, {})},
+                 **({"syscheck": {"path": r.choice(ARQUIVOS), "event": r.choice(["modified", "modified", "added", "deleted"]),
+                                  "uname_after": "root", "sha256_after": f"{r.getrandbits(256):064x}"}} if regra == "550" else {}),
                  "decoder": {"name": "sshd"},
                  "location": "/var/log/auth.log",
                  "full_log": f"{quando:%b %d %H:%M:%S} {SERVIDORES[agente]} sshd[2231]: {descricao} {usuario or ''} from {ip} port 52114 ssh2",
@@ -112,7 +139,7 @@ def main():
             regra, descricao, nivel = r.choices(comuns, weights=(8, 4, 3, 2, 1))[0]
             quando = dia.replace(hour=r.randint(0, 23), minute=r.randint(0, 59)).astimezone(timezone.utc)
             if quando < agora:
-                ev(quando, None, ["syscheck"], r.choice(list(SERVIDORES)), r.choice(externos), regra, descricao, nivel=nivel)
+                ev(quando, None, ["syscheck"] if regra == "550" else ["alertas"], r.choice(list(SERVIDORES)), r.choice(externos), regra, descricao, nivel=nivel)
     # Um dia ruim, para o gráfico mostrar o que chama atenção.
     pico = (hoje - timedelta(days=6)).replace(hour=14).astimezone(timezone.utc)
     for i in range(35):
@@ -150,12 +177,68 @@ def main():
             (cliente, ger, regra, nivel, descricao, ["authentication_failed"] if regra in tecnicas else ["syslog"],
              tecnicas.get(regra, [])))
 
+    # Ativos como a sincronização com o gerenciador real traz.
+    agora_ativo = datetime.now(timezone.utc)
+    for agente, (sistema, estado_ativo, nota, ip) in {
+        "001": ("Ubuntu 22.04", "active", 78, "10.10.0.21"), "002": ("Ubuntu 24.04", "active", 64, "10.10.0.22"),
+        "003": ("Debian 12", "active", 52, "10.10.0.23"), "004": ("Windows Server 2022", "disconnected", 41, "10.10.0.10"),
+    }.items():
+        ADMIN.execute(
+            """INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, ip, sistema, versao, estado, grupos, ultima_conexao,
+                 sca_politica, sca_nota, sca_aprovados, sca_reprovados)
+               VALUES (%s, %s, %s, %s, %s, %s, 'v4.14.9', %s, '{default}', %s, 'CIS Benchmark', %s, %s, %s)""",
+            (cliente, ger, agente, SERVIDORES[agente], ip, sistema, estado_ativo,
+             agora_ativo - timedelta(minutes=1 if estado_ativo == "active" else 300), nota, nota * 2, (100 - nota) * 2))
+
+    # Defesas reais do MITRE D3FEND para as técnicas da demonstração.
+    tecnicas = sorted({t for m in MARCAS.values() for t in m["mitre"]["id"]} | {t.split(".")[0] for m in MARCAS.values() for t in m["mitre"]["id"]})
+    for tecnica in tecnicas:
+        try:
+            resposta = requests.get(f"https://d3fend.mitre.org/api/offensive-technique/attack/{tecnica}.json", timeout=30)
+            ligacoes = resposta.json().get("off_to_def", {}).get("results", {}).get("bindings", []) if resposta.ok else []
+        except (requests.RequestException, ValueError):
+            ligacoes = []
+        for b in ligacoes:
+            if "def_tech_id" in b and "def_tech_label" in b:
+                ADMIN.execute(
+                    "INSERT INTO tecnicas_defesa (tecnica, defesa_id, defesa_nome, tatica_defesa) VALUES (%s, %s, %s, %s)"
+                    " ON CONFLICT (tecnica, defesa_id) DO NOTHING",
+                    (tecnica, b["def_tech_id"]["value"], b["def_tech_label"]["value"], b.get("def_tactic_label", {}).get("value")))
+
+    # Logs brutos, inclusive os que não viraram alerta, no índice do cliente.
+    indexer = requests.Session()
+    indexer.auth = (ENV["WAZUH_INDEXER_USERNAME"], ENV["WAZUH_INDEXER_PASSWORD"])
+    indexer.verify = False
+    urllib3.disable_warnings()
+    indice = f"wazuh-archives-4.x-{ger}-demonstracao"
+    indexer.delete(f"https://127.0.0.1:9200/{indice}", timeout=30)
+    modelos = [
+        ("sshd[{p}]: Accepted publickey for {u} from 10.10.0.{o} port 5{o}12 ssh2", "/var/log/auth.log"),
+        ("CRON[{p}]: pam_unix(cron:session): session opened for user root", "/var/log/auth.log"),
+        ("nginx[{p}]: 10.10.0.{o} GET /index.php HTTP/1.1 200 5120", "/var/log/nginx/access.log"),
+        ("systemd[1]: Started Daily apt download activities.", "journald"),
+        ("kernel: [UFW BLOCK] IN=eth0 SRC=198.51.100.{o} DST=10.10.0.21 PROTO=TCP DPT=445", "/var/log/kern.log"),
+    ]
+    linhas = []
+    for i in range(400):
+        quando = agora - timedelta(minutes=i * 11)
+        modelo, origem = r.choice(modelos)
+        agente = r.choice(list(SERVIDORES))
+        texto = modelo.format(p=r.randint(1000, 9000), u=r.choice(PESSOAS), o=r.randint(2, 200))
+        linhas.append(json.dumps({"index": {"_index": indice}}))
+        linhas.append(json.dumps({
+            "timestamp": quando.strftime("%Y-%m-%dT%H:%M:%S.000+0000"), "id": f"demo-{i}", "location": origem,
+            "agent": {"id": agente, "name": SERVIDORES[agente]}, "manager": {"name": f"gerenciador-{ger}"},
+            "full_log": f"{quando:%b %d %H:%M:%S} {SERVIDORES[agente]} {texto}",
+        }))
+    indexer.post("https://127.0.0.1:9200/_bulk?refresh=true", data="\n".join(linhas) + "\n",
+                 headers={"Content-Type": "application/x-ndjson"}, timeout=120).raise_for_status()
+
     motor = Motor(f"postgresql://roar_ueba:{ENV['ROAR_UEBA_SENHA']}@127.0.0.1:5433/roar", Parametros(atraso_segundos=0))
     while motor.processar_cliente(cliente, "America/Sao_Paulo") == motor.p.lote:
         pass
     motor.fechar()
 
-    arquivo = Path("/opt/panthera-roar/demonstracao.txt")
     arquivo.write_text(f"{email}\n{senha}\n")
     os.chmod(arquivo, 0o600)
     total = ADMIN.execute("SELECT count(*) FROM alertas_risco WHERE cliente_id = %s", (cliente,)).fetchone()[0]

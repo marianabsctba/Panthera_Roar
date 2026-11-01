@@ -89,7 +89,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("ativos", "auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -197,6 +197,31 @@ def main():
         sys.path.insert(0, str(RAIZ / "ueba"))
         from roar_ueba.motor import PESOS
         registrar("pesos da tela iguais aos do motor", {r["tipo"]: r["peso"] for r in catalogo["comportamento"]} == PESOS)
+
+        print("\n== Ativos, ataque e defesa, normas e arquivos", flush=True)
+        for cliente, agente, nome in ((a, "001", "servidor-a"), (b, "001", "servidor-b")):
+            ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, estado, sca_nota) VALUES (%s, %s, %s, %s, 'active', 70)",
+                          (cliente["id"], cliente["ger"], agente, nome))
+        registrar("ativos só do cliente", [x["nome"] for x in http.get("/api/ativos").json()["ativos"]] == ["servidor-a"])
+        ADMIN.execute("UPDATE eventos SET mitre = '{T1110.001}', regra_grupos = '{syscheck}', bruto = bruto || %s WHERE cliente_id = %s",
+                      (Jsonb({"rule": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},
+                                       "gdpr": ["IV_32.2"], "pci_dss": "nao-e-lista"},
+                              "syscheck": {"path": "/etc/passwd", "event": "modified"}}), a["id"]))
+        ADMIN.execute("UPDATE eventos SET mitre = '{T9999}', bruto = bruto || %s WHERE cliente_id = %s",
+                      (Jsonb({"rule": {"gdpr": ["SEGREDO_B"]}}), b["id"]))
+        ADMIN.execute("INSERT INTO tecnicas_defesa (tecnica, defesa_id, defesa_nome, tatica_defesa) VALUES"
+                      " ('T1110', 'D3-TESTE', 'Defesa de teste', 'Harden') ON CONFLICT DO NOTHING")
+        tecnicas = http.get("/api/mitre").json()["tecnicas"]
+        registrar("técnica observada só do cliente", [t["tecnica"] for t in tecnicas] == ["T1110.001"])
+        registrar("subtécnica herda a defesa D3FEND da técnica mãe", tecnicas[0]["defesas"][0]["defesa_id"] == "D3-TESTE"
+                  if tecnicas and tecnicas[0]["defesas"] else False)
+        ADMIN.execute("DELETE FROM tecnicas_defesa WHERE defesa_id = 'D3-TESTE'")
+        registrar("nome e tática vêm do alerta", tecnicas[0]["nome"] == "Password Guessing" and tecnicas[0]["tatica"] == "Credential Access")
+        registrar("controle da norma só do cliente", [c["controle"] for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]] == ["IV_32.2"])
+        registrar("campo de norma fora do formato não quebra", http.get("/api/normas", params={"norma": "pci_dss"}).json()["controles"] == [])
+        registrar("norma desconhecida é recusada", http.get("/api/normas", params={"norma": "'; DROP TABLE eventos; --"}).status_code == 422)
+        registrar("mudança em arquivo aparece", http.get("/api/arquivos").json()["arquivos"][0]["caminho"] == "/etc/passwd")
+        registrar("busca de arquivo funciona", http.get("/api/arquivos", params={"busca": "nao-existe"}).json()["arquivos"] == [])
 
         print("\n== Entradas e saídas", flush=True)
         registrar("id gigante não vira erro", http.get(f"/api/riscos/{2**70}").status_code == 404)

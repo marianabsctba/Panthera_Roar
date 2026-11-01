@@ -11,6 +11,7 @@ CREATE TABLE regras (
   mitre text[] NOT NULL DEFAULT '{}',
   arquivo text,
   ativa boolean NOT NULL DEFAULT true,
+  normas jsonb NOT NULL DEFAULT '{}',
   atualizado_em timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (gerenciador_id, regra_id)
 );

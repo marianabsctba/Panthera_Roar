@@ -43,6 +43,11 @@
       <button type="button" data-vista="panorama" aria-current="page">Panorama</button>
       <button type="button" data-vista="fila">Fila</button>
       <button type="button" data-vista="eventos">Eventos</button>
+      <button type="button" data-vista="logs">Logs brutos</button>
+      <button type="button" data-vista="ataques">Ataque e defesa</button>
+      <button type="button" data-vista="ativos">Ativos</button>
+      <button type="button" data-vista="arquivos">Arquivos</button>
+      <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
     </nav>
 
@@ -105,6 +110,47 @@
       </form>
       <div id="tabela-eventos" class="tabela-rolagem"></div>
       <button id="mais-eventos" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
+
+    <section id="vista-logs" class="pagina" aria-label="Logs brutos" hidden>
+      <p class="texto-secao">Tudo o que os ativos enviaram, inclusive o que não virou alerta. Cada busca fica registrada.</p>
+      <form id="form-logs" class="filtros" role="search">
+        <input id="busca-logs" type="search" placeholder="Palavras no log, como sshd 203.0.113.5" aria-label="Buscar nos logs">
+        <select id="dias-logs" aria-label="Período">
+          <option value="1">Último dia</option>
+          <option value="7" selected>7 dias</option>
+          <option value="30">30 dias</option>
+          <option value="90">90 dias</option>
+        </select>
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-logs" class="tabela-rolagem"></div>
+      <button id="mais-logs" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
+
+    <section id="vista-ataques" class="pagina" aria-label="Ataque e defesa" hidden>
+      <p class="texto-secao">O que foi observado nos últimos 30 dias, pela matriz MITRE ATT&amp;CK, e como se defender de cada técnica, pelo MITRE D3FEND.</p>
+      <div id="lista-ataques" class="ataques"></div>
+    </section>
+
+    <section id="vista-ativos" class="pagina" aria-label="Ativos" hidden>
+      <div id="resumo-ativos" class="legenda"></div>
+      <div id="tabela-ativos" class="tabela-rolagem"></div>
+    </section>
+
+    <section id="vista-arquivos" class="pagina" aria-label="Arquivos" hidden>
+      <p class="texto-secao">Arquivos monitorados que foram criados, alterados ou apagados.</p>
+      <form id="form-arquivos" class="filtros" role="search">
+        <input id="busca-arquivos" type="search" placeholder="Caminho do arquivo ou ativo" aria-label="Buscar arquivos">
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-arquivos" class="tabela-rolagem"></div>
+    </section>
+
+    <section id="vista-normas" class="pagina" aria-label="Normas" hidden>
+      <div id="escolha-norma" class="periodo" role="group" aria-label="Norma"></div>
+      <p id="resumo-norma" class="texto-secao"></p>
+      <div id="tabela-normas" class="tabela-rolagem"></div>
     </section>
 
     <section id="vista-regras" class="pagina" aria-label="Regras" hidden>

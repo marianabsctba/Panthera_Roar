@@ -43,6 +43,11 @@ const SINAIS = {
   },
 };
 
+const TATICAS_DE_DEFESA = {
+  Model: "Conhecer", Harden: "Fortalecer", Detect: "Detectar", Isolate: "Isolar",
+  Deceive: "Enganar", Evict: "Expulsar", Restore: "Restaurar",
+};
+
 const DESCRICAO_COMPORTAMENTO = {
   sucesso_apos_falhas: "Acesso depois de 5 falhas ou mais do mesmo endereço, no mesmo ativo, em 10 minutos.",
   viagem_impossivel: "Mais de 500 km a mais de 1.000 km/h entre dois acessos.",
@@ -55,7 +60,7 @@ const DESCRICAO_COMPORTAMENTO = {
 };
 
 const $ = (id) => document.getElementById(id);
-const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [] };
+const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [], logs: [], proximoLog: null, norma: "gdpr" };
 
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
@@ -496,6 +501,157 @@ async function carregarEventos(continuar = false) {
   $("mais-eventos").hidden = !dados.ha_mais;
 }
 
+// ------------------------------------------------------------------ logs brutos
+
+function abrirLog(item) {
+  $("meta-bruto").textContent = `${quando(item.bruto.timestamp)} · identificador ${item.id}`;
+  $("conteudo-bruto").textContent = JSON.stringify(item.bruto, null, 2);
+  $("janela-bruto").showModal();
+}
+
+async function carregarLogs(continuar = false) {
+  const consulta = new URLSearchParams({ busca: $("busca-logs").value, dias: $("dias-logs").value });
+  if (continuar && estado.proximoLog) consulta.set("depois_de", estado.proximoLog);
+  const r = await pedir(`/api/logs?${consulta}`);
+  const destino = $("tabela-logs");
+  if (!r.ok) {
+    destino.replaceChildren(el("p", "vazio", "Não foi possível consultar os logs agora."));
+    return;
+  }
+  const dados = await r.json();
+  estado.logs = continuar ? [...estado.logs, ...dados.logs] : dados.logs;
+  estado.proximoLog = dados.proximo;
+  if (!estado.logs.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhum log encontrado."));
+  } else {
+    destino.replaceChildren(montarTabela([["Quando"], ["Ativo"], ["Fonte"], ["Log"], [""]], estado.logs.map((item) => {
+      const b = item.bruto;
+      const botao = el("button", "botao-discreto botao-tabela", "Ver bruto");
+      botao.type = "button";
+      botao.addEventListener("click", () => abrirLog(item));
+      return [el("td", null, quando(b.timestamp)), el("td", null, b.agent?.name ?? "-"),
+        el("td", "mono", b.location ?? "-"), el("td", "mono", b.full_log ?? "-"), celula(botao)];
+    })));
+  }
+  $("mais-logs").hidden = !dados.proximo;
+}
+
+$("form-logs").addEventListener("submit", (ev) => { ev.preventDefault(); carregarLogs(); });
+$("mais-logs").addEventListener("click", () => carregarLogs(true));
+
+// ------------------------------------------------------------------ ataque e defesa
+
+async function carregarAtaques() {
+  const r = await pedir("/api/mitre");
+  const { tecnicas } = await r.json();
+  const destino = $("lista-ataques");
+  if (!tecnicas.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhuma técnica observada no período."));
+    return;
+  }
+  destino.replaceChildren(...tecnicas.map((t) => {
+    const item = el("details", "ataque");
+    const titulo = el("summary");
+    const vezes = Number(t.total).toLocaleString("pt-BR");
+    titulo.append(el("span", "ataque-id", t.tecnica), el("span", "ataque-nome", t.nome ?? "Técnica"),
+      el("span", "etiqueta", t.tatica ?? "Sem tática"), el("span", "ataque-conta", `${vezes} ${t.total === 1 ? "evento" : "eventos"}`));
+    const corpo = el("div", "defesas");
+    if (!t.defesas.length) {
+      corpo.append(el("p", "texto-secao", "Sem defesas catalogadas para esta técnica."));
+    } else {
+      const porTatica = Map.groupBy(t.defesas, (d) => d.tatica_defesa ?? "Outras");
+      for (const [tatica, lista] of porTatica) {
+        corpo.append(el("h4", null, TATICAS_DE_DEFESA[tatica] ?? tatica), etiquetas(lista.map((d) => d.defesa_nome), 40));
+      }
+    }
+    item.append(titulo, corpo);
+    return item;
+  }));
+}
+
+// ------------------------------------------------------------------ ativos
+
+const ESTADOS = { active: "Ativo", disconnected: "Desconectado", pending: "Pendente", never_connected: "Nunca conectou" };
+
+function celulaDeNota(a) {
+  if (a.sca_nota === null) return el("td", null, "-");
+  const td = el("td");
+  const nota = el("span", "nota");
+  const barra = el("span", "nota-barra");
+  const fill = el("span");
+  fill.style.width = `${Math.min(100, a.sca_nota)}%`;
+  barra.append(fill);
+  nota.append(barra, `${a.sca_nota}%`);
+  td.append(nota);
+  td.title = `${a.sca_politica ?? ""}: ${a.sca_aprovados ?? 0} aprovados, ${a.sca_reprovados ?? 0} reprovados`;
+  return td;
+}
+
+async function carregarAtivos() {
+  const r = await pedir("/api/ativos");
+  const { ativos } = await r.json();
+  const ativosOk = ativos.filter((a) => a.estado === "active").length;
+  $("resumo-ativos").textContent = `${ativos.length} ativos · ${ativosOk} conectados`;
+  const destino = $("tabela-ativos");
+  if (!ativos.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhum ativo inscrito ainda."));
+    return;
+  }
+  destino.replaceChildren(montarTabela(
+    [["Ativo"], ["Estado"], ["Sistema"], ["Endereço"], ["Configuração segura"], ["Alertas em 7 dias", "numero-celula"], ["Última conexão"]],
+    ativos.map((a) => [el("td", null, a.nome ?? a.agente_id), el("td", null, ESTADOS[a.estado] ?? a.estado ?? "-"),
+      el("td", null, a.sistema ?? "-"), el("td", "mono ip", a.ip ?? "-"), celulaDeNota(a),
+      el("td", "numero-celula", Number(a.alertas_7_dias).toLocaleString("pt-BR")), el("td", null, quando(a.ultima_conexao))]),
+  ));
+}
+
+// ------------------------------------------------------------------ arquivos
+
+const MUDANCAS = { added: "Criado", modified: "Alterado", deleted: "Apagado" };
+
+async function carregarArquivos() {
+  const r = await pedir(`/api/arquivos?${new URLSearchParams({ busca: $("busca-arquivos").value })}`);
+  const { arquivos } = await r.json();
+  const destino = $("tabela-arquivos");
+  if (!arquivos.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhuma mudança em arquivos monitorados."));
+    return;
+  }
+  destino.replaceChildren(montarTabela([["Quando"], ["Mudança"], ["Arquivo"], ["Ativo"], ["Dono"], [""]], arquivos.map((a) => [
+    el("td", null, quando(a.ocorrido_em)), el("td", null, MUDANCAS[a.mudanca] ?? a.mudanca ?? "-"),
+    el("td", "mono", a.caminho ?? a.regra_descricao ?? "-"), el("td", null, a.ativo ?? "-"), el("td", "mono", a.dono ?? "-"),
+    celula(botaoBruto(a.id))])));
+}
+
+// ------------------------------------------------------------------ normas
+
+async function carregarNormas(norma = estado.norma) {
+  estado.norma = norma;
+  const r = await pedir(`/api/normas?norma=${encodeURIComponent(norma)}`);
+  const dados = await r.json();
+  const escolha = $("escolha-norma");
+  escolha.replaceChildren(...Object.entries(dados.normas).map(([chave, rotulo]) => {
+    const b = el("button", null, rotulo);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(chave === norma));
+    b.addEventListener("click", () => carregarNormas(chave));
+    return b;
+  }));
+  $("resumo-norma").textContent = `${dados.controles.length} controles com alertas em 30 dias · ${dados.regras_da_norma.toLocaleString("pt-BR")} regras cobrem esta norma`;
+  const destino = $("tabela-normas");
+  if (!dados.controles.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhum alerta ligado a esta norma no período."));
+    return;
+  }
+  destino.replaceChildren(montarTabela(
+    [["Controle"], ["Maior severidade"], ["Alertas", "numero-celula"], ["Ativos", "numero-celula"], ["Último"]],
+    dados.controles.map((c) => [el("td", "mono", c.controle), celula(selo(severidadeDoNivel(c.nivel))),
+      el("td", "numero-celula", Number(c.total).toLocaleString("pt-BR")), el("td", "numero-celula", c.ativos), el("td", null, quando(c.ultimo))]),
+  ));
+}
+
+$("form-arquivos").addEventListener("submit", (ev) => { ev.preventDefault(); carregarArquivos(); });
+
 // ------------------------------------------------------------------ regras
 
 function severidadeDoNivel(nivel) {
@@ -568,7 +724,14 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "regras"]) $(`vista-${nome}`).hidden = vista !== nome;
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "ativos", "arquivos", "normas", "regras"]) {
+    $(`vista-${nome}`).hidden = vista !== nome;
+  }
+  if (vista === "logs" && !estado.logs.length) carregarLogs();
+  if (vista === "ataques") carregarAtaques();
+  if (vista === "ativos") carregarAtivos();
+  if (vista === "arquivos") carregarArquivos();
+  if (vista === "normas") carregarNormas();
   if (vista === "panorama" && estado.panorama) desenharColunas(estado.panorama.por_dia);
   if (vista === "eventos" && !estado.eventos.length) carregarEventos();
   if (vista === "regras" && !estado.regras.length) carregarRegras();
