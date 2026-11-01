@@ -345,6 +345,40 @@ th.numero-celula { text-align: right; }
   overflow-wrap: anywhere; background: var(--fundo); border: 1px solid var(--borda); border-radius: 8px;
 }
 
+.botao-automatizar { margin: 12px 0 4px; }
+.modelos { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.modelo {
+  display: grid; gap: 4px; padding: 10px 12px; color: var(--texto); font: inherit; text-align: left; cursor: pointer;
+  background: var(--painel-2); border: 1px solid var(--borda); border-radius: 10px;
+}
+.modelo:hover { border-color: var(--rosa); }
+.modelo span { color: var(--texto-2); font-size: .82rem; }
+.abas-editor { display: flex; gap: 4px; border-bottom: 1px solid var(--borda); }
+.abas-editor button {
+  padding: 8px 14px; color: var(--texto-2); font: inherit; cursor: pointer; background: none; border: 0; border-bottom: 2px solid transparent;
+}
+.abas-editor button[aria-selected="true"] { color: var(--rosa-claro); border-bottom-color: var(--rosa); }
+.linha-condicao { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.linha-condicao select { flex: 1 1 200px; width: auto; }
+.linha-condicao input { flex: 1 1 120px; width: auto; }
+.pilha { display: grid; gap: 8px; }
+.bloco { padding: 10px 12px; background: var(--painel-2); border: 1px solid var(--borda); border-radius: 10px; }
+.bloco-aprovacao { border-left: 3px solid var(--media); }
+.bloco-acao { border-left: 3px solid var(--rosa); }
+.bloco-se, .bloco-paralelo { border-left: 3px solid var(--baixa); background: var(--painel); }
+.bloco-topo { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.bloco-acoes { display: flex; gap: 4px; }
+.bloco-corpo { display: grid; gap: 8px; margin-top: 8px; }
+.bloco-corpo:empty { display: none; }
+.bloco-corpo .texto-secao { margin: 0; }
+.bloco-corpo .pilha { padding-left: 12px; }
+.ramo-titulo { margin: 4px 0 0; color: var(--texto-2); font-size: .85rem; }
+.ramo-topo { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.adicionar-bloco { border-style: dashed !important; }
+.simulacao { padding: 12px; background: var(--rosa-fundo); border: 1px solid var(--rosa); border-radius: 10px; }
+.simulacao .texto-secao { margin: 4px 0 0; }
+.simulacao table { margin-top: 8px; }
+
 @media (max-width: 1000px) {
   .graficos { grid-template-columns: 1fr; }
 }

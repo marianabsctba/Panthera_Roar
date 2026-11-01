@@ -223,7 +223,7 @@ function desenharRisco({ alerta, sinais }) {
     linha.append(li);
   }
   $("detalhe").replaceChildren(cab, el("p", "subtitulo", `${tipo} · aberto em ${quando(alerta.aberto_em)}`),
-    medidor, el("h3", null, "Por que este alerta existe"), linha);
+    medidor, botaoAutomatizar(() => rascunhoDeRisco(alerta)), el("h3", null, "Por que este alerta existe"), linha);
 }
 
 function desenharGrupo({ grupo, eventos }) {
@@ -252,7 +252,7 @@ function desenharGrupo({ grupo, eventos }) {
   tabela.append(thead, tbody);
   const rolagem = el("div", "tabela-rolagem");
   rolagem.append(tabela);
-  $("detalhe").replaceChildren(cab, fatos, el("h3", null, "Eventos recentes"), rolagem);
+  $("detalhe").replaceChildren(cab, fatos, botaoAutomatizar(() => rascunhoDeGrupo(grupo, eventos)), el("h3", null, "Eventos recentes"), rolagem);
 }
 
 async function selecionar(aba, id) {
@@ -1376,15 +1376,447 @@ $("copiar-bruto").addEventListener("click", async () => {
   setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
 });
 
+// ------------------------------------------------------------------ automação
+
+const NOMES_DE_ACAO = { bloquear_ip: "Bloquear o endereço", webhook: "Avisar um endereço web", registrar: "Registrar uma nota" };
+const ESTADOS_DE_EXECUCAO = {
+  nova: "Iniciando", executando: "Executando", aguardando_aprovacao: "Aguardando decisão",
+  concluida: "Concluída", falhou: "Falhou", recusada: "Recusada",
+};
+const CONDICOES = [
+  { id: "externo", rotulo: "O endereço é externo", campo: "alvo_externo", op: "igual", fixo: true },
+  { id: "interno", rotulo: "O endereço não é externo", campo: "alvo_externo", op: "igual", fixo: false },
+  { id: "nivel_minimo", rotulo: "Nível a partir de", campo: "nivel", op: "minimo", tipo: "numero", padrao: 10 },
+  { id: "nivel_maximo", rotulo: "Nível até", campo: "nivel", op: "maximo", tipo: "numero", padrao: 10 },
+  { id: "severidade", rotulo: "Severidade a partir de", campo: "severidade", op: "minimo", tipo: "severidade", padrao: "alta" },
+  { id: "na_rede", rotulo: "Endereço dentro da rede", campo: "alvo", op: "na_rede", tipo: "texto", padrao: "" },
+  { id: "fora_da_rede", rotulo: "Endereço fora da rede", campo: "alvo", op: "fora_da_rede", tipo: "texto", padrao: "" },
+];
+const SE_EXTERNO = { campo: "alvo_externo", op: "igual", valor: true };
+const NOVOS_BLOCOS = {
+  bloquear_ip: () => ({ tipo: "acao", acao: "bloquear_ip", parametros: { duracao_minutos: 60, protegidos: [] } }),
+  webhook: () => ({ tipo: "acao", acao: "webhook", parametros: { url: "" } }),
+  registrar: () => ({ tipo: "acao", acao: "registrar", parametros: { texto: "" } }),
+  aprovacao: () => ({ tipo: "aprovacao" }),
+  se: () => ({ tipo: "se", condicao: { ...SE_EXTERNO }, entao: [], senao: [] }),
+  paralelo: () => ({ tipo: "paralelo", ramos: [[], []] }),
+};
+const ROTULOS_DE_BLOCO = {
+  bloquear_ip: "Bloquear o endereço no ativo", webhook: "Avisar um endereço web", registrar: "Registrar uma nota",
+  aprovacao: "Pedir aprovação", se: "Se... senão", paralelo: "Fazer ao mesmo tempo",
+};
+const MODELOS = [
+  {
+    titulo: "Força bruta em SSH", texto: "Pede aprovação e bloqueia o endereço de quem está tentando.",
+    nome: "Força bruta em SSH: bloquear",
+    definicao: { quando: { tipo: "evento", regra_id: "5712" }, se: [{ ...SE_EXTERNO }],
+      blocos: [NOVOS_BLOCOS.aprovacao(), NOVOS_BLOCOS.bloquear_ip()] },
+  },
+  {
+    titulo: "Conta em risco", texto: "Avisa a equipe quando o risco de uma pessoa ou ativo fica crítico.",
+    nome: "Conta em risco: avisar a equipe",
+    definicao: { quando: { tipo: "risco", severidade: "critica" }, se: [], blocos: [NOVOS_BLOCOS.webhook()] },
+  },
+  {
+    titulo: "Risco com origem externa", texto: "Se a origem for externa, bloqueia com aprovação. Se for interna, só avisa.",
+    nome: "Risco alto: bloquear se externo, avisar se interno",
+    definicao: { quando: { tipo: "risco", severidade: "alta" }, se: [], blocos: [{
+      tipo: "se", condicao: { ...SE_EXTERNO }, entao: [NOVOS_BLOCOS.aprovacao(), NOVOS_BLOCOS.bloquear_ip()], senao: [NOVOS_BLOCOS.webhook()],
+    }] },
+  },
+  {
+    titulo: "Em branco", texto: "Comece do zero.", nome: "",
+    definicao: { quando: { tipo: "evento", regra_id: "" }, se: [], blocos: [] },
+  },
+];
+
+function descreverAcoes(texto) {
+  return (texto ?? "").split(",").filter(Boolean).map((a) => NOMES_DE_ACAO[a] ?? a).join(", ") || "Nenhuma ação";
+}
+
+function descreverGatilho(definicao) {
+  const { quando: q, se } = definicao;
+  const base = q.tipo === "risco"
+    ? `Risco a partir de ${(SEVERIDADE[q.severidade]?.texto ?? q.severidade).toLowerCase()}`
+    : `Alerta da regra ${q.regra_id}`;
+  const partes = (se ?? []).map(descreverCondicao);
+  return partes.length ? `${base}, se ${partes.join(" e ").toLowerCase()}` : base;
+}
+
+function condicaoConhecida(c) {
+  return CONDICOES.find((m) => m.campo === c.campo && m.op === c.op && (m.fixo === undefined || m.fixo === c.valor)) ?? CONDICOES[0];
+}
+
+function descreverCondicao(c) {
+  const m = condicaoConhecida(c);
+  return m.fixo === undefined ? `${m.rotulo} ${c.valor}` : m.rotulo;
+}
+
+function contarAcoes(lista) {
+  const nomes = [];
+  for (const b of lista) {
+    if (b.tipo === "acao") nomes.push(NOMES_DE_ACAO[b.acao] ?? b.acao);
+    if (b.tipo === "se") nomes.push(...contarAcoes(b.entao), ...contarAcoes(b.senao ?? []));
+    if (b.tipo === "paralelo") b.ramos.forEach((r) => nomes.push(...contarAcoes(r)));
+  }
+  return [...new Set(nomes)];
+}
+
+function descreverResultado(x) {
+  const partes = [];
+  for (const p of Array.isArray(x.resultado) ? x.resultado : []) {
+    if (p.erro) partes.push(`${NOMES_DE_ACAO[p.acao] ?? p.acao}: ${p.erro}`);
+    else if (p.acao === "bloquear_ip") partes.push(x.bloqueio_confirmado ? "Bloqueio confirmado pelo ativo" : "Bloqueio enviado, sem confirmação do ativo ainda");
+    else if (p.acao) partes.push(`${NOMES_DE_ACAO[p.acao] ?? p.acao}: feito`);
+    else if (p.aprovacao) partes.push({ aprovada: "Aprovada", recusada: "Recusada", expirada: "Ninguém decidiu a tempo" }[p.aprovacao] ?? p.aprovacao);
+  }
+  return partes.join(" · ") || "-";
+}
+
+function botaoDeTabela(texto, classe, aoClicar) {
+  const b = el("button", `${classe} botao-tabela`, texto);
+  b.type = "button";
+  b.addEventListener("click", aoClicar);
+  return b;
+}
+
+async function decidirAprovacao(id, decisao) {
+  const r = await pedir(`/api/automacao/aprovacoes/${id}/${decisao}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ motivo: "" }),
+  });
+  if (!r.ok && r.status !== 409) throw new Error("decisão recusada");
+  await carregarAutomacao();
+}
+
+async function ligarPlaybook(id, acao) {
+  await pedir(`/api/automacao/playbooks/${id}/${acao}`, { method: "POST" });
+  await carregarAutomacao();
+}
+
+async function carregarAutomacao() {
+  const r = await pedir("/api/automacao");
+  const { playbooks, execucoes, aprovacoes } = await r.json();
+  const pendentes = aprovacoes.filter((a) => a.estado === "pendente");
+  $("tabela-pendentes").replaceChildren(pendentes.length ? montarTabela(
+    [["Quando"], ["Playbook"], ["O que aconteceu"], ["Alvo"], ["Vai fazer"], ["Decisão"]],
+    pendentes.map((a) => {
+      const decisao = el("td");
+      decisao.append(botaoDeTabela("Aprovar", "botao-primario", () => decidirAprovacao(a.id, "aprovar")), " ",
+        botaoDeTabela("Recusar", "botao-discreto", () => decidirAprovacao(a.id, "recusar")));
+      return [el("td", null, quando(a.criada_em)), el("td", null, a.playbook), el("td", null, a.titulo ?? "-"),
+        el("td", "mono ip", a.alvo ?? "-"), el("td", null, descreverAcoes(a.descricao)), decisao];
+    })) : el("p", "vazio", "Nenhuma decisão pendente."));
+
+  $("tabela-playbooks").replaceChildren(playbooks.length ? montarTabela(
+    [["Nome"], ["Quando"], ["Então"], ["Aprovação"], ["Execuções", "numero-celula"], [""]],
+    playbooks.map((p) => {
+      const acoes = el("td");
+      acoes.append(el("span", "etiqueta", p.ativo ? "Ativo" : "Desativado"),
+        botaoDeTabela("Editar", "botao-discreto", () => abrirEditorDePlaybook(p)), " ",
+        botaoDeTabela(p.ativo ? "Desativar" : "Ativar", "botao-discreto", () => ligarPlaybook(p.id, p.ativo ? "desativar" : "ativar")));
+      const comAprovacao = JSON.stringify(p.definicao.blocos).includes('"aprovacao"');
+      return [el("td", null, p.nome), el("td", null, descreverGatilho(p.definicao)), el("td", null, contarAcoes(p.definicao.blocos).join(", ") || "-"),
+        el("td", null, comAprovacao ? "Pede aprovação" : "Automático"), el("td", "numero-celula", p.execucoes), acoes];
+    })) : el("p", "vazio", "Nenhum playbook criado. Comece por um modelo, ou abra um alerta e clique em Automatizar isto."));
+
+  const decisores = new Map(aprovacoes.filter((a) => a.decidida_por).map((a) => [a.execucao_id, a.decidida_por]));
+  $("tabela-execucoes").replaceChildren(execucoes.length ? montarTabela(
+    [["Quando"], ["Playbook"], ["Alvo"], ["Estado"], ["Decidido por"], ["Resultado"]],
+    execucoes.map((x) => [el("td", null, quando(x.criada_em)), el("td", null, x.playbook), el("td", "mono ip", x.alvo ?? "-"),
+      el("td", null, ESTADOS_DE_EXECUCAO[x.estado] ?? x.estado), el("td", null, decisores.get(x.id) ?? "-"),
+      el("td", null, descreverResultado(x))])) : el("p", "vazio", "Nenhuma execução ainda."));
+}
+
+function campoDoEditor(rotulo, controle) {
+  const l = el("label", null, rotulo);
+  l.append(controle);
+  return l;
+}
+
+function selecao(opcoes, valor, aoMudar) {
+  const s = el("select");
+  for (const [v, texto] of opcoes) {
+    const o = el("option", null, texto);
+    o.value = v;
+    s.append(o);
+  }
+  s.value = valor;
+  s.addEventListener("change", () => aoMudar(s.value));
+  return s;
+}
+
+function entrada(valor, aoMudar, atributos = {}) {
+  const i = el("input");
+  Object.assign(i, atributos);
+  i.value = valor ?? "";
+  i.addEventListener("input", () => aoMudar(i.value));
+  return i;
+}
+
+function editorDeCondicao(c, aoRemover) {
+  const linha = el("div", "linha-condicao");
+  const m = condicaoConhecida(c);
+  linha.append(selecao(CONDICOES.map((o) => [o.id, o.rotulo]), m.id, (id) => {
+    const nova = CONDICOES.find((o) => o.id === id);
+    Object.assign(c, { campo: nova.campo, op: nova.op, valor: nova.fixo ?? nova.padrao });
+    desenharEditor();
+  }));
+  if (m.tipo === "numero") linha.append(entrada(c.valor, (v) => { c.valor = Number(v); }, { type: "number", min: 0, max: 16, ariaLabel: "Nível" }));
+  if (m.tipo === "texto") linha.append(entrada(c.valor, (v) => { c.valor = v.trim(); }, { placeholder: "10.0.0.0/8", ariaLabel: "Rede" }));
+  if (m.tipo === "severidade") linha.append(selecao([["alta", "Alta"], ["critica", "Crítica"]], c.valor, (v) => { c.valor = v; }));
+  if (aoRemover) linha.append(botaoDeTabela("Remover", "botao-discreto", aoRemover));
+  return linha;
+}
+
+function corpoDoBloco(bloco) {
+  const corpo = el("div", "bloco-corpo");
+  if (bloco.tipo === "aprovacao") {
+    corpo.append(el("p", "texto-secao", "A execução espera aqui até alguém decidir. Sem decisão em 72 horas, conta como recusa."));
+  } else if (bloco.acao === "bloquear_ip") {
+    const area = el("textarea");
+    area.rows = 2;
+    area.spellcheck = false;
+    area.placeholder = "8.8.8.8\n200.200.0.0/16";
+    area.value = (bloco.parametros.protegidos ?? []).join("\n");
+    area.addEventListener("input", () => { bloco.parametros.protegidos = area.value.split("\n").map((l) => l.trim()).filter(Boolean); });
+    corpo.append(campoDoEditor("Desbloquear sozinho depois de", selecao([["60", "1 hora"], ["1440", "1 dia"], ["10080", "7 dias"]],
+      String(bloco.parametros.duracao_minutos ?? 60), (v) => { bloco.parametros.duracao_minutos = Number(v); })),
+    campoDoEditor("Nunca bloquear, um por linha", area));
+  } else if (bloco.acao === "webhook") {
+    corpo.append(campoDoEditor("Endereço web completo, começando por https", entrada(bloco.parametros.url, (v) => { bloco.parametros.url = v.trim(); }, { type: "url" })));
+  } else if (bloco.acao === "registrar") {
+    corpo.append(campoDoEditor("Nota", entrada(bloco.parametros.texto, (v) => { bloco.parametros.texto = v; }, { maxLength: 1000 })));
+  } else if (bloco.tipo === "se") {
+    corpo.append(editorDeCondicao(bloco.condicao), el("h4", "ramo-titulo", "Então"), editorDePilha(bloco.entao),
+      el("h4", "ramo-titulo", "Senão"), editorDePilha(bloco.senao ?? (bloco.senao = [])));
+  } else if (bloco.tipo === "paralelo") {
+    bloco.ramos.forEach((ramo, i) => {
+      const cabeca = el("div", "ramo-topo");
+      cabeca.append(el("h4", "ramo-titulo", `Ramo ${i + 1}`));
+      if (bloco.ramos.length > 2) cabeca.append(botaoDeTabela("Remover ramo", "botao-discreto", () => { bloco.ramos.splice(i, 1); desenharEditor(); }));
+      corpo.append(cabeca, editorDePilha(ramo));
+    });
+    if (bloco.ramos.length < 5) corpo.append(botaoDeTabela("Adicionar ramo", "botao-discreto", () => { bloco.ramos.push([]); desenharEditor(); }));
+  }
+  return corpo;
+}
+
+function editorDePilha(lista) {
+  const pilha = el("div", "pilha");
+  lista.forEach((bloco, i) => {
+    const cartao = el("div", `bloco bloco-${bloco.tipo}`);
+    const topo = el("div", "bloco-topo");
+    const acoes = el("div", "bloco-acoes");
+    const mover = (destino) => { lista.splice(destino, 0, lista.splice(i, 1)[0]); desenharEditor(); };
+    if (i > 0) acoes.append(botaoDeTabela("Subir", "botao-discreto", () => mover(i - 1)));
+    if (i < lista.length - 1) acoes.append(botaoDeTabela("Descer", "botao-discreto", () => mover(i + 1)));
+    acoes.append(botaoDeTabela("Remover", "botao-discreto", () => { lista.splice(i, 1); desenharEditor(); }));
+    topo.append(el("strong", null, ROTULOS_DE_BLOCO[bloco.acao ?? bloco.tipo] ?? bloco.tipo), acoes);
+    cartao.append(topo, corpoDoBloco(bloco));
+    pilha.append(cartao);
+  });
+  const adicionar = selecao([["", "Adicionar bloco..."], ...Object.entries(ROTULOS_DE_BLOCO)], "", (tipo) => {
+    if (!tipo) return;
+    lista.push(NOVOS_BLOCOS[tipo]());
+    desenharEditor();
+  });
+  adicionar.setAttribute("aria-label", "Adicionar bloco");
+  adicionar.classList.add("adicionar-bloco");
+  pilha.append(adicionar);
+  return pilha;
+}
+
+function desenharEditor() {
+  const { definicao } = estado.editor;
+  const { quando: q } = definicao;
+  const secaoQuando = el("div", "linha-campos");
+  secaoQuando.append(campoDoEditor("Acontecer", selecao([["evento", "Alerta de uma regra"], ["risco", "Risco de uma pessoa ou ativo"]], q.tipo, (tipo) => {
+    definicao.quando = tipo === "risco" ? { tipo, severidade: "alta" } : { tipo, regra_id: "" };
+    desenharEditor();
+  })));
+  secaoQuando.append(q.tipo === "risco"
+    ? campoDoEditor("Severidade a partir de", selecao([["alta", "Alta"], ["critica", "Crítica"]], q.severidade, (v) => { q.severidade = v; }))
+    : campoDoEditor("Número da regra", entrada(q.regra_id, (v) => { q.regra_id = v.trim(); }, { inputMode: "numeric", maxLength: 8, placeholder: "5712" })));
+  const condicoes = el("div");
+  (definicao.se ?? (definicao.se = [])).forEach((c, i) => {
+    condicoes.append(editorDeCondicao(c, () => { definicao.se.splice(i, 1); desenharEditor(); }));
+  });
+  const maisCondicao = botaoDeTabela("Adicionar condição", "botao-discreto", () => { definicao.se.push({ ...SE_EXTERNO }); desenharEditor(); });
+  $("pb-blocos").replaceChildren(el("h3", null, "Quando"), secaoQuando, el("h3", null, "Se"),
+    condicoes, maisCondicao, el("h3", null, "Então"), editorDePilha(definicao.blocos));
+}
+
+function mostrarErroDoPlaybook(texto) {
+  $("pb-erro").textContent = texto;
+  $("pb-erro").hidden = !texto;
+}
+
+async function detalheDoErro(r, padrao) {
+  const corpo = await r.json().catch(() => ({}));
+  return typeof corpo.detail === "string" ? corpo.detail : padrao;
+}
+
+async function postarJson(rota, corpo, metodo = "POST") {
+  return pedir(rota, { method: metodo, headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+}
+
+function corpoDoEditor() {
+  return { nome: $("pb-nome").value.trim(), intervalo_minutos: Number($("pb-intervalo").value || 0), definicao: estado.editor.definicao };
+}
+
+// No modo código o texto é a fonte: precisa virar blocos antes de simular ou salvar.
+async function lerCodigoSeAberto() {
+  if ($("pb-area-codigo").hidden) return true;
+  const r = await postarJson("/api/automacao/de-codigo", { texto: $("pb-codigo").value });
+  if (!r.ok) {
+    mostrarErroDoPlaybook(await detalheDoErro(r, "Confira o texto do playbook."));
+    return false;
+  }
+  const dados = await r.json();
+  estado.editor.definicao = dados.definicao;
+  $("pb-nome").value = dados.nome;
+  $("pb-intervalo").value = dados.intervalo_minutos;
+  return true;
+}
+
+async function trocarAbaDoEditor(codigo) {
+  mostrarErroDoPlaybook("");
+  if (codigo) {
+    const r = await postarJson("/api/automacao/para-codigo", { ...corpoDoEditor(), nome: $("pb-nome").value.trim() || "Sem nome" });
+    if (!r.ok) {
+      mostrarErroDoPlaybook(await detalheDoErro(r, "Complete os blocos antes de ver o código."));
+      return;
+    }
+    $("pb-codigo").value = (await r.json()).texto;
+  } else {
+    if (!(await lerCodigoSeAberto())) return;
+    desenharEditor();
+  }
+  $("pb-area-codigo").hidden = !codigo;
+  $("pb-blocos").hidden = codigo;
+  $("aba-codigo").setAttribute("aria-selected", String(codigo));
+  $("aba-blocos").setAttribute("aria-selected", String(!codigo));
+}
+
+function desenharSimulacao(s) {
+  const area = $("pb-simulacao");
+  const vezes = s.disparos === 1 ? "1 vez" : `${s.disparos.toLocaleString("pt-BR")} vezes`;
+  const titulo = s.disparos ? `Nos últimos ${s.dias} dias, isto teria disparado ${vezes}.` : `Nos últimos ${s.dias} dias, isto não teria disparado nenhuma vez.`;
+  const filhos = [el("strong", null, titulo)];
+  if (s.limitado) filhos.push(el("p", "texto-secao", `Olhei só os primeiros ${s.analisados.toLocaleString("pt-BR")} acontecimentos: o número real pode ser maior.`));
+  if (s.recusas) filhos.push(el("p", "texto-secao", `${s.recusas.toLocaleString("pt-BR")} bloqueios seriam recusados, por alvo protegido ou sem endereço público.`));
+  if (s.alvos.length) {
+    filhos.push(montarTabela([["Alvo"], ["Vezes", "numero-celula"]],
+      s.alvos.map((a) => [el("td", "mono ip", a.alvo), el("td", "numero-celula", a.total.toLocaleString("pt-BR"))])));
+  }
+  area.replaceChildren(...filhos);
+  area.hidden = false;
+}
+
+function abrirEditorDePlaybook(playbook) {
+  estado.editor = { id: playbook?.id ?? null, definicao: structuredClone(playbook?.definicao ?? MODELOS[0].definicao) };
+  $("titulo-playbook").textContent = playbook?.id ? "Editar playbook" : "Novo playbook";
+  $("pb-nome").value = playbook?.nome ?? "";
+  $("pb-intervalo").value = playbook?.intervalo_minutos ?? 60;
+  $("modelos-playbook").hidden = Boolean(playbook?.id || playbook?.rascunho);
+  $("pb-area-codigo").hidden = true;
+  $("pb-blocos").hidden = false;
+  $("aba-blocos").setAttribute("aria-selected", "true");
+  $("aba-codigo").setAttribute("aria-selected", "false");
+  $("pb-simulacao").hidden = true;
+  mostrarErroDoPlaybook("");
+  desenharEditor();
+  $("janela-playbook").showModal();
+}
+
+function desenharModelos() {
+  $("modelos-playbook").replaceChildren(...MODELOS.map((m) => {
+    const b = el("button", "modelo");
+    b.type = "button";
+    b.append(el("strong", null, m.titulo), el("span", null, m.texto));
+    b.addEventListener("click", () => {
+      estado.editor.definicao = structuredClone(m.definicao);
+      $("pb-nome").value = m.nome;
+      $("pb-simulacao").hidden = true;
+      desenharEditor();
+    });
+    return b;
+  }));
+}
+
+// Parte do alerta que a pessoa já está vendo: ela não precisa saber número de regra.
+function rascunhoDeGrupo(grupo, eventos) {
+  const regra = eventos[0]?.regra_id ?? grupo.regras?.[0] ?? "";
+  const nome = `Responder a: ${eventos[0]?.regra_descricao ?? `regra ${regra}`}`.slice(0, 120);
+  const definicao = grupo.ip_origem
+    ? { quando: { tipo: "evento", regra_id: regra }, se: [{ ...SE_EXTERNO }], blocos: [NOVOS_BLOCOS.aprovacao(), NOVOS_BLOCOS.bloquear_ip()] }
+    : { quando: { tipo: "evento", regra_id: regra }, se: [], blocos: [NOVOS_BLOCOS.webhook()] };
+  return { nome, definicao, rascunho: true };
+}
+
+function rascunhoDeRisco(alerta) {
+  return {
+    nome: `Responder a risco ${SEVERIDADE[alerta.severidade]?.texto.toLowerCase() ?? ""}`.trim(),
+    definicao: { quando: { tipo: "risco", severidade: alerta.severidade }, se: [], blocos: [{
+      tipo: "se", condicao: { ...SE_EXTERNO }, entao: [NOVOS_BLOCOS.aprovacao(), NOVOS_BLOCOS.bloquear_ip()], senao: [NOVOS_BLOCOS.webhook()],
+    }] },
+    rascunho: true,
+  };
+}
+
+function botaoAutomatizar(criarRascunho) {
+  const b = el("button", "botao-discreto botao-automatizar", "Automatizar isto");
+  b.type = "button";
+  b.addEventListener("click", () => abrirEditorDePlaybook(criarRascunho()));
+  return b;
+}
+
+$("novo-playbook").addEventListener("click", () => abrirEditorDePlaybook());
+$("fechar-playbook").addEventListener("click", () => $("janela-playbook").close());
+$("aba-blocos").addEventListener("click", () => trocarAbaDoEditor(false));
+$("aba-codigo").addEventListener("click", () => trocarAbaDoEditor(true));
+$("pb-simular").addEventListener("click", async () => {
+  mostrarErroDoPlaybook("");
+  if (!(await lerCodigoSeAberto())) return;
+  const { definicao, intervalo_minutos: intervalo } = corpoDoEditor();
+  const r = await postarJson("/api/automacao/simular", { definicao, intervalo_minutos: intervalo });
+  if (!r.ok) {
+    $("pb-simulacao").hidden = true;
+    mostrarErroDoPlaybook(await detalheDoErro(r, "Complete o playbook antes de simular."));
+    return;
+  }
+  desenharSimulacao(await r.json());
+});
+$("form-playbook").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  mostrarErroDoPlaybook("");
+  if (!(await lerCodigoSeAberto())) return;
+  const corpo = corpoDoEditor();
+  if (!corpo.nome) {
+    mostrarErroDoPlaybook("Dê um nome ao playbook.");
+    return;
+  }
+  const { id } = estado.editor;
+  const r = await postarJson(id ? `/api/automacao/playbooks/${id}` : "/api/automacao/playbooks", corpo, id ? "PUT" : "POST");
+  if (!r.ok) {
+    mostrarErroDoPlaybook(await detalheDoErro(r, "Confira os blocos do playbook."));
+    return;
+  }
+  $("janela-playbook").close();
+  trocarVista("automacao");
+});
+desenharModelos();
+
 function trocarVista(vista) {
   document.querySelectorAll(".navegacao button").forEach((b) => {
     if (b.dataset.vista === vista) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "ativos", "arquivos", "normas", "regras"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "ativos", "arquivos", "normas", "regras", "automacao"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
+  if (vista === "automacao") carregarAutomacao();
   if (vista === "logs" && !estado.logs.length) carregarLogs();
   if (vista === "ataques") carregarAtaques();
   if (vista === "ativos") carregarAtivos();

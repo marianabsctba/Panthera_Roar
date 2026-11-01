@@ -31,4 +31,5 @@ psql_roar <<SQL
 ALTER ROLE roar_ingestao PASSWORD '$(valor ROAR_INGESTAO_SENHA)';
 ALTER ROLE roar_api PASSWORD '$(valor ROAR_API_SENHA)';
 ALTER ROLE roar_ueba PASSWORD '$(valor ROAR_UEBA_SENHA)';
+ALTER ROLE roar_soar PASSWORD '$(valor ROAR_SOAR_SENHA)';
 SQL

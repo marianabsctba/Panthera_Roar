@@ -155,7 +155,25 @@ Primeira parte pronta, só de leitura: login, panorama com gráficos e fila de a
 - **Fila sem ruído:** alertas abaixo do nível 5, como login normal, alimentam o UEBA mas não entram na fila nem nos gráficos.
 - **Cores dos gráficos:** severidade passa nas checagens de daltonismo. Fica de fora só a faixa de brilho, porque amarelo é claro por natureza; legenda, rótulo e tabela de dados também identificam cada faixa.
 
-Falta nesta fase: aprovar e descartar, criação de playbooks em "quando, se, então", catálogo de ações em português, credenciais por cliente, cifradas, e cadastro de usuários pela tela (hoje só direto no banco).
+Automação: playbooks em blocos empilhados (quando, se, então, senão, ao mesmo tempo, pedir aprovação), que também podem ser escritos em YAML, porque os dois são o mesmo formato (`motor/roar_motor/blocos.py`). `testes/fase4/testar_soar.py` comprova o fluxo com banco, Temporal e workers reais, e `testes/fase4/testar_bloqueio_real.py` vai de um ataque em log até a regra no firewall do agente.
+
+- **Três entradas:** modelos prontos, "Automatizar isto" a partir de um alerta aberto e o editor do zero.
+- **Simulação:** refaz os últimos 7 dias com as mesmas funções do disparo, sem executar nada, e mostra quantas vezes e em quais alvos teria disparado.
+- **Aprovação no meio:** a execução espera no Temporal. A tela só grava a decisão, e `roar_motor.disparo` acorda a execução. Sem decisão em 72 horas, conta como recusa.
+- **O alerta é hostil:** o alvo só vira comando se for um IP válido e público, fora da lista de protegidos do playbook. O endereço do webhook vem do playbook, nunca do alerta.
+- **Limites de dano:** todo bloqueio vence sozinho (1 hora, 1 dia ou 7 dias), o mesmo alvo não repete dentro do intervalo, e acima de 20 execuções automáticas por hora o playbook volta a pedir aprovação.
+- **Enviado não é feito:** a API da resposta ativa responde sucesso mesmo em ativo sem firewall. A tela só diz "confirmado" depois do alerta 651 do próprio ativo.
+- **Papéis separados:** `roar_soar` não lê o bruto do alerta nem usuários e não decide por uma pessoa. A API decide, mas não altera execução.
+
+Limites da automação:
+
+- **Sem desbloqueio manual:** a API do Wazuh só envia o comando de adicionar. Para desfazer antes do prazo, é preciso remover a regra no próprio ativo.
+- **Quem cria:** sem papéis, qualquer analista do cliente cria um playbook que bloqueia.
+- **Webhook:** o destino é checado na criação e antes de enviar, mas o nome é resolvido de novo na conexão, então um DNS que muda de resposta nesse intervalo ainda alcança a rede interna. `ROAR_WEBHOOK_INTERNO=1` desliga a checagem de rede interna.
+- **Ações:** só bloquear, avisar e registrar. O catálogo das integrações e os scripts em contêiner isolado ainda não estão ligados à tela.
+- **Serviço:** `roar_motor.disparo` ainda é iniciado à mão, e gerenciadores criados antes desta versão precisam ser recriados para ter os prazos de bloqueio.
+
+Falta nesta fase: credenciais por cliente, cifradas, e cadastro de usuários pela tela (hoje só direto no banco).
 
 Limites da primeira parte:
 

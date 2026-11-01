@@ -49,7 +49,23 @@
       <button type="button" data-vista="arquivos">Arquivos</button>
       <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
+      <button type="button" data-vista="automacao">Automação</button>
     </nav>
+
+    <section id="vista-automacao" class="pagina" aria-label="Automação" hidden>
+      <h2 class="titulo-secao">Aguardando sua decisão</h2>
+      <p class="texto-secao">Confira o alvo antes de aprovar: a origem de um log pode ter sido forjada.</p>
+      <div id="tabela-pendentes" class="tabela-rolagem"></div>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Playbooks</h2>
+        <button id="novo-playbook" type="button" class="botao-primario">Novo playbook</button>
+      </div>
+      <div id="tabela-playbooks" class="tabela-rolagem"></div>
+
+      <h2 class="titulo-secao">Histórico de execuções</h2>
+      <div id="tabela-execucoes" class="tabela-rolagem"></div>
+    </section>
 
     <section id="vista-panorama" class="panorama" aria-label="Panorama">
       <div class="periodo" role="group" aria-label="Período">
@@ -341,6 +357,34 @@
       <button id="mais-biblioteca" type="button" class="botao-discreto" hidden>Carregar mais</button>
       <p class="credito">Regras da comunidade SigmaHQ, sob a Detection Rule License 1.1. A autoria aparece aqui e nos alertas.</p>
     </div>
+  </dialog>
+
+  <dialog id="janela-playbook" class="janela" aria-labelledby="titulo-playbook">
+    <div class="janela-topo">
+      <h2 id="titulo-playbook">Novo playbook</h2>
+      <button id="fechar-playbook" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div id="modelos-playbook" class="modelos"></div>
+    <div class="abas-editor" role="tablist">
+      <button id="aba-blocos" type="button" role="tab" aria-selected="true">Blocos</button>
+      <button id="aba-codigo" type="button" role="tab" aria-selected="false">Código</button>
+    </div>
+    <form id="form-playbook" class="formulario-regra" novalidate>
+      <label>Nome <input id="pb-nome" type="text" maxlength="120" required></label>
+      <div id="pb-blocos"></div>
+      <label id="pb-area-codigo" hidden>Playbook em YAML
+        <textarea id="pb-codigo" rows="20" spellcheck="false"></textarea>
+      </label>
+      <label>Não repetir para o mesmo alvo por (minutos)
+        <input id="pb-intervalo" type="number" min="0" max="10080" value="60">
+      </label>
+      <p id="pb-erro" class="erro" role="alert" hidden></p>
+      <div id="pb-simulacao" class="simulacao" hidden></div>
+      <div class="acoes-regra">
+        <button id="pb-simular" type="button" class="botao-discreto">Simular nos últimos 7 dias</button>
+        <button type="submit" class="botao-primario">Salvar playbook</button>
+      </div>
+    </form>
   </dialog>
 
   <div id="dica" class="dica" role="status" hidden></div>

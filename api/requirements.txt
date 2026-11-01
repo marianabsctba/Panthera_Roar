@@ -5,3 +5,4 @@ psycopg[binary]>=3.2,<3.3
 psycopg-pool>=3.2,<4
 httpx>=0.27,<1
 requests
+pyyaml

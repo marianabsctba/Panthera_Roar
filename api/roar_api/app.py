@@ -13,11 +13,13 @@ import re
 import secrets
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import requests
+import yaml
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -30,8 +32,10 @@ from requests.adapters import HTTPAdapter
 
 # O mesmo conversor que a instalação das regras usa.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
+from roar_motor import acoes, blocos, fatos  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
 ESTATICO = Path(__file__).parent / "estatico"
@@ -42,6 +46,9 @@ JANELA_TENTATIVAS = 900
 # Abaixo disso são acontecimentos normais, como login: alimentam o UEBA, mas não pedem atenção.
 NIVEL_MINIMO_NA_FILA = 5
 TAMANHO_DA_PAGINA = 100
+DIAS_DE_SIMULACAO = 7
+REGRA_DE_BLOQUEIO_CONFIRMADO = "651"
+LIMITE_DE_SIMULACAO = 5000
 # Os mesmos pesos do UEBA; o teste confere que não divergem.
 REGRAS_DE_COMPORTAMENTO = [
     {"tipo": "sucesso_apos_falhas", "peso": 50.0},
@@ -749,6 +756,180 @@ def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(sessao_atua
         arquivo = con.execute("SELECT conteudo FROM arquivos_de_regras WHERE arquivo = %s", (regra["arquivo"],)).fetchone()
     xml = xml_proprio.trecho_da_regra(arquivo["conteudo"], regra_id) if arquivo else None
     return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes, "xml": xml}
+
+
+class PlaybookEntrada(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    definicao: dict
+    intervalo_minutos: int = Field(default=60, ge=0, le=10080)
+
+
+class TextoDePlaybook(BaseModel):
+    texto: str = Field(max_length=100_000)
+
+
+class DefinicaoEntrada(BaseModel):
+    definicao: dict
+    intervalo_minutos: int = Field(default=60, ge=0, le=10080)
+
+
+class Decisao(BaseModel):
+    motivo: str = Field(default="", max_length=500)
+
+
+def _validar_definicao(definicao):
+    try:
+        return blocos.validar(definicao, acoes.validar_acao)
+    except (blocos.DefinicaoInvalida, acoes.AcaoRecusada) as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+
+
+@app.get("/api/automacao")
+def automacao(request: Request, sessao=Depends(sessao_atual)):
+    with do_cliente(request, sessao) as con:
+        playbooks = con.execute(
+            """SELECT p.id, p.nome, p.ativo, p.definicao, p.intervalo_minutos, p.criado_em, p.alterado_em,
+                      (SELECT count(*) FROM execucoes x WHERE x.playbook_id = p.id) AS execucoes
+               FROM playbooks p ORDER BY p.id DESC LIMIT 200""").fetchall()
+        execucoes = con.execute(
+            """SELECT x.id, x.playbook_id, p.nome AS playbook, x.origem_tipo, x.origem_id, x.alvo, x.agente_id, x.titulo,
+                      x.estado, x.resultado, x.criada_em, x.concluida_em,
+                      -- A API da resposta ativa diz sucesso mesmo em ativo sem firewall: quem confirma é o alerta do próprio ativo.
+                      EXISTS (SELECT 1 FROM eventos v WHERE v.regra_id = %s AND v.gerenciador_id = x.gerenciador_id
+                              AND v.agente_id = x.agente_id AND v.ocorrido_em >= x.criada_em
+                              AND v.bruto #>> '{data,parameters,alert,data,srcip}' = x.alvo) AS bloqueio_confirmado
+               FROM execucoes x JOIN playbooks p ON p.id = x.playbook_id
+               ORDER BY x.id DESC LIMIT 200""", (REGRA_DE_BLOQUEIO_CONFIRMADO,)).fetchall()
+        aprovacoes = con.execute(
+            """SELECT a.id, a.execucao_id, a.descricao, a.estado, a.motivo, a.criada_em, a.decidida_em,
+                      roar_nome_do_usuario(a.decidida_por) AS decidida_por, x.alvo, x.titulo, p.nome AS playbook
+               FROM aprovacoes a JOIN execucoes x ON x.id = a.execucao_id JOIN playbooks p ON p.id = x.playbook_id
+               ORDER BY a.estado = 'pendente' DESC, a.id DESC LIMIT 200""").fetchall()
+    return {"playbooks": playbooks, "execucoes": execucoes, "aprovacoes": aprovacoes}
+
+
+@app.post("/api/automacao/playbooks", status_code=201)
+def criar_playbook(dados: PlaybookEntrada, request: Request, sessao=Depends(sessao_atual)):
+    _validar_definicao(dados.definicao)
+    with do_cliente(request, sessao) as con:
+        novo = con.execute(
+            """INSERT INTO playbooks (cliente_id, nome, definicao, intervalo_minutos, criado_por)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (sessao["cliente_id"], dados.nome, json.dumps(dados.definicao), dados.intervalo_minutos, sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_playbook', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(novo)))
+    return {"id": novo}
+
+
+@app.put("/api/automacao/playbooks/{identificador}", status_code=204)
+def alterar_playbook(identificador: int, dados: PlaybookEntrada, request: Request, sessao=Depends(sessao_atual)):
+    _inteiro_valido(identificador)
+    _validar_definicao(dados.definicao)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            "UPDATE playbooks SET nome = %s, definicao = %s, intervalo_minutos = %s, alterado_em = now() WHERE id = %s RETURNING id",
+            (dados.nome, json.dumps(dados.definicao), dados.intervalo_minutos, identificador)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'alterar_playbook', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.post("/api/automacao/playbooks/{identificador}/{acao}", status_code=204)
+def ligar_playbook(identificador: int, acao: str, request: Request, sessao=Depends(sessao_atual)):
+    _inteiro_valido(identificador)
+    if acao not in ("ativar", "desativar"):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE playbooks SET ativo = %s WHERE id = %s RETURNING id", (acao == "ativar", identificador)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{acao}_playbook", str(identificador)))
+
+
+@app.post("/api/automacao/para-codigo")
+def playbook_para_codigo(dados: PlaybookEntrada, sessao=Depends(sessao_atual)):
+    _validar_definicao(dados.definicao)
+    corpo = {"nome": dados.nome, "intervalo_minutos": dados.intervalo_minutos, **dados.definicao}
+    return {"texto": yaml.safe_dump(corpo, allow_unicode=True, sort_keys=False)}
+
+
+@app.post("/api/automacao/de-codigo")
+def playbook_de_codigo(dados: TextoDePlaybook, sessao=Depends(sessao_atual)):
+    # safe_load não instancia objetos: o texto pode ter sido copiado de qualquer lugar.
+    try:
+        corpo = yaml.safe_load(dados.texto)
+    except yaml.YAMLError as erro:
+        raise HTTPException(status_code=422, detail=f"O texto não é um YAML válido: {str(erro)[:200]}")
+    if not isinstance(corpo, dict):
+        raise HTTPException(status_code=422, detail="O texto precisa ter nome, quando, se e blocos.")
+    nome = corpo.pop("nome", None)
+    intervalo = corpo.pop("intervalo_minutos", 60)
+    if not isinstance(nome, str) or not 1 <= len(nome) <= 120:
+        raise HTTPException(status_code=422, detail="Dê um nome ao playbook.")
+    if isinstance(intervalo, bool) or not isinstance(intervalo, int) or not 0 <= intervalo <= 10080:
+        raise HTTPException(status_code=422, detail="O intervalo vai de 0 a 10080 minutos.")
+    _validar_definicao(corpo)
+    return {"nome": nome, "intervalo_minutos": intervalo, "definicao": corpo}
+
+
+@app.post("/api/automacao/simular")
+def simular_playbook(dados: DefinicaoEntrada, request: Request, sessao=Depends(sessao_atual)):
+    """Refaz os últimos dias com as mesmas funções do disparo, sem executar nada."""
+    definicao = _validar_definicao(dados.definicao)
+    quando = definicao["quando"]
+    with do_cliente(request, sessao) as con:
+        if quando["tipo"] == "evento":
+            lista = fatos.eventos_da_regra(con, quando["regra_id"], DIAS_DE_SIMULACAO, LIMITE_DE_SIMULACAO)
+        else:
+            lista = fatos.riscos_recentes(con, DIAS_DE_SIMULACAO)[:LIMITE_DE_SIMULACAO]
+    intervalo = timedelta(minutes=dados.intervalo_minutos)
+    ultimo_por_alvo, disparos, por_alvo, exemplos, recusas = {}, 0, Counter(), [], 0
+    for fato in lista:
+        if not blocos.atende(definicao, fato):
+            continue
+        anterior = ultimo_por_alvo.get(fato["alvo"])
+        if anterior and fato["ocorrido_em"] - anterior < intervalo:
+            continue
+        ultimo_por_alvo[fato["alvo"]] = fato["ocorrido_em"]
+        disparos += 1
+        por_alvo[fato["alvo"] or "sem endereço"] += 1
+        passos = []
+        for bloco in blocos.plano(definicao["blocos"], fato):
+            recusa = acoes.recusa_prevista(bloco["acao"], bloco.get("parametros", {}), fato["alvo"]) if bloco["tipo"] == "acao" else None
+            recusas += 1 if recusa else 0
+            passos.append({"tipo": bloco["tipo"], "acao": bloco.get("acao"), "recusa": recusa})
+        exemplos.append({"quando": fato["ocorrido_em"], "titulo": fato["titulo"], "alvo": fato["alvo"], "passos": passos})
+    return {
+        "dias": DIAS_DE_SIMULACAO, "analisados": len(lista), "limitado": len(lista) >= LIMITE_DE_SIMULACAO,
+        "disparos": disparos, "recusas": recusas,
+        "alvos": [{"alvo": a, "total": t} for a, t in por_alvo.most_common(20)],
+        "exemplos": exemplos[-20:][::-1],
+    }
+
+
+def _decidir(identificador, novo_estado, motivo, request, sessao):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        # Decisão atômica: de dois cliques, só o primeiro encontra a aprovação pendente.
+        linha = con.execute(
+            """UPDATE aprovacoes SET estado = %s, decidida_por = %s, decidida_em = now(), motivo = %s
+               WHERE id = %s AND estado = 'pendente' RETURNING id""",
+            (novo_estado, sessao["usuario_id"], motivo or None, identificador)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=409, detail="Esta aprovação não aguarda mais uma decisão.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], "aprovar_execucao" if novo_estado == "aprovada" else "recusar_execucao", str(identificador)))
+
+
+@app.post("/api/automacao/aprovacoes/{identificador}/aprovar", status_code=204)
+def aprovar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(sessao_atual)):
+    _decidir(identificador, "aprovada", dados.motivo, request, sessao)
+
+
+@app.post("/api/automacao/aprovacoes/{identificador}/recusar", status_code=204)
+def recusar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(sessao_atual)):
+    _decidir(identificador, "recusada", dados.motivo, request, sessao)
 
 
 def _inteiro_valido(identificador):

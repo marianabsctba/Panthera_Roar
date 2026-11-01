@@ -161,7 +161,17 @@ def configuracao_do_gerenciador(conf):
     conf = conf.replace("<logall_json>no</logall_json>", "<logall_json>yes</logall_json>")
     for bloco in ("vulnerability-detection", "indexer"):
         conf = re.sub(rf"(<{bloco}>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
-    return conf
+    return conf + _RESPOSTAS_COM_PRAZO
+
+
+# Cada prazo vira o comando firewall-drop<segundos>, que o ativo desfaz sozinho ao vencer.
+# O grupo não existe em regra nenhuma: o bloqueio só sai quando um playbook pede, nunca por regra.
+SEGUNDOS_DE_BLOQUEIO = (3600, 86400, 604800)
+_RESPOSTAS_COM_PRAZO = "\n<ossec_config>\n" + "".join(
+    f"  <active-response>\n    <disabled>no</disabled>\n    <command>firewall-drop</command>\n    <location>local</location>\n"
+    f"    <rules_group>roar_so_por_playbook</rules_group>\n    <timeout>{s}</timeout>\n  </active-response>\n"
+    for s in SEGUNDOS_DE_BLOQUEIO
+) + "</ossec_config>\n"
 
 
 def criar(nome, endereco_portas="127.0.0.1"):

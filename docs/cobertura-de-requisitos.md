@@ -20,8 +20,8 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Hunting | 2 | Parcial: busca em eventos e logs brutos |
 | UEBA | Análise de comportamento | 5 | Feito, primeira versão |
 | | Score de risco | 3 | Feito |
-| SOAR | Resposta automatizada | 5 | Parcial: motor pronto, sem tela |
-| | Playbooks | 3 | Falta a tela |
+| SOAR | Resposta automatizada | 5 | Pronto: bloquear, avisar e registrar, com prova em agente real; faltam mais ações |
+| | Playbooks | 3 | Pronto: blocos, modelos, simulação e YAML |
 | Inteligência | Feeds e IOC | 5 | Falta |
 | | STIX | 3 | Falta |
 | Retenção | Período mínimo | 5 | Parcial: 90 dias configuráveis, sem camada fria para anos |
