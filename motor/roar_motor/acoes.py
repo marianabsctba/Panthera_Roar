@@ -85,7 +85,10 @@ def _ler_env(caminho):
 def _api_do_gerenciador(gerenciador_id, metodo, rota, **kwargs):
     # Conexão local com a API do contêiner, cujo certificado é autoassinado.
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    env = _ler_env(PASTA_GERENCIADORES / gerenciador_id / ".env")
+    try:
+        env = _ler_env(PASTA_GERENCIADORES / gerenciador_id / ".env")
+    except FileNotFoundError:
+        raise AcaoRecusada("Este alerta veio de um gerenciador que não está conectado.")
     base = f"https://127.0.0.1:{env['PORTA_API']}"
     token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", env["API_SENHA"]), verify=False, timeout=30)
     token.raise_for_status()
