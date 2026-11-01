@@ -172,10 +172,11 @@ def main():
     tecnicas = {"5760": ["T1110.001"], "5710": ["T1110.001"], "40111": ["T1110"], "5402": ["T1548.003"], "100002": ["T1486"]}
     for regra, descricao, nivel in catalogo:
         ADMIN.execute(
-            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'regras.xml')",
+            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo, normas)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'regras.xml', %s)",
             (cliente, ger, regra, nivel, descricao, ["authentication_failed"] if regra in tecnicas else ["syslog"],
-             tecnicas.get(regra, [])))
+             MARCAS.get(regra, {}).get("mitre", {}).get("id", []),
+             Jsonb({k: v for k, v in MARCAS.get(regra, {}).items() if k != "mitre"})))
 
     # Ativos como a sincronização com o gerenciador real traz.
     agora_ativo = datetime.now(timezone.utc)
