@@ -1,0 +1,4 @@
+temporalio==1.35.0
+shuffle-sdk==0.0.41
+requests
+uncurl
