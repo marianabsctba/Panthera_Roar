@@ -87,7 +87,7 @@ Concluída. `testes/fase1/testar_ingestao.py` comprova, com gerenciadores e agen
 - **Dono do alerta:** é o gerenciador em cujo índice o alerta está. Nome do agente, nome do gerenciador e conteúdo do log nunca decidem.
 - **Detecção isolada:** o silêncio de 60 segundos das regras (`ignore`) vale para um gerenciador inteiro. Compartilhado, um ataque a um cliente calava a detecção de outro, o que foi provado com grupo de controle. Separados, os dois disparam.
 - **Índice e credencial por cliente:** cada gerenciador só escreve no próprio prefixo. Não lê, não apaga, não altera pipeline, modelo de índice nem usuários. A ingestão lê com um usuário próprio, só de leitura.
-- **Pipeline sem redirecionamento:** o pipeline original do Wazuh escolhe o índice por um campo enviado pelo próprio gerenciador, depois da checagem de permissão. Removemos esse processador.
+- **Índice definido pela requisição:** o pipeline original escolhe o índice por um campo enviado pelo gerenciador. Testamos o desvio e o indexer recusa, porque confere a permissão também no destino. Mesmo assim removemos esse processador: cada gerenciador já grava direto no próprio índice, e um campo a menos decide para onde o dado vai.
 - **Inscrição com senha:** cada gerenciador tem a sua, e agente com senha errada não entra.
 - **Isolamento no banco:** RLS forçado em todas as tabelas de cliente. Sem cliente na transação, nada aparece. O papel da API só lê, e o da ingestão não muda o dono de um gerenciador nem grava em outro cliente.
 - **Grupos:** um por ativo, origem e dia (sem origem, também por regra), com a maior severidade já vista. Ruído não esconde o evento grave.
@@ -104,6 +104,7 @@ Limites:
 - **Certificado:** os gerenciadores usam o mesmo certificado de cliente para falar com o indexer. O que autoriza é o usuário de cada um, mas o certificado também deveria ser individual.
 - **RLS:** protege contra consulta sem filtro, não contra SQL injection, porque quem executa SQL arbitrário pode definir outro cliente.
 - **Dado em repouso:** ainda não está cifrado.
+- **Descarte silencioso:** o pipeline do Wazuh apaga, sem registrar, o documento que falhar ao ser processado (`on_failure: drop`). Esse alerta nunca chega à ingestão nem à quarentena. Trocar o descarte por um índice de falhas é pendência antes de produção.
 
 ### Fase 2: UEBA
 

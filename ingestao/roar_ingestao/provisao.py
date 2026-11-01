@@ -89,9 +89,8 @@ def preparar():
 
     versao = _na_imagem("filebeat", "version").split()[2]
     pipeline = json.loads(_na_imagem("cat", "/usr/share/filebeat/module/wazuh/alerts/ingest/pipeline.json"))
-    # O processador original escolhe o índice por um campo enviado pelo próprio gerenciador,
-    # e o redirecionamento acontece depois da checagem de permissão. Sem ele, o índice é o
-    # da requisição, que a permissão de cada gerenciador restringe.
+    # O processador original escolhe o índice por um campo enviado pelo gerenciador. Cada
+    # gerenciador já grava direto no próprio índice, então o índice fica sendo o da requisição.
     pipeline["processors"] = [p for p in pipeline["processors"] if "date_index_name" not in p]
     _pedir(indexer, "PUT", f"_ingest/pipeline/filebeat-{versao}-wazuh-alerts-pipeline", pipeline)
 

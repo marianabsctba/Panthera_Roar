@@ -167,11 +167,13 @@ def testar_permissoes_do_indexer(amb, a, b):
     item = r.json()["items"][0]["index"] if r.ok else {"status": r.status_code}
     registrar("A não grava em B por lote", item.get("status") in (401, 403), str(item.get("status")))
 
-    # O ataque ao pipeline original: o campo enviado pelo gerenciador escolhia o índice.
+    # No pipeline original, um campo enviado pelo gerenciador escolhia o índice.
     versao = provisao._na_imagem("filebeat", "version").split()[2]
     marca = f"forjado-{uuid.uuid4().hex}"
-    forjado = dict(corpo, id=marca, fields={"index_prefix": indice_b}, timestamp="2026-11-01T12:00:00.000+0000")
-    forjado.update({"@timestamp": "2026-11-01T12:00:00.000Z"})
+    # Como o Filebeat envia: o alerta dentro de message. Sem isso, o pipeline descarta o documento.
+    alerta = dict(corpo, id=marca, timestamp="2026-11-01T12:00:00.000+0000")
+    forjado = {"message": json.dumps(alerta), "fields": {"index_prefix": indice_b},
+               "@timestamp": "2026-11-01T12:00:00.000Z"}
     r = s.post(f"{URL}/{indice_a}proprio/_doc?pipeline=filebeat-{versao}-wazuh-alerts-pipeline&refresh=true",
                json=forjado, timeout=30)
     amb.indexer.sessao.post(f"{URL}/{provisao.PREFIXO}*/_refresh", timeout=30)
