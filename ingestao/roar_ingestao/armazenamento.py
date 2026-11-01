@@ -1,6 +1,6 @@
 """Grava eventos no banco. Reprocessar o mesmo alerta nunca conta duas vezes."""
 
-from collections import defaultdict
+from collections import Counter
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -18,41 +18,37 @@ from .normalizar import (
 
 
 class Armazenamento:
-    def __init__(self, url, origem="wazuh", gerenciador="padrao"):
+    def __init__(self, url, origem="wazuh"):
         self.con = psycopg.connect(url)
         self.origem = origem
-        self.gerenciador = gerenciador
 
     def fechar(self):
         self.con.close()
 
-    def mapa_de_agentes(self):
+    def gerenciadores(self):
         with self.con.transaction():
-            linhas = self.con.execute(
-                "SELECT agente_id, cliente_id FROM agentes WHERE gerenciador = %s", (self.gerenciador,)
-            ).fetchall()
-        return {agente: cliente for agente, cliente in linhas}
+            return self.con.execute("SELECT id, cliente_id FROM gerenciadores ORDER BY id").fetchall()
 
-    def _quarentena(self, origem_id, motivo, agente_id, alerta):
-        # Atualiza o motivo: assim a recuperação não apaga um alerta que falhou de novo.
+    def _quarentena(self, gerenciador_id, origem_id, motivo, agente_id, alerta):
+        # Atualiza o motivo para reprocessar sem erro; o conteúdo original é mantido.
         self.con.execute(
-            "INSERT INTO quarentena (origem, origem_id, motivo, agente_id, bruto)"
-            " VALUES (%s, %s, %s, %s, %s)"
-            " ON CONFLICT (origem, origem_id) DO UPDATE SET motivo = EXCLUDED.motivo",
-            (self.origem, limpar(origem_id), motivo, agente_id and limpar(agente_id),
+            "INSERT INTO quarentena (gerenciador_id, origem, origem_id, motivo, agente_id, bruto)"
+            " VALUES (%s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (gerenciador_id, origem, origem_id) DO UPDATE SET motivo = EXCLUDED.motivo",
+            (gerenciador_id, self.origem, limpar(origem_id), motivo, agente_id and limpar(agente_id),
              Jsonb(bruto_seguro(alerta))),
         )
 
-    def _gravar_evento(self, cliente, ev):
+    def _gravar_evento(self, gerenciador_id, cliente, ev):
         """Devolve True se o evento é novo. O grupo só conta quando o evento é inédito."""
         novo = self.con.execute(
-            """INSERT INTO eventos (cliente_id, origem, origem_id, ocorrido_em, nivel, severidade,
-                 regra_id, regra_descricao, regra_grupos, mitre, agente_id, agente_nome,
+            """INSERT INTO eventos (cliente_id, gerenciador_id, origem, origem_id, ocorrido_em, nivel,
+                 severidade, regra_id, regra_descricao, regra_grupos, mitre, agente_id, agente_nome,
                  ip_origem, usuario, bruto)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (cliente_id, origem, origem_id) DO NOTHING
                RETURNING id""",
-            (cliente, self.origem, ev.origem_id, ev.ocorrido_em, ev.nivel, ev.severidade,
+            (cliente, gerenciador_id, self.origem, ev.origem_id, ev.ocorrido_em, ev.nivel, ev.severidade,
              ev.regra_id, ev.regra_descricao, ev.regra_grupos, ev.mitre, ev.agente_id,
              ev.agente_nome, ev.ip_origem, ev.usuario, Jsonb(ev.bruto)),
         ).fetchone()
@@ -61,9 +57,9 @@ class Armazenamento:
 
         # A severidade do grupo é a maior já vista: ruído não esconde o evento grave.
         grupo = self.con.execute(
-            """INSERT INTO grupos_alerta AS g (cliente_id, chave, dia, agente_id, ip_origem, nivel,
-                 severidade, regras, primeira_em, ultima_em)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """INSERT INTO grupos_alerta AS g (cliente_id, chave, dia, gerenciador_id, agente_id, ip_origem,
+                 nivel, severidade, regras, primeira_em, ultima_em)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (cliente_id, chave) DO UPDATE SET
                  total = g.total + 1,
                  nivel = GREATEST(g.nivel, EXCLUDED.nivel),
@@ -72,70 +68,38 @@ class Armazenamento:
                  primeira_em = LEAST(g.primeira_em, EXCLUDED.primeira_em),
                  ultima_em = GREATEST(g.ultima_em, EXCLUDED.ultima_em)
                RETURNING id""",
-            (cliente, chave_do_grupo(ev), ev.ocorrido_em.date(), ev.agente_id, ev.ip_origem, ev.nivel,
-             severidade_do_nivel(ev.nivel), [ev.regra_id], ev.ocorrido_em, ev.ocorrido_em),
+            (cliente, chave_do_grupo(ev, gerenciador_id), ev.ocorrido_em.date(), gerenciador_id, ev.agente_id,
+             ev.ip_origem, ev.nivel, severidade_do_nivel(ev.nivel), [ev.regra_id], ev.ocorrido_em, ev.ocorrido_em),
         ).fetchone()
         self.con.execute("UPDATE eventos SET grupo_id = %s WHERE id = %s", (grupo[0], novo[0]))
         return True
 
-    def gravar_lote(self, documentos, mapa):
-        """Separa por cliente e grava cada um na sua transação, sob o RLS dele."""
-        contagem = defaultdict(int)
-        por_cliente = defaultdict(list)
-
+    def gravar_lote(self, documentos, gerenciador_id, cliente):
+        """Grava sob o RLS do dono do gerenciador. Um alerta ruim não trava a fila do cliente."""
+        contagem = Counter()
         with self.con.transaction():
+            self.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
             for origem_id, alerta in documentos:
                 try:
                     evento = normalizar(origem_id, alerta)
                 except AlertaInvalido as erro:
-                    self._quarentena(origem_id, str(erro), agente_do_alerta(alerta), alerta)
+                    self._quarentena(gerenciador_id, origem_id, str(erro), agente_do_alerta(alerta), alerta)
                     contagem["invalidos"] += 1
                     continue
-                cliente = mapa.get(evento.agente_id)
-                if cliente is None:
-                    motivo = ("agente_do_gerenciador" if evento.agente_id == AGENTE_DO_GERENCIADOR
-                              else "agente_desconhecido")
-                    self._quarentena(origem_id, motivo, evento.agente_id, alerta)
+                if evento.agente_id == AGENTE_DO_GERENCIADOR:
+                    # Eventos do próprio gerenciador são da nossa infraestrutura, não do cliente.
+                    self._quarentena(gerenciador_id, origem_id, "agente_do_gerenciador", evento.agente_id, alerta)
                     contagem["quarentena"] += 1
                     continue
-                por_cliente[cliente].append((evento, alerta))
-
-        for cliente, itens in por_cliente.items():
-            with self.con.transaction():
-                self.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
-                for evento, alerta in itens:
-                    try:
-                        with self.con.transaction():
-                            contagem["novos" if self._gravar_evento(cliente, evento) else "repetidos"] += 1
-                    except psycopg.Error as erro:
-                        # Um alerta ruim não pode travar a fila do cliente.
-                        self._quarentena(evento.origem_id, f"erro_gravacao:{type(erro).__name__}",
-                                         evento.agente_id, alerta)
-                        contagem["erros"] += 1
+                try:
+                    with self.con.transaction():
+                        novo = self._gravar_evento(gerenciador_id, cliente, evento)
+                    contagem["novos" if novo else "repetidos"] += 1
+                except psycopg.Error as erro:
+                    self._quarentena(gerenciador_id, origem_id, f"erro_gravacao:{type(erro).__name__}",
+                                     evento.agente_id, alerta)
+                    contagem["erros"] += 1
         return contagem
-
-    def recuperar_quarentena(self, mapa, tamanho=500):
-        """Agente mapeado depois do alerta: os alertas dele saem da quarentena para o cliente."""
-        if not mapa:
-            return 0
-        recuperados = 0
-        while True:
-            with self.con.transaction():
-                linhas = self.con.execute(
-                    "SELECT origem_id, bruto FROM quarentena WHERE origem = %s"
-                    " AND motivo = 'agente_desconhecido' AND agente_id = ANY(%s) LIMIT %s",
-                    (self.origem, list(mapa), tamanho),
-                ).fetchall()
-            if not linhas:
-                return recuperados
-            self.gravar_lote(linhas, mapa)
-            with self.con.transaction():
-                self.con.execute(
-                    "DELETE FROM quarentena WHERE origem = %s AND origem_id = ANY(%s)"
-                    " AND motivo = 'agente_desconhecido'",
-                    (self.origem, [o for o, _ in linhas]),
-                )
-            recuperados += len(linhas)
 
     def ler_checkpoint(self, fonte):
         with self.con.transaction():

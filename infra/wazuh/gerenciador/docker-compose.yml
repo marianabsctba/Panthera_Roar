@@ -1,0 +1,69 @@
+# Gerenciador do Wazuh de um cliente. Gerado por roar_ingestao.provisao.
+# A API fica só em 127.0.0.1; as portas de agentes dependem de PORTAS_ENDERECO.
+services:
+  gerenciador:
+    image: wazuh/wazuh-manager:${WAZUH_VERSAO}
+    hostname: gerenciador-${GERENCIADOR_ID}
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    ports:
+      - "${PORTAS_ENDERECO}:${PORTA_EVENTOS}:1514"
+      - "${PORTAS_ENDERECO}:${PORTA_INSCRICAO}:1515"
+      - "127.0.0.1:${PORTA_API}:55000"
+    environment:
+      - INDEXER_URL="https://wazuh.indexer:9200"
+      - INDEXER_USERNAME=${INDEXER_USUARIO}
+      - INDEXER_PASSWORD=${INDEXER_SENHA}
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=roar
+      - API_PASSWORD=${API_SENHA}
+      - ROAR_INDICE=${INDICE}
+    volumes:
+      - api:/var/ossec/api/configuration
+      - etc:/var/ossec/etc
+      - logs:/var/ossec/logs
+      - queue:/var/ossec/queue
+      - multigroups:/var/ossec/var/multigroups
+      - integrations:/var/ossec/integrations
+      - active_response:/var/ossec/active-response/bin
+      - agentless:/var/ossec/agentless
+      - wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ${CERTIFICADOS}/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ${CERTIFICADOS}/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ${CERTIFICADOS}/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ./ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      - ./authd.pass:/wazuh-config-mount/etc/authd.pass:ro
+      - ./1-roar-filebeat:/etc/cont-init.d/1-roar-filebeat:ro
+    networks:
+      rede:
+        aliases:
+          - gerenciador-${GERENCIADOR_ID}
+
+volumes:
+  api:
+  etc:
+  logs:
+  queue:
+  multigroups:
+  integrations:
+  active_response:
+  agentless:
+  wodles:
+  filebeat_etc:
+  filebeat_var:
+
+networks:
+  rede:
+    external: true
+    name: ${REDE}

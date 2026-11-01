@@ -15,22 +15,22 @@ CREATE TABLE clientes (
   criado_em timestamptz NOT NULL DEFAULT now()
 );
 
--- O agent.id é autenticado pelo gerenciador; o nome do agente pode ser forjado.
--- A chave primária garante que um agente pertence a um único cliente.
-CREATE TABLE agentes (
-  gerenciador text NOT NULL DEFAULT 'padrao',
-  agente_id text NOT NULL,
+-- Cada cliente tem o seu gerenciador do Wazuh, com índice e credenciais próprios.
+-- O dono de um alerta é o gerenciador em cujo índice ele está, nunca o conteúdo do alerta.
+CREATE TABLE gerenciadores (
+  id text PRIMARY KEY CHECK (id ~ '^[a-z0-9]{6,32}$'),
   cliente_id uuid NOT NULL REFERENCES clientes (id),
-  criado_em timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (gerenciador, agente_id)
+  porta_base integer NOT NULL UNIQUE,
+  criado_em timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX ON agentes (cliente_id);
+CREATE INDEX ON gerenciadores (cliente_id);
 
 CREATE TABLE grupos_alerta (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   cliente_id uuid NOT NULL REFERENCES clientes (id),
   chave text NOT NULL,
   dia date NOT NULL,
+  gerenciador_id text NOT NULL REFERENCES gerenciadores (id),
   agente_id text NOT NULL,
   ip_origem inet,
   nivel smallint NOT NULL,
@@ -58,6 +58,7 @@ CREATE TABLE eventos (
   regra_descricao text,
   regra_grupos text[] NOT NULL DEFAULT '{}',
   mitre text[] NOT NULL DEFAULT '{}',
+  gerenciador_id text NOT NULL REFERENCES gerenciadores (id),
   agente_id text NOT NULL,
   agente_nome text,
   ip_origem inet,
@@ -71,17 +72,18 @@ CREATE INDEX ON eventos (cliente_id, ocorrido_em DESC);
 CREATE INDEX ON eventos (cliente_id, usuario, ocorrido_em DESC);
 CREATE INDEX ON eventos (cliente_id, grupo_id);
 
--- O que não tem dono conhecido nunca entra em cliente nenhum.
+-- O que não pode virar evento de cliente nunca entra em cliente nenhum.
 CREATE TABLE quarentena (
+  gerenciador_id text NOT NULL REFERENCES gerenciadores (id),
   origem text NOT NULL,
   origem_id text NOT NULL,
   motivo text NOT NULL,
   agente_id text,
   recebido_em timestamptz NOT NULL DEFAULT now(),
   bruto jsonb NOT NULL,
-  PRIMARY KEY (origem, origem_id)
+  PRIMARY KEY (gerenciador_id, origem, origem_id)
 );
-CREATE INDEX ON quarentena (motivo, agente_id);
+CREATE INDEX ON quarentena (motivo);
 
 CREATE TABLE checkpoints (
   fonte text PRIMARY KEY,
@@ -91,8 +93,8 @@ CREATE TABLE checkpoints (
 
 ALTER TABLE clientes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clientes FORCE ROW LEVEL SECURITY;
-ALTER TABLE agentes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE agentes FORCE ROW LEVEL SECURITY;
+ALTER TABLE gerenciadores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gerenciadores FORCE ROW LEVEL SECURITY;
 ALTER TABLE grupos_alerta ENABLE ROW LEVEL SECURITY;
 ALTER TABLE grupos_alerta FORCE ROW LEVEL SECURITY;
 ALTER TABLE eventos ENABLE ROW LEVEL SECURITY;
@@ -100,9 +102,9 @@ ALTER TABLE eventos FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY isolamento ON clientes TO roar_api USING (id = roar_cliente_atual());
 
-CREATE POLICY isolamento ON agentes TO roar_api USING (cliente_id = roar_cliente_atual());
--- A ingestão precisa do mapa inteiro para decidir o dono de cada alerta, só para leitura.
-CREATE POLICY mapa ON agentes FOR SELECT TO roar_ingestao USING (true);
+CREATE POLICY isolamento ON gerenciadores TO roar_api USING (cliente_id = roar_cliente_atual());
+-- A ingestão percorre todos os gerenciadores, só para leitura.
+CREATE POLICY percurso ON gerenciadores FOR SELECT TO roar_ingestao USING (true);
 
 CREATE POLICY isolamento ON grupos_alerta TO roar_api, roar_ingestao
   USING (cliente_id = roar_cliente_atual())
@@ -112,12 +114,12 @@ CREATE POLICY isolamento ON eventos TO roar_api, roar_ingestao
   USING (cliente_id = roar_cliente_atual())
   WITH CHECK (cliente_id = roar_cliente_atual());
 
-GRANT SELECT ON agentes TO roar_ingestao;
+GRANT SELECT ON gerenciadores TO roar_ingestao;
 GRANT SELECT, INSERT, UPDATE ON grupos_alerta TO roar_ingestao;
 GRANT SELECT, INSERT ON eventos TO roar_ingestao;
 GRANT UPDATE (grupo_id) ON eventos TO roar_ingestao;
-GRANT SELECT, INSERT, DELETE ON quarentena TO roar_ingestao;
+GRANT SELECT, INSERT ON quarentena TO roar_ingestao;
 GRANT UPDATE (motivo) ON quarentena TO roar_ingestao;
 GRANT SELECT, INSERT, UPDATE ON checkpoints TO roar_ingestao;
 
-GRANT SELECT ON clientes, agentes, grupos_alerta, eventos TO roar_api;
+GRANT SELECT ON clientes, gerenciadores, grupos_alerta, eventos TO roar_api;

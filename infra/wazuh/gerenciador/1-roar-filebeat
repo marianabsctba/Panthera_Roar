@@ -1,0 +1,12 @@
+#!/usr/bin/with-contenv bash
+# Roda depois de 1-config-filebeat. O gerenciador grava só no índice do cliente e não
+# carrega modelo de índice: isso é feito uma vez, com a credencial de administrador.
+set -e
+
+ARQUIVO=/etc/filebeat/filebeat.yml
+
+sed -i '/^setup\.template/d' "$ARQUIVO"
+echo 'setup.template.enabled: false' >>"$ARQUIVO"
+
+sed -i '/^  index: /d' "$ARQUIVO"
+sed -i "s|^output.elasticsearch:|output.elasticsearch:\n  index: '${ROAR_INDICE}%{+yyyy.MM.dd}'|" "$ARQUIVO"

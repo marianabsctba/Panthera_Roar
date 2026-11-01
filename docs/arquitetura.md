@@ -14,7 +14,7 @@ SIEM open source, sem nenhum componente pago, com análise de comportamento e re
 ## Componentes
 
 ```
-agentes -> Wazuh -> indexer
+agentes -> gerenciador do cliente -> indexer
                        |
                        v
                  ingestão (normaliza, deduplica, agrega)
@@ -31,7 +31,7 @@ agentes -> Wazuh -> indexer
 
 | Parte | Tecnologia | Papel |
 |---|---|---|
-| **Coleta e detecção** | Wazuh | Agentes, regras e decoders |
+| **Coleta e detecção** | Wazuh, um gerenciador por cliente | Agentes, regras e decoders |
 | **Ingestão** | Python | Lê o indexer e gera o evento normalizado |
 | **UEBA** | Python | Baseline por entidade e por grupo de pares, score com decaimento |
 | **IA** | Ollama, modelo aberto | Resumo, classificação e sugestão |
@@ -58,13 +58,13 @@ O motor fica atrás do nosso formato de playbook. Segundo a documentação do Te
 
 ### Fase 0: testes que podem mudar o desenho
 
-Concluída. `infra/subir.sh` sobe tudo e `testes/fase0/` comprova:
+Concluída. `infra/subir.sh` sobe tudo do zero com um comando, e `testes/fase0/` comprova o motor:
 
 - [x] Shuffle pela API e limite de sub-organizações (teste descartado junto com o Shuffle).
 - [x] Integração MIT rodando em worker nosso, sem o Shuffle e sem falar com a Shuffle.
 - [x] Playbook durável: com o worker morto no meio, o passo concluído não repete e o interrompido é refeito.
 - [x] Fila por cliente: sem o worker de um cliente, nada dele roda.
-- [x] Wazuh 4.14.9 com alertas chegando ao indexer, tudo em 127.0.0.1.
+- [x] Wazuh 4.14.9 com alertas chegando ao indexer, tudo em 127.0.0.1 (coberto na Fase 1).
 
 Limites do que foi testado:
 
@@ -76,37 +76,34 @@ Pendências de segurança antes de qualquer dado real:
 
 - Os resultados ficam abertos no histórico do Temporal: cifrar por cliente, com codec de payload.
 - Configurar o autorizador do Temporal e TLS.
-- Trocar as senhas padrão do Wazuh e gerar outras por instalação, com usuário só de leitura para a ingestão.
-- Exigir senha na inscrição de agentes: hoje qualquer máquina que alcance o gerenciador se inscreve, embora caia na quarentena.
+- Trocar a senha padrão de administrador do indexer e gerar outra por instalação.
 - Definir retenção de eventos e da quarentena, que hoje crescem sem limite e guardam dado pessoal.
 - A fila nunca pode vir da requisição: um fluxo posto na fila errada é processado pelo worker daquela fila, que vê o conteúdo mesmo sem executar a ação. A API deve derivar a fila do cliente autenticado.
 
-### Fase 1: ingestão
+### Fase 1: ingestão com um gerenciador por cliente
 
-Concluída, com a ressalva da decisão abaixo. `testes/fase1/testar_ingestao.py` comprova, com agentes Wazuh reais:
+Concluída. `testes/fase1/testar_ingestao.py` comprova, com gerenciadores e agentes Wazuh reais:
 
-- **Dono do alerta:** vem de um mapa nosso de `agent.id`, autenticado pelo gerenciador. Nome do agente e conteúdo do log nunca decidem. Agente sem dono e alerta inválido vão para a quarentena, de onde saem quando o agente é mapeado.
-- **Isolamento no banco:** RLS forçado em todas as tabelas de cliente. Sem cliente na transação, nada aparece. O papel da API só lê, e o da ingestão não altera o mapa nem grava em outro cliente.
+- **Dono do alerta:** é o gerenciador em cujo índice o alerta está. Nome do agente, nome do gerenciador e conteúdo do log nunca decidem.
+- **Detecção isolada:** o silêncio de 60 segundos das regras (`ignore`) vale para um gerenciador inteiro. Compartilhado, um ataque a um cliente calava a detecção de outro, o que foi provado com grupo de controle. Separados, os dois disparam.
+- **Índice e credencial por cliente:** cada gerenciador só escreve no próprio prefixo. Não lê, não apaga, não altera pipeline, modelo de índice nem usuários. A ingestão lê com um usuário próprio, só de leitura.
+- **Pipeline sem redirecionamento:** o pipeline original do Wazuh escolhe o índice por um campo enviado pelo próprio gerenciador, depois da checagem de permissão. Removemos esse processador.
+- **Inscrição com senha:** cada gerenciador tem a sua, e agente com senha errada não entra.
+- **Isolamento no banco:** RLS forçado em todas as tabelas de cliente. Sem cliente na transação, nada aparece. O papel da API só lê, e o da ingestão não muda o dono de um gerenciador nem grava em outro cliente.
 - **Grupos:** um por ativo, origem e dia (sem origem, também por regra), com a maior severidade já vista. Ruído não esconde o evento grave.
 - **Reprocessar não duplica:** cada ciclo relê 5 minutos para trás. Atraso maior que isso só entra com `--desde`.
 - **Alerta hostil não trava a fila:** caractere nulo, UTF-8 inválido, estrutura profunda e alerta gigante foram testados.
-- **Vazão:** cerca de 580 alertas por segundo, em um processo, gravando alerta por alerta. Serve para começar; lote em uma só instrução fica para quando o volume pedir.
+- **Justiça entre clientes:** cada ciclo atende um volume limitado por gerenciador, e falha em um não para os outros.
 
-Limites do isolamento: o RLS protege contra consulta sem filtro, não contra SQL injection, porque quem executa SQL arbitrário pode definir outro cliente. O dado não está cifrado em repouso.
+Custo medido, em teste com um agente: cerca de 390 MiB por gerenciador, mais o indexer compartilhado (1,7 GiB). Vazão: de 430 a 580 alertas por segundo em um processo, gravando alerta por alerta. Serve para começar; lote em uma só instrução fica para quando o volume pedir.
 
-#### Decisão aberta: gerenciador do Wazuh por cliente
+Limites:
 
-Um gerenciador compartilhado não isola a detecção. `testes/fase1/investigar_correlacao.py` mostra, com controle:
-
-| Situação | Resultado |
-|---|---|
-| B sozinho, 10 tentativas | Regra de força bruta dispara em B |
-| A dispara e, logo depois, B sofre 10 tentativas de outro IP | **Nada dispara em B** |
-| Mesmo IP, 5 tentativas em A e 5 em B | Não soma entre agentes |
-
-O silêncio de 60 segundos da regra (`ignore`) vale para o gerenciador inteiro. Quem ataca um cliente pode calar a detecção correlacionada de outro. Além disso, regras e decoders ficam iguais para todos os clientes.
-
-A recomendação é um gerenciador por cliente. A coluna `gerenciador` já existe no mapa de agentes, mas a ingestão ainda lê um só. O alternativo é manter um só e remover o `ignore` das regras, deixando a redução de ruído para os nossos grupos: custa menos memória, mas exige manter regras sobrepostas e não resolve o ajuste por cliente.
+- **Indexer compartilhado:** permissões separam os dados, mas disco e memória são comuns, e o administrador do indexer vê tudo. Cliente que exija mais isolamento pode ter um indexer próprio.
+- **Detecção de vulnerabilidades desligada:** ela usa um índice de estado compartilhado. Volta quando esse índice também for separado por cliente.
+- **Certificado:** os gerenciadores usam o mesmo certificado de cliente para falar com o indexer. O que autoriza é o usuário de cada um, mas o certificado também deveria ser individual.
+- **RLS:** protege contra consulta sem filtro, não contra SQL injection, porque quem executa SQL arbitrário pode definir outro cliente.
+- **Dado em repouso:** ainda não está cifrado.
 
 ### Fase 2: UEBA
 

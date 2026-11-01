@@ -1,7 +1,7 @@
 """Transforma um alerta do Wazuh no evento do Roar.
 
 Quase tudo no alerta pode ter sido escrito pelo atacante. Aqui nada é interpretado
-como instrução, e o dono do evento nunca sai daqui: quem decide é o mapa de agentes.
+como instrução, e o dono do evento nunca sai daqui: quem decide é o índice de onde ele veio.
 """
 
 import hashlib
@@ -116,7 +116,7 @@ def _ip(valor):
         return None
 
 
-def _momento(valor):
+def momento_do_alerta(valor):
     if not isinstance(valor, str):
         raise AlertaInvalido("sem_horario")
     try:
@@ -159,7 +159,7 @@ def normalizar(origem_id, alerta):
 
     return Evento(
         origem_id=origem_id,
-        ocorrido_em=_momento(alerta.get("timestamp")),
+        ocorrido_em=momento_do_alerta(alerta.get("timestamp")),
         nivel=nivel,
         severidade=severidade_do_nivel(nivel),
         regra_id=regra_id,
@@ -174,8 +174,8 @@ def normalizar(origem_id, alerta):
     )
 
 
-def chave_do_grupo(evento):
+def chave_do_grupo(evento, gerenciador_id):
     """Um ataque vira um grupo só: por ativo, origem e dia. Sem origem, separa por regra."""
     dia = evento.ocorrido_em.date().isoformat()
-    partes = [evento.agente_id, evento.ip_origem or "", "" if evento.ip_origem else evento.regra_id, dia]
+    partes = [gerenciador_id, evento.agente_id, evento.ip_origem or "", "" if evento.ip_origem else evento.regra_id, dia]
     return hashlib.sha256("|".join(partes).encode()).hexdigest()

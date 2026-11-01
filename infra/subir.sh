@@ -41,7 +41,7 @@ cp "$BASE/wazuh/docker-compose.override.yml" "$WAZUH/docker-compose.override.yml
 if [ ! -f "$WAZUH/config/wazuh_indexer_ssl_certs/root-ca.pem" ]; then
   docker compose --project-directory "$WAZUH" -f "$WAZUH/generate-indexer-certs.yml" run --rm generator
 fi
-docker compose --project-directory "$WAZUH" --project-name panthera-roar-wazuh up -d wazuh.indexer wazuh.manager
+docker compose --project-directory "$WAZUH" --project-name panthera-roar-wazuh up -d wazuh.indexer
 for chave in INDEXER_USERNAME INDEXER_PASSWORD; do
   grep -q "^WAZUH_$chave=" "$DESTINO/.env" \
     || echo "WAZUH_$chave=$(grep -m1 "$chave=" "$WAZUH/docker-compose.yml" | cut -d= -f2-)" >>"$DESTINO/.env"
@@ -61,4 +61,6 @@ if [ ! -x "$DESTINO/venv/bin/python" ]; then
 fi
 "$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/ingestao/requirements.txt"
 
-echo "Ambiente no ar."
+PYTHONPATH="$RAIZ/ingestao" "$DESTINO/venv/bin/python" -m roar_ingestao.provisao preparar
+
+echo "Ambiente no ar. Para cada cliente: python -m roar_ingestao.provisao criar --nome <cliente>"

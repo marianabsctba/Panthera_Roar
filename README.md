@@ -11,6 +11,11 @@ Requer Linux com Docker, Git e Python 3.12, rodando como root ou com `sudo`.
 ```bash
 sudo bash infra/subir.sh
 sudo /opt/panthera-roar/venv/bin/python testes/fase0/testar_motor.py
-sudo bash testes/fase0/testar_wazuh.sh
 sudo /opt/panthera-roar/venv/bin/python testes/fase1/testar_ingestao.py
+```
+
+Cada cliente tem o seu gerenciador do Wazuh:
+
+```bash
+sudo PYTHONPATH=ingestao /opt/panthera-roar/venv/bin/python -m roar_ingestao.provisao criar --nome acme
 ```

@@ -3,8 +3,6 @@
 import requests
 from requests.adapters import HTTPAdapter
 
-PADRAO_INDICES = "wazuh-alerts-*"
-
 
 class _NomeDoCertificado(HTTPAdapter):
     """Conecta em um endereço e valida o certificado pelo nome do serviço."""
@@ -19,15 +17,14 @@ class _NomeDoCertificado(HTTPAdapter):
 
 
 class Indexer:
-    def __init__(self, url, usuario, senha, ca, nome_certificado="wazuh.indexer", padrao=PADRAO_INDICES):
+    def __init__(self, url, usuario, senha, ca, nome_certificado="wazuh.indexer"):
         self.url = url.rstrip("/")
-        self.padrao = padrao
         self.sessao = requests.Session()
         self.sessao.auth = (usuario, senha)
         self.sessao.verify = ca
         self.sessao.mount("https://", _NomeDoCertificado(nome_certificado))
 
-    def alertas_desde(self, inicio, tamanho=500):
+    def alertas_desde(self, padrao, inicio, tamanho=500):
         """Devolve lotes de (id do documento, alerta), do mais antigo ao mais novo."""
         consulta = {
             "size": tamanho,
@@ -35,7 +32,7 @@ class Indexer:
             "query": {"range": {"timestamp": {"gte": inicio.isoformat()}}},
         }
         while True:
-            r = self.sessao.post(f"{self.url}/{self.padrao}/_search", json=consulta, timeout=60)
+            r = self.sessao.post(f"{self.url}/{padrao}/_search", json=consulta, timeout=60)
             r.raise_for_status()
             documentos = r.json()["hits"]["hits"]
             if not documentos:

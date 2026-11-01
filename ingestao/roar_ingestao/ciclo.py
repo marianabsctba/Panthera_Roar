@@ -1,10 +1,10 @@
-"""Laço da ingestão.
+"""Laço da ingestão: percorre os gerenciadores, um cliente de cada vez.
 
     python -m roar_ingestao.ciclo [--uma-vez] [--desde 2026-11-01T00:00:00+00:00]
 
-O alerta pode chegar ao indexer depois de alertas mais novos, então cada ciclo relê uma
-janela para trás. Isso não duplica nada; o que chegar atrasado além da janela só entra
-reprocessando com --desde.
+O dono de um alerta é o gerenciador em cujo índice ele está. O alerta pode chegar ao
+indexer depois de alertas mais novos, então cada ciclo relê uma janela para trás. Isso
+não duplica nada; o que chegar atrasado além da janela só entra reprocessando com --desde.
 """
 
 import argparse
@@ -16,29 +16,43 @@ from datetime import datetime, timedelta, timezone
 
 from .armazenamento import Armazenamento
 from .fonte_wazuh import Indexer
-from .normalizar import _momento
+from .normalizar import momento_do_alerta
 
 JANELA = timedelta(minutes=5)
 INICIO_DOS_TEMPOS = datetime(2000, 1, 1, tzinfo=timezone.utc)
+PREFIXO = "wazuh-alerts-4.x-"
+# Um cliente com muito volume não segura os outros: o resto fica para o próximo ciclo.
+LOTES_POR_CICLO = 40
 log = logging.getLogger("roar.ingestao")
 
 
-def rodar_ciclo(indexer, banco, fonte="wazuh", desde=None):
-    mapa = banco.mapa_de_agentes()
+def rodar_gerenciador(indexer, banco, gerenciador_id, cliente, desde=None, limite=LOTES_POR_CICLO):
     total = Counter()
-    total["recuperados"] = banco.recuperar_quarentena(mapa)
-
-    checkpoint = banco.ler_checkpoint(fonte)
+    checkpoint = banco.ler_checkpoint(gerenciador_id)
     inicio = desde or (checkpoint - JANELA if checkpoint else INICIO_DOS_TEMPOS)
 
-    for lote in indexer.alertas_desde(inicio):
-        total.update(banco.gravar_lote(lote, mapa))
+    for numero, lote in enumerate(indexer.alertas_desde(f"{PREFIXO}{gerenciador_id}-*", inicio), 1):
+        total.update(banco.gravar_lote(lote, gerenciador_id, cliente))
         total["lidos"] += len(lote)
         # Só avança depois de gravar: uma queda aqui relê o lote, sem perder nada.
         ultimo = next((a.get("timestamp") for _, a in reversed(lote) if a.get("timestamp")), None)
         if ultimo:
-            banco.gravar_checkpoint(fonte, _momento(ultimo))
+            banco.gravar_checkpoint(gerenciador_id, momento_do_alerta(ultimo))
+        if numero >= limite:
+            break
     return total
+
+
+def rodar_ciclo(indexer, banco, desde=None, limite=LOTES_POR_CICLO):
+    """Falha em um gerenciador não impede os outros clientes de receberem alertas."""
+    total, falhas = Counter(), {}
+    for gerenciador_id, cliente in banco.gerenciadores():
+        try:
+            total.update(rodar_gerenciador(indexer, banco, gerenciador_id, cliente, desde, limite))
+        except Exception as erro:
+            falhas[gerenciador_id] = erro
+            log.exception("gerenciador %s falhou", gerenciador_id)
+    return total, falhas
 
 
 def ler_env(caminho):
@@ -56,8 +70,8 @@ def conexoes(caminho_env="/opt/panthera-roar/.env"):
     env = ler_env(caminho_env)
     indexer = Indexer(
         os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200"),
-        env["WAZUH_INDEXER_USERNAME"],
-        env["WAZUH_INDEXER_PASSWORD"],
+        "roar_leitor",
+        env["ROAR_LEITOR_SENHA"],
         os.getenv("ROAR_INDEXER_CA",
                   "/opt/panthera-roar/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem"),
     )
@@ -77,18 +91,12 @@ def main():
     indexer, banco, _ = conexoes()
     desde = a.desde
     while True:
-        try:
-            total = rodar_ciclo(indexer, banco, desde=desde)
-            desde = None
-            if total["lidos"] or total["recuperados"]:
-                log.info("ciclo: %s", dict(total))
-        except Exception:
-            # A fonte ou o banco fora do ar não derruba o serviço; o ciclo seguinte retoma.
-            log.exception("ciclo falhou")
-            if a.uma_vez:
-                raise
+        total, falhas = rodar_ciclo(indexer, banco, desde=desde)
+        desde = None
+        if total["lidos"]:
+            log.info("ciclo: %s", dict(total))
         if a.uma_vez:
-            return
+            raise SystemExit(1 if falhas else 0)
         time.sleep(a.intervalo)
 
 

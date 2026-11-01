@@ -1,12 +1,7 @@
-# Sobre o compose oficial do Wazuh: portas só em 127.0.0.1, sem o dashboard (a tela é a do Roar).
-# As senhas ainda são as padrão do compose oficial. Trocar antes de sair do ambiente de teste.
+# Sobre o compose oficial do Wazuh: só o indexer, com a porta em 127.0.0.1.
+# Gerenciadores são um por cliente (infra/wazuh/gerenciador) e o dashboard não é usado.
+# A senha de administrador do indexer ainda é a padrão. Trocar antes de sair do ambiente de teste.
 services:
-  wazuh.manager:
-    ports: !override
-      - "127.0.0.1:1514:1514"
-      - "127.0.0.1:1515:1515"
-      - "127.0.0.1:55000:55000"
-
   wazuh.indexer:
     ports: !override
       - "127.0.0.1:9200:9200"
