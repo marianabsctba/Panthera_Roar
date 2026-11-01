@@ -23,6 +23,7 @@ INICIO_DOS_TEMPOS = datetime(2000, 1, 1, tzinfo=timezone.utc)
 PREFIXO = "wazuh-alerts-4.x-"
 # Um cliente com muito volume não segura os outros: o resto fica para o próximo ciclo.
 LOTES_POR_CICLO = 40
+INTERVALO_DAS_REGRAS = 3600
 log = logging.getLogger("roar.ingestao")
 
 
@@ -88,9 +89,15 @@ def main():
     args.add_argument("--intervalo", type=float, default=5.0)
     a = args.parse_args()
 
+    from .regras import sincronizar
+
     indexer, banco, _ = conexoes()
     desde = a.desde
+    proxima_sincronizacao = 0.0
     while True:
+        if time.monotonic() >= proxima_sincronizacao:
+            sincronizar(banco)
+            proxima_sincronizacao = time.monotonic() + INTERVALO_DAS_REGRAS
         total, falhas = rodar_ciclo(indexer, banco, desde=desde)
         desde = None
         if total["lidos"]:

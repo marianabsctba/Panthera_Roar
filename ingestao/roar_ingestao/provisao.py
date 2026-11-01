@@ -195,14 +195,15 @@ def remover(gerenciador_id, apagar_dados=True):
                                     (gerenciador_id,)).fetchone()
             banco.execute("DELETE FROM sinais WHERE evento_id IN (SELECT id FROM eventos WHERE gerenciador_id = %s)",
                           (gerenciador_id,))
-            for tabela in ("quarentena", "eventos", "grupos_alerta"):
+            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras"):
                 banco.execute(f"DELETE FROM {tabela} WHERE gerenciador_id = %s", (gerenciador_id,))
             banco.execute("DELETE FROM checkpoints WHERE fonte = %s", (gerenciador_id,))
             banco.execute("DELETE FROM gerenciadores WHERE id = %s", (gerenciador_id,))
             restantes = cliente and banco.execute("SELECT count(*) FROM gerenciadores WHERE cliente_id = %s",
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
-                for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor"):
+                for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
+                               "auditoria"):
                     banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))
 

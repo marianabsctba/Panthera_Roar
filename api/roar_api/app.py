@@ -30,6 +30,18 @@ TENTATIVAS = 5
 JANELA_TENTATIVAS = 900
 # Abaixo disso são acontecimentos normais, como login: alimentam o UEBA, mas não pedem atenção.
 NIVEL_MINIMO_NA_FILA = 5
+TAMANHO_DA_PAGINA = 100
+# Os mesmos pesos do UEBA; o teste confere que não divergem.
+REGRAS_DE_COMPORTAMENTO = [
+    {"tipo": "sucesso_apos_falhas", "peso": 50.0},
+    {"tipo": "viagem_impossivel", "peso": 40.0},
+    {"tipo": "primeiro_privilegio", "peso": 30.0},
+    {"tipo": "pico_de_falhas", "peso": 20.0},
+    {"tipo": "primeiro_host", "peso": 15.0},
+    {"tipo": "horario_incomum", "peso": 15.0},
+    {"tipo": "primeiro_ip", "peso": 10.0},
+    {"tipo": "host_raro_no_cliente", "peso": 10.0},
+]
 SEGURANCA = {
     "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     "X-Content-Type-Options": "nosniff",
@@ -212,6 +224,84 @@ def panorama(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
                FROM entidades WHERE risco > 0 AND risco_em IS NOT NULL ORDER BY 3 DESC LIMIT 8""").fetchall()
     return {"por_dia": por_dia, "sinais": sinais, "origens": origens,
             "riscos": [r for r in riscos if r["risco"] >= 1]}
+
+
+def _sem_curinga(texto):
+    return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@app.get("/api/eventos")
+def eventos(request: Request, sessao=Depends(sessao_atual), busca: str = "", severidade: str = "",
+            dias: int = 30, antes_de: int = 0):
+    """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
+    dias = max(1, min(dias, 90))
+    condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
+    parametros = [dias]
+    busca = busca.strip()[:200]
+    if busca:
+        condicoes.append("(usuario ILIKE %s OR regra_descricao ILIKE %s OR regra_id = %s"
+                         " OR agente_nome ILIKE %s OR host(ip_origem) ILIKE %s)")
+        termo = f"%{_sem_curinga(busca)}%"
+        parametros += [termo, termo, busca, termo, termo]
+    if severidade in ("baixa", "media", "alta", "critica"):
+        condicoes.append("severidade = %s")
+        parametros.append(severidade)
+    if 0 < antes_de < 2**63:
+        condicoes.append("id < %s")
+        parametros.append(antes_de)
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""SELECT id, ocorrido_em, severidade, nivel, regra_id, regra_descricao, agente_nome AS ativo,
+                       host(ip_origem) AS ip_origem, usuario
+                FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
+            (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
+    return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}
+
+
+@app.get("/api/eventos/{identificador}/bruto")
+def evento_bruto(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+    """O alerta como chegou. Pode ter dado pessoal, então cada acesso fica registrado."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            "SELECT id, origem_id, origem, ocorrido_em, recebido_em, bruto FROM eventos WHERE id = %s",
+            (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ver_bruto', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+    return linha
+
+
+@app.get("/api/regras")
+def regras(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 30,
+           so_disparadas: bool = False, deslocamento: int = 0):
+    dias = max(1, min(dias, 90))
+    deslocamento = max(0, min(deslocamento, 100000))
+    condicoes, parametros = ["TRUE"], []
+    busca = busca.strip()[:200]
+    if busca:
+        termo = f"%{_sem_curinga(busca)}%"
+        condicoes.append("(r.regra_id = %s OR r.descricao ILIKE %s OR r.arquivo ILIKE %s"
+                         " OR array_to_string(r.grupos, ' ') ILIKE %s OR array_to_string(r.mitre, ' ') ILIKE %s)")
+        parametros += [busca, termo, termo, termo, termo]
+    if so_disparadas:
+        condicoes.append("d.total IS NOT NULL")
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""WITH disparos AS (
+                  SELECT gerenciador_id, regra_id, count(*) AS total, max(ocorrido_em) AS ultimo FROM eventos
+                  WHERE ocorrido_em >= now() - make_interval(days => %s) GROUP BY gerenciador_id, regra_id)
+                SELECT r.regra_id, r.nivel, r.descricao, r.grupos, r.mitre, r.arquivo, r.ativa,
+                       coalesce(d.total, 0) AS disparos, d.ultimo, count(*) OVER () AS total_filtrado
+                FROM regras r LEFT JOIN disparos d ON d.gerenciador_id = r.gerenciador_id AND d.regra_id = r.regra_id
+                WHERE {' AND '.join(condicoes)}
+                ORDER BY coalesce(d.total, 0) DESC, r.nivel DESC, r.regra_id LIMIT %s OFFSET %s""",
+            (dias, *parametros, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
+        catalogo = con.execute("SELECT count(*) AS total, max(atualizado_em) AS atualizado_em FROM regras").fetchone()
+    return {"regras": linhas, "total_filtrado": linhas[0]["total_filtrado"] if linhas else 0,
+            "catalogo": catalogo["total"], "atualizado_em": catalogo["atualizado_em"],
+            "comportamento": REGRAS_DE_COMPORTAMENTO}
 
 
 def _inteiro_valido(identificador):

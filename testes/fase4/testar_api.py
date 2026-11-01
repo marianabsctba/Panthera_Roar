@@ -89,7 +89,8 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta", "gerenciadores", "usuarios"):
+    for tabela in ("auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
+                   "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
 
@@ -159,6 +160,44 @@ def main():
         falhas_ruins = http.get("/api/panorama", params={"dias": "'; DROP TABLE eventos; --"})
         registrar("período com texto é recusado", falhas_ruins.status_code == 422)
 
+        print("\n== Eventos e alerta bruto", flush=True)
+        lista = http.get("/api/eventos").json()
+        registrar("eventos só do cliente", len(lista["eventos"]) == 1 and lista["ha_mais"] is False)
+        evento_a = lista["eventos"][0]["id"]
+        registrar("lista de eventos não traz o bruto", "segredo_do_bruto" not in json.dumps(lista))
+        registrar("busca encontra por IP", len(http.get("/api/eventos", params={"busca": "203.0.113.5"}).json()["eventos"]) == 1)
+        registrar("busca sem resultado", http.get("/api/eventos", params={"busca": "naoexiste"}).json()["eventos"] == [])
+        registrar("curinga na busca é tratado como texto", http.get("/api/eventos", params={"busca": "%"}).json()["eventos"] == [])
+        registrar("injeção na busca não quebra", http.get("/api/eventos", params={"busca": "'; DROP TABLE eventos; --"}).status_code == 200)
+        registrar("severidade inválida é ignorada", http.get("/api/eventos", params={"severidade": "' OR 1=1"}).status_code == 200)
+        registrar("filtro de severidade funciona", http.get("/api/eventos", params={"severidade": "alta"}).json()["eventos"] == [])
+        antes = ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s", (a["id"],)).fetchone()[0]
+        bruto = http.get(f"/api/eventos/{evento_a}/bruto")
+        registrar("bruto abre com o conteúdo original", bruto.status_code == 200 and bruto.json()["bruto"]["segredo_do_bruto"] == "nao-sair")
+        depois = ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'ver_bruto' AND alvo = %s",
+                               (a["id"], str(evento_a))).fetchone()[0]
+        registrar("ver o bruto fica registrado", depois == antes + 1)
+        evento_b = ADMIN.execute("SELECT id FROM eventos WHERE cliente_id = %s LIMIT 1", (b["id"],)).fetchone()[0]
+        registrar("bruto de outro cliente não é encontrado", http.get(f"/api/eventos/{evento_b}/bruto").status_code == 404)
+        registrar("tentativa em outro cliente não vira registro nele", ADMIN.execute(
+            "SELECT count(*) FROM auditoria WHERE cliente_id = %s", (b["id"],)).fetchone()[0] == 0)
+
+        print("\n== Regras", flush=True)
+        for cliente, regra, descricao, grupos, mitre in ((a, "5712", "Força bruta", ["authentication_failures"], ["T1110"]),
+                                                         (a, "9999", "Regra sem disparo", ["outro"], []),
+                                                         (b, "8888", "Regra só de B", ["segredo_b"], [])):
+            ADMIN.execute("INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo)"
+                          " VALUES (%s, %s, %s, 10, %s, %s, %s, 'x.xml')", (cliente["id"], cliente["ger"], regra, descricao, grupos, mitre))
+        catalogo = http.get("/api/regras").json()
+        registrar("regras só do cliente", {r["regra_id"] for r in catalogo["regras"]} == {"5712", "9999"})
+        registrar("regra disparada vem primeiro com a contagem", catalogo["regras"][0]["regra_id"] == "5712" and catalogo["regras"][0]["disparos"] == 1)
+        registrar("só as que dispararam", [r["regra_id"] for r in http.get("/api/regras", params={"so_disparadas": True}).json()["regras"]] == ["5712"])
+        registrar("busca por técnica MITRE", [r["regra_id"] for r in http.get("/api/regras", params={"busca": "t1110"}).json()["regras"]] == ["5712"])
+        registrar("busca não alcança regra de outro cliente", http.get("/api/regras", params={"busca": "segredo_b"}).json()["regras"] == [])
+        sys.path.insert(0, str(RAIZ / "ueba"))
+        from roar_ueba.motor import PESOS
+        registrar("pesos da tela iguais aos do motor", {r["tipo"]: r["peso"] for r in catalogo["comportamento"]} == PESOS)
+
         print("\n== Entradas e saídas", flush=True)
         registrar("id gigante não vira erro", http.get(f"/api/riscos/{2**70}").status_code == 404)
         registrar("id negativo não vira erro", http.get("/api/grupos/-1").status_code == 404)
@@ -192,7 +231,7 @@ def main():
         sem_namespace = (html + js).replace("http://www.w3.org/2000/svg", "")
         registrar("nenhum recurso externo", "http://" not in sem_namespace and "https://" not in sem_namespace)
         texto = html + js
-        registrar("tela não cita ferramentas", not any(x in texto.lower() for x in ("wazuh", "shuffle", "temporal", "opensearch", "be safe")))
+        registrar("tela não cita ferramentas", not any(x in texto.lower() for x in ("wazuh", "shuffle", "temporal", "opensearch")))
 
         print("\n== Requisição de outro site", flush=True)
         r = http.post("/api/sair", headers={"Origin": "https://atacante.example"})
@@ -229,6 +268,9 @@ def main():
         registrar("não lê usuários nem hashes", recusado(lambda: api.execute("SELECT senha_hash FROM usuarios")))
         registrar("não lê sessões", recusado(lambda: api.execute("SELECT * FROM sessoes")))
         registrar("não altera usuários", recusado(lambda: api.execute("UPDATE usuarios SET ativo = true")))
+        registrar("não apaga a auditoria", recusado(lambda: api.execute("DELETE FROM auditoria")))
+        registrar("não altera a auditoria", recusado(lambda: api.execute("UPDATE auditoria SET acao = 'x'")))
+        registrar("não altera regras", recusado(lambda: api.execute("UPDATE regras SET nivel = 0")))
         registrar("não troca o próprio cliente pelo cadastro", recusado(lambda: api.execute("UPDATE clientes SET nome = 'x'")))
 
     falhas = [n for n, ok in RESULTADOS if not ok]

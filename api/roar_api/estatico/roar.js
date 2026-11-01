@@ -43,8 +43,19 @@ const SINAIS = {
   },
 };
 
+const DESCRICAO_COMPORTAMENTO = {
+  sucesso_apos_falhas: "Acesso depois de 5 falhas ou mais do mesmo endereço, no mesmo ativo, em 10 minutos.",
+  viagem_impossivel: "Mais de 500 km a mais de 1.000 km/h entre dois acessos.",
+  primeiro_privilegio: "Primeira vez que a pessoa executa como outro usuário naquele ativo.",
+  pico_de_falhas: "Falhas de acesso em uma hora muito acima do histórico.",
+  primeiro_host: "Ativo que a pessoa nunca tinha usado.",
+  horario_incomum: "Acesso em hora muito rara para a pessoa, no fuso da organização.",
+  primeiro_ip: "Endereço que a pessoa nunca tinha usado.",
+  host_raro_no_cliente: "Ativo usado por menos de 5% da organização.",
+};
+
 const $ = (id) => document.getElementById(id);
-const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null };
+const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [] };
 
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
@@ -201,7 +212,7 @@ function desenharRisco({ alerta, sinais }) {
     const li = el("li", "sinal");
     li.append(el("span", "sinal-titulo", tituloDoSinal(s.tipo)), el("span", "sinal-peso", `+${Math.round(s.peso)}`),
       el("span", "sinal-texto", descricao ? descricao.texto(s.detalhes ?? {}) : (s.regra_descricao ?? "")),
-      el("span", "sinal-quando", `${quando(s.ocorrido_em)} · ${s.regra_descricao ?? "evento"}`));
+      el("span", "sinal-quando", `${quando(s.ocorrido_em)} · ${s.regra_descricao ?? "evento"}`), botaoBruto(s.evento_id));
     linha.append(li);
   }
   $("detalhe").replaceChildren(cab, el("p", "subtitulo", `${tipo} · aberto em ${quando(alerta.aberto_em)}`),
@@ -219,7 +230,7 @@ function desenharGrupo({ grupo, eventos }) {
 
   const tabela = el("table");
   const cabecalho = el("tr");
-  ["Quando", "Severidade", "Evento", "Usuário", "Origem"].forEach((c) => cabecalho.append(el("th", null, c)));
+  ["Quando", "Severidade", "Evento", "Usuário", "Origem", ""].forEach((c) => cabecalho.append(el("th", null, c)));
   const thead = el("thead");
   thead.append(cabecalho);
   const tbody = el("tbody");
@@ -228,7 +239,7 @@ function desenharGrupo({ grupo, eventos }) {
     const sev = el("td");
     sev.append(selo(e.severidade));
     tr.append(el("td", null, quando(e.ocorrido_em)), sev, el("td", null, e.regra_descricao ?? e.regra_id),
-      el("td", "mono", e.usuario ?? "-"), el("td", "mono ip", e.ip_origem ?? "-"));
+      el("td", "mono", e.usuario ?? "-"), el("td", "mono ip", e.ip_origem ?? "-"), celula(botaoBruto(e.id)));
     tbody.append(tr);
   }
   tabela.append(thead, tbody);
@@ -418,14 +429,149 @@ async function carregarPanorama() {
     "Nenhuma origem no período.");
 }
 
+// ------------------------------------------------------------------ bruto
+
+function botaoBruto(evento) {
+  const b = el("button", "botao-discreto botao-tabela", "Ver bruto");
+  b.type = "button";
+  b.addEventListener("click", () => abrirBruto(evento));
+  return b;
+}
+
+async function abrirBruto(evento) {
+  const r = await pedir(`/api/eventos/${evento}/bruto`);
+  if (!r.ok) return;
+  const dados = await r.json();
+  $("meta-bruto").textContent = `Recebido em ${quando(dados.recebido_em)} · identificador ${dados.origem_id}`
+    + (dados.bruto?.roar_truncado ? " · conteúdo grande: guardamos só o resumo e o hash" : "");
+  $("conteudo-bruto").textContent = JSON.stringify(dados.bruto, null, 2);
+  $("janela-bruto").showModal();
+}
+
+// ------------------------------------------------------------------ eventos
+
+function montarTabela(colunas, linhas) {
+  const tabela = el("table");
+  const cab = el("tr");
+  colunas.forEach(([rotulo, classe]) => cab.append(el("th", classe, rotulo)));
+  const thead = el("thead");
+  thead.append(cab);
+  const tbody = el("tbody");
+  linhas.forEach((celulas) => {
+    const tr = el("tr");
+    tr.append(...celulas);
+    tbody.append(tr);
+  });
+  tabela.append(thead, tbody);
+  return tabela;
+}
+
+function celula(conteudo, classe) {
+  const td = el("td", classe);
+  td.append(conteudo);
+  return td;
+}
+
+function linhaDeEvento(e) {
+  return [el("td", null, quando(e.ocorrido_em)), celula(selo(e.severidade)),
+    el("td", null, e.regra_descricao ?? e.regra_id), el("td", null, e.ativo ?? "-"),
+    el("td", "mono", e.usuario ?? "-"), el("td", "mono ip", e.ip_origem ?? "-"), celula(botaoBruto(e.id))];
+}
+
+const COLUNAS_EVENTOS = [["Quando"], ["Severidade"], ["Evento"], ["Ativo"], ["Usuário"], ["Origem"], [""]];
+
+async function carregarEventos(continuar = false) {
+  const consulta = new URLSearchParams({
+    busca: $("busca-eventos").value,
+    severidade: $("severidade-eventos").value,
+    dias: $("dias-eventos").value,
+  });
+  if (continuar && estado.eventos.length) consulta.set("antes_de", estado.eventos.at(-1).id);
+  const r = await pedir(`/api/eventos?${consulta}`);
+  const dados = await r.json();
+  estado.eventos = continuar ? [...estado.eventos, ...dados.eventos] : dados.eventos;
+  const destino = $("tabela-eventos");
+  if (!estado.eventos.length) destino.replaceChildren(el("p", "vazio", "Nenhum evento encontrado."));
+  else destino.replaceChildren(montarTabela(COLUNAS_EVENTOS, estado.eventos.map(linhaDeEvento)));
+  $("mais-eventos").hidden = !dados.ha_mais;
+}
+
+// ------------------------------------------------------------------ regras
+
+function severidadeDoNivel(nivel) {
+  if (nivel >= 15) return "critica";
+  if (nivel >= 12) return "alta";
+  if (nivel >= 7) return "media";
+  return "baixa";
+}
+
+function etiquetas(valores, limite = 4) {
+  const span = el("span");
+  (valores ?? []).slice(0, limite).forEach((v) => span.append(el("span", "etiqueta", v)));
+  if ((valores ?? []).length > limite) span.append(el("span", "etiqueta", `+${valores.length - limite}`));
+  return span;
+}
+
+const COLUNAS_REGRAS = [["Regra"], ["Severidade"], ["O que detecta"], ["Grupos"], ["MITRE"], ["Disparos", "numero-celula"]];
+
+function desenharComportamento(regras) {
+  $("regras-comportamento").replaceChildren(...regras.map((r) => {
+    const cartao = el("div", "cartao-regra");
+    const topo = el("div");
+    topo.append(el("span", null, tituloDoSinal(r.tipo)), el("b", null, `+${Math.round(r.peso)}`));
+    cartao.append(topo, el("p", null, DESCRICAO_COMPORTAMENTO[r.tipo] ?? ""));
+    return cartao;
+  }));
+}
+
+async function carregarRegras(continuar = false) {
+  const consulta = new URLSearchParams({
+    busca: $("busca-regras").value,
+    so_disparadas: $("so-disparadas").checked,
+    deslocamento: continuar ? estado.regras.length : 0,
+  });
+  const r = await pedir(`/api/regras?${consulta}`);
+  const dados = await r.json();
+  estado.regras = continuar ? [...estado.regras, ...dados.regras] : dados.regras;
+  desenharComportamento(dados.comportamento);
+  $("resumo-regras").textContent = dados.catalogo
+    ? `${dados.catalogo.toLocaleString("pt-BR")} regras no catálogo · atualizado em ${quando(dados.atualizado_em)}`
+    : "O catálogo de regras ainda não foi carregado.";
+  const destino = $("tabela-regras");
+  if (!estado.regras.length) {
+    destino.replaceChildren(el("p", "vazio", dados.catalogo ? "Nenhuma regra encontrada." : "Nada para mostrar ainda."));
+  } else {
+    destino.replaceChildren(montarTabela(COLUNAS_REGRAS, estado.regras.map((x) => [
+      el("td", "mono", x.regra_id), celula(selo(severidadeDoNivel(x.nivel))), el("td", null, x.descricao ?? "-"),
+      celula(etiquetas(x.grupos)), celula(etiquetas(x.mitre)),
+      el("td", "numero-celula", Number(x.disparos).toLocaleString("pt-BR")),
+    ])));
+  }
+  $("mais-regras").hidden = estado.regras.length >= dados.total_filtrado;
+}
+
+$("form-eventos").addEventListener("submit", (ev) => { ev.preventDefault(); carregarEventos(); });
+$("mais-eventos").addEventListener("click", () => carregarEventos(true));
+$("form-regras").addEventListener("submit", (ev) => { ev.preventDefault(); carregarRegras(); });
+$("so-disparadas").addEventListener("change", () => carregarRegras());
+$("mais-regras").addEventListener("click", () => carregarRegras(true));
+$("fechar-bruto").addEventListener("click", () => $("janela-bruto").close());
+$("copiar-bruto").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("conteudo-bruto").textContent);
+  $("copiar-bruto").textContent = "Copiado";
+  setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
+});
+
 function trocarVista(vista) {
   document.querySelectorAll(".navegacao button").forEach((b) => {
     if (b.dataset.vista === vista) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   });
-  $("vista-panorama").hidden = vista !== "panorama";
-  $("vista-fila").hidden = vista !== "fila";
+  esconderDica();
+  for (const nome of ["panorama", "fila", "eventos", "regras"]) $(`vista-${nome}`).hidden = vista !== nome;
   if (vista === "panorama" && estado.panorama) desenharColunas(estado.panorama.por_dia);
+  if (vista === "eventos" && !estado.eventos.length) carregarEventos();
+  if (vista === "regras" && !estado.regras.length) carregarRegras();
 }
 
 document.querySelectorAll(".navegacao button").forEach((b) => {

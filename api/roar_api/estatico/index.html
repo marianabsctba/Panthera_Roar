@@ -42,6 +42,8 @@
     <nav class="navegacao" aria-label="Seções">
       <button type="button" data-vista="panorama" aria-current="page">Panorama</button>
       <button type="button" data-vista="fila">Fila</button>
+      <button type="button" data-vista="eventos">Eventos</button>
+      <button type="button" data-vista="regras">Regras</button>
     </nav>
 
     <section id="vista-panorama" class="panorama" aria-label="Panorama">
@@ -82,7 +84,57 @@
       </section>
       <section id="detalhe" class="detalhe" aria-live="polite"></section>
     </div>
+
+    <section id="vista-eventos" class="pagina" aria-label="Eventos" hidden>
+      <form id="form-eventos" class="filtros" role="search">
+        <input id="busca-eventos" type="search" placeholder="Usuário, IP, ativo, regra ou descrição" aria-label="Buscar eventos">
+        <select id="severidade-eventos" aria-label="Severidade">
+          <option value="">Todas as severidades</option>
+          <option value="critica">Crítica</option>
+          <option value="alta">Alta</option>
+          <option value="media">Média</option>
+          <option value="baixa">Baixa</option>
+        </select>
+        <select id="dias-eventos" aria-label="Período">
+          <option value="1">Último dia</option>
+          <option value="7">7 dias</option>
+          <option value="30" selected>30 dias</option>
+          <option value="90">90 dias</option>
+        </select>
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-eventos" class="tabela-rolagem"></div>
+      <button id="mais-eventos" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
+
+    <section id="vista-regras" class="pagina" aria-label="Regras" hidden>
+      <h2 class="titulo-secao">Regras de comportamento</h2>
+      <p class="texto-secao">Somam pontos no risco de cada pessoa. O alerta abre em 60 pontos, e os pontos caem pela metade a cada 24 horas.</p>
+      <div id="regras-comportamento" class="cartoes-regra"></div>
+
+      <h2 class="titulo-secao">Regras de detecção</h2>
+      <p id="resumo-regras" class="texto-secao"></p>
+      <form id="form-regras" class="filtros" role="search">
+        <input id="busca-regras" type="search" placeholder="Número, descrição, grupo ou técnica MITRE" aria-label="Buscar regras">
+        <label class="caixa"><input id="so-disparadas" type="checkbox"> Só as que dispararam em 30 dias</label>
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-regras" class="tabela-rolagem"></div>
+      <button id="mais-regras" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
   </div>
+
+  <dialog id="janela-bruto" class="janela" aria-labelledby="titulo-bruto">
+    <div class="janela-topo">
+      <h2 id="titulo-bruto">Alerta bruto</h2>
+      <div>
+        <button id="copiar-bruto" type="button" class="botao-discreto">Copiar</button>
+        <button id="fechar-bruto" type="button" class="botao-discreto">Fechar</button>
+      </div>
+    </div>
+    <p id="meta-bruto" class="texto-secao"></p>
+    <pre id="conteudo-bruto" class="bruto" tabindex="0"></pre>
+  </dialog>
 
   <div id="dica" class="dica" role="status" hidden></div>
   <script type="module" src="/estatico/roar.js"></script>

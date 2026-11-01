@@ -40,8 +40,8 @@ def main():
     r = random.Random(7)
     antigo = ADMIN.execute("SELECT id FROM clientes WHERE nome = %s", (NOME,)).fetchone()
     if antigo:
-        for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
-                       "eventos", "grupos_alerta", "gerenciadores", "usuarios"):
+        for tabela in ("auditoria", "regras", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades",
+                       "ueba_cursor", "eventos", "grupos_alerta", "gerenciadores", "usuarios"):
             ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", antigo)
         ADMIN.execute("DELETE FROM clientes WHERE id = %s", antigo)
 
@@ -74,7 +74,16 @@ def main():
                  regra_id, regra_descricao, regra_grupos, agente_id, agente_nome, ip_origem, usuario, bruto)
                VALUES (%s, %s, %s, 'wazuh', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (cliente, grupo, ger, f"d{n[0]}", quando, nivel, severidade, regra, descricao, grupos, agente,
-             SERVIDORES[agente], ip, usuario, Jsonb(bruto or {})))
+             SERVIDORES[agente], ip, usuario, Jsonb({
+                 "timestamp": quando.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+                 "agent": {"id": agente, "name": SERVIDORES[agente]},
+                 "manager": {"name": f"gerenciador-{ger}"},
+                 "rule": {"id": regra, "level": nivel, "description": descricao, "groups": grupos},
+                 "decoder": {"name": "sshd"},
+                 "location": "/var/log/auth.log",
+                 "full_log": f"{quando:%b %d %H:%M:%S} {SERVIDORES[agente]} sshd[2231]: {descricao} {usuario or ''} from {ip} port 52114 ssh2",
+                 "data": {"srcip": ip, "srcuser": usuario, **(bruto or {}).get("data", {})},
+             })))
 
     agora = datetime.now(timezone.utc)
     hoje = agora.astimezone(FUSO).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -127,6 +136,19 @@ def main():
         ev(t + timedelta(minutes=5, seconds=i), '<img src=x onerror="alert(1)">', FALHA, "003", "198.51.100.200", "5710",
            "sshd: Attempt to login using a non-existent user", nivel=5)
     ev(t + timedelta(minutes=9), "ana.lima", SUCESSO, "003", "10.10.2.20", "5715", "sshd: authentication success.")
+
+    # Catálogo: as regras dos eventos acima, mais algumas sem disparo.
+    catalogo = ADMIN.execute("SELECT DISTINCT regra_id, regra_descricao, max(nivel) FROM eventos WHERE cliente_id = %s"
+                             " GROUP BY 1, 2", (cliente,)).fetchall()
+    catalogo += [("100", "Log file rotated.", 3), ("554", "File added to the system.", 5), ("5503", "PAM: User login failed.", 5),
+                 ("31106", "A web attack returned code 200 (success).", 6), ("92200", "Scripting file created under Windows Temp.", 12)]
+    tecnicas = {"5760": ["T1110.001"], "5710": ["T1110.001"], "40111": ["T1110"], "5402": ["T1548.003"], "100002": ["T1486"]}
+    for regra, descricao, nivel in catalogo:
+        ADMIN.execute(
+            "INSERT INTO regras (cliente_id, gerenciador_id, regra_id, nivel, descricao, grupos, mitre, arquivo)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'regras.xml')",
+            (cliente, ger, regra, nivel, descricao, ["authentication_failed"] if regra in tecnicas else ["syslog"],
+             tecnicas.get(regra, [])))
 
     motor = Motor(f"postgresql://roar_ueba:{ENV['ROAR_UEBA_SENHA']}@127.0.0.1:5433/roar", Parametros(atraso_segundos=0))
     while motor.processar_cliente(cliente, "America/Sao_Paulo") == motor.p.lote:
