@@ -217,23 +217,31 @@ def main():
     indice = f"wazuh-archives-4.x-{ger}-demonstracao"
     indexer.delete(f"https://127.0.0.1:9200/{indice}", timeout=30)
     modelos = [
-        ("sshd[{p}]: Accepted publickey for {u} from 10.10.0.{o} port 5{o}12 ssh2", "/var/log/auth.log"),
-        ("CRON[{p}]: pam_unix(cron:session): session opened for user root", "/var/log/auth.log"),
-        ("nginx[{p}]: 10.10.0.{o} GET /index.php HTTP/1.1 200 5120", "/var/log/nginx/access.log"),
-        ("systemd[1]: Started Daily apt download activities.", "journald"),
-        ("kernel: [UFW BLOCK] IN=eth0 SRC=198.51.100.{o} DST=10.10.0.21 PROTO=TCP DPT=445", "/var/log/kern.log"),
+        ("sshd[{p}]: Accepted publickey for {u} from {ip} port 5{o}12 ssh2", "/var/log/auth.log", "sshd", "sshd", True),
+        ("CRON[{p}]: pam_unix(cron:session): session opened for user {u}", "/var/log/auth.log", "pam", "CRON", False),
+        ("nginx[{p}]: {ip} GET /index.php HTTP/1.1 200 5120", "/var/log/nginx/access.log", "web-accesslog", "nginx", True),
+        ("systemd[1]: Started Daily apt download activities.", "journald", "systemd", "systemd", False),
+        ("kernel: [UFW BLOCK] IN=eth0 SRC={ip} DST=10.10.0.21 PROTO=TCP DPT=445", "/var/log/kern.log", "kernel", "kernel", True),
     ]
+    enderecos = [f"10.10.0.{i}" for i in (21, 22, 34, 77)] + ["198.51.100.42", "198.51.100.77", "203.0.113.31"]
     linhas = []
-    for i in range(400):
+    for i in range(600):
         quando = agora - timedelta(minutes=i * 11)
-        modelo, origem = r.choice(modelos)
+        modelo, origem, decoder, programa, com_ip = r.choice(modelos)
         agente = r.choice(list(SERVIDORES))
-        texto = modelo.format(p=r.randint(1000, 9000), u=r.choice(PESSOAS), o=r.randint(2, 200))
+        usuario, ip = r.choice(PESSOAS), r.choice(enderecos)
+        texto = modelo.format(p=r.randint(1000, 9000), u=usuario, ip=ip, o=r.randint(2, 200))
+        dados = {"srcip": ip} if com_ip else {}
+        if decoder in ("sshd", "pam"):
+            dados["srcuser"] = usuario
+        if decoder == "kernel":
+            dados["protocol"] = "TCP"
         linhas.append(json.dumps({"index": {"_index": indice}}))
         linhas.append(json.dumps({
             "timestamp": quando.strftime("%Y-%m-%dT%H:%M:%S.000+0000"), "id": f"demo-{i}", "location": origem,
             "agent": {"id": agente, "name": SERVIDORES[agente]}, "manager": {"name": f"gerenciador-{ger}"},
-            "full_log": f"{quando:%b %d %H:%M:%S} {SERVIDORES[agente]} {texto}",
+            "decoder": {"name": decoder}, "predecoder": {"program_name": programa, "hostname": SERVIDORES[agente]},
+            "data": dados, "full_log": f"{quando:%b %d %H:%M:%S} {SERVIDORES[agente]} {texto}",
         }))
     indexer.post("https://127.0.0.1:9200/_bulk?refresh=true", data="\n".join(linhas) + "\n",
                  headers={"Content-Type": "application/x-ndjson"}, timeout=120).raise_for_status()

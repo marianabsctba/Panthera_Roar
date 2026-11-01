@@ -62,7 +62,7 @@ const DESCRICAO_COMPORTAMENTO = {
 };
 
 const $ = (id) => document.getElementById(id);
-const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [], logs: [], proximoLog: null, norma: "gdpr", matriz: null, modoRegra: "guiada" };
+const estado = { aba: "riscos", fila: { riscos: [], grupos: [] }, selecionado: null, fuso: undefined, dias: 30, panorama: null, eventos: [], regras: [], logs: [], proximoLog: null, norma: "gdpr", matriz: null, modoRegra: "guiada", biblioteca: [], filtrosLog: [], colunasLog: [] };
 
 function el(tag, classe, texto) {
   const e = document.createElement(tag);
@@ -505,41 +505,215 @@ async function carregarEventos(continuar = false) {
 
 // ------------------------------------------------------------------ logs brutos
 
+const ROTULOS_DE_CAMPO = {
+  timestamp: "Quando", "agent.name": "Ativo", location: "Fonte", "decoder.name": "Tipo de log", "data.srcip": "Origem",
+  "data.srcuser": "Usuário", "data.dstuser": "Usuário de destino", "data.protocol": "Protocolo",
+  "predecoder.program_name": "Programa", full_log: "Log",
+};
+const COLUNAS_PADRAO = ["timestamp", "agent.name", "decoder.name", "data.srcip", "data.srcuser", "full_log"];
+
+function rotuloDoCampo(campo) {
+  return ROTULOS_DE_CAMPO[campo] ?? campo;
+}
+
+// Transforma o documento em pares "campo.subcampo": valor, que é o que a tabela e os filtros usam.
+function achatar(objeto, prefixo = "", saida = {}) {
+  for (const [chave, valor] of Object.entries(objeto ?? {})) {
+    const nome = prefixo ? `${prefixo}.${chave}` : chave;
+    if (valor && typeof valor === "object" && !Array.isArray(valor)) achatar(valor, nome, saida);
+    else saida[nome] = Array.isArray(valor) ? valor.join(", ") : valor;
+  }
+  return saida;
+}
+
+function colunasSalvas() {
+  try {
+    const salvas = JSON.parse(localStorage.getItem("roar-colunas-logs"));
+    if (Array.isArray(salvas) && salvas.length && salvas.every((c) => typeof c === "string")) return salvas;
+  } catch { /* preferência é só conveniência */ }
+  return COLUNAS_PADRAO;
+}
+
+estado.colunasLog = colunasSalvas();
+
+function guardarColunas() {
+  try { localStorage.setItem("roar-colunas-logs", JSON.stringify(estado.colunasLog)); } catch { /* idem */ }
+}
+
+function alternarFiltro(campo, valor, negar = false) {
+  const existente = estado.filtrosLog.findIndex((f) => f.campo === campo && f.valor === valor);
+  if (existente >= 0) estado.filtrosLog.splice(existente, 1);
+  estado.filtrosLog.push({ campo, valor, negar });
+  carregarLogs();
+}
+
+function desenharFiltrosLog() {
+  $("filtros-logs").replaceChildren(...estado.filtrosLog.map((f, i) => {
+    const b = el("button", `filtro-ativo ${f.negar ? "filtro-negado" : ""}`, `${f.negar ? "não " : ""}${rotuloDoCampo(f.campo)}: ${f.valor} ✕`);
+    b.type = "button";
+    b.title = "Remover filtro";
+    b.addEventListener("click", () => {
+      estado.filtrosLog.splice(i, 1);
+      carregarLogs();
+    });
+    return b;
+  }));
+}
+
+function desenharLinhaDoTempo(pontos) {
+  const area = $("linha-do-tempo");
+  if (!pontos.length) {
+    area.replaceChildren();
+    return;
+  }
+  const largura = area.clientWidth || 600;
+  const altura = area.clientHeight || 56;
+  const maximo = Math.max(...pontos.map((p) => p.total), 1);
+  const faixa = largura / pontos.length;
+  const grafico = svg("svg", { viewBox: `0 0 ${largura} ${altura}` });
+  pontos.forEach((p, i) => {
+    const h = p.total ? Math.max(2, (p.total / maximo) * (altura - 4)) : 0;
+    const g = svg("g", { tabindex: "0" });
+    g.append(svg("rect", { class: "faixa-tempo", x: faixa * i, y: 0, width: faixa, height: altura }));
+    if (h) {
+      g.append(svg("rect", { class: "barra-tempo", x: faixa * i + 1, y: altura - h, width: Math.max(1, Math.min(24, faixa - 2)), height: h, rx: 1 }));
+    }
+    comDica(g, new Date(p.quando).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: estado.fuso }),
+      [["Logs", p.total.toLocaleString("pt-BR")]]);
+    grafico.append(g);
+  });
+  area.replaceChildren(grafico);
+}
+
+function desenharCamposLog(campos) {
+  const blocos = Object.entries(campos).filter(([, valores]) => valores.length).map(([campo, valores]) => {
+    const bloco = el("div", "campo-log");
+    bloco.append(el("h3", null, rotuloDoCampo(campo)));
+    valores.forEach((v) => {
+      const linha = el("div", "valor-campo");
+      const nome = el("button", "nome", String(v.valor));
+      nome.type = "button";
+      nome.title = `Filtrar por ${v.valor}`;
+      nome.addEventListener("click", () => alternarFiltro(campo, v.valor));
+      const excluir = el("button", "excluir-valor", "−");
+      excluir.type = "button";
+      excluir.title = `Excluir ${v.valor}`;
+      excluir.setAttribute("aria-label", `Excluir ${v.valor}`);
+      excluir.addEventListener("click", () => alternarFiltro(campo, v.valor, true));
+      linha.append(nome, el("span", null, v.total.toLocaleString("pt-BR")), excluir);
+      bloco.append(linha);
+    });
+    return bloco;
+  });
+  $("campos-logs").replaceChildren(...(blocos.length ? blocos : [el("p", "texto-secao", "Sem campos para mostrar.")]));
+}
+
+function celulaDeCampo(item, campo) {
+  const valor = achatar(item.bruto)[campo];
+  if (campo === "timestamp") return el("td", "curto", quando(valor));
+  if (campo === "full_log") return el("td", "log-texto", valor ?? "-");
+  return el("td", "curto mono", valor ?? "-");
+}
+
+function desenharTabelaLogs() {
+  const destino = $("tabela-logs");
+  if (!estado.logs.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhum log encontrado."));
+    return;
+  }
+  const tabela = montarTabela(estado.colunasLog.map((c) => [rotuloDoCampo(c)]), estado.logs.map((item) => estado.colunasLog.map((c) => celulaDeCampo(item, c))));
+  tabela.classList.add("tabela-logs");
+  tabela.querySelectorAll("tbody tr").forEach((tr, i) => {
+    tr.tabIndex = 0;
+    tr.addEventListener("click", () => abrirLog(estado.logs[i]));
+    tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter") abrirLog(estado.logs[i]); });
+  });
+  destino.replaceChildren(tabela);
+}
+
 function abrirLog(item) {
-  $("meta-bruto").textContent = `${quando(item.bruto.timestamp)} · identificador ${item.id}`;
-  $("conteudo-bruto").textContent = JSON.stringify(item.bruto, null, 2);
-  $("janela-bruto").showModal();
+  const campos = achatar(item.bruto);
+  const corpo = [];
+  corpo.push(el("p", "texto-secao", `${quando(item.bruto.timestamp)} · identificador ${item.id}`));
+  const tabela = el("table", "campos-do-log");
+  const tbody = el("tbody");
+  Object.keys(campos).sort().forEach((campo) => {
+    const tr = el("tr");
+    const acoes = el("td");
+    const fechar = () => $("janela-log").close();
+    const filtrar = el("button", "botao-discreto botao-tabela", "Filtrar");
+    filtrar.type = "button";
+    filtrar.addEventListener("click", () => { fechar(); alternarFiltro(campo, campos[campo]); });
+    const excluir = el("button", "botao-discreto botao-tabela", "Excluir");
+    excluir.type = "button";
+    excluir.addEventListener("click", () => { fechar(); alternarFiltro(campo, campos[campo], true); });
+    const coluna = el("button", "botao-discreto botao-tabela", estado.colunasLog.includes(campo) ? "Tirar coluna" : "Coluna");
+    coluna.type = "button";
+    coluna.addEventListener("click", () => { alternarColuna(campo); coluna.textContent = estado.colunasLog.includes(campo) ? "Tirar coluna" : "Coluna"; });
+    if (campo !== "full_log" && campo !== "timestamp") acoes.append(filtrar, excluir);
+    acoes.append(coluna);
+    tr.append(el("td", null, campo), el("td", null, String(campos[campo])), acoes);
+    tbody.append(tr);
+  });
+  tabela.append(tbody);
+  corpo.push(tabela, el("h3", null, "Documento original"), el("pre", "bruto", JSON.stringify(item.bruto, null, 2)));
+  $("conteudo-log").replaceChildren(...corpo);
+  $("janela-log").showModal();
+}
+
+function alternarColuna(campo) {
+  estado.colunasLog = estado.colunasLog.includes(campo) ? estado.colunasLog.filter((c) => c !== campo) : [...estado.colunasLog, campo];
+  if (!estado.colunasLog.length) estado.colunasLog = [...COLUNAS_PADRAO];
+  guardarColunas();
+  desenharTabelaLogs();
+}
+
+function abrirColunas() {
+  const disponiveis = new Set([...COLUNAS_PADRAO, ...estado.colunasLog]);
+  estado.logs.forEach((item) => Object.keys(achatar(item.bruto)).forEach((c) => disponiveis.add(c)));
+  $("lista-colunas").replaceChildren(...[...disponiveis].sort().map((campo) => {
+    const rotulo = el("label");
+    const caixa = el("input");
+    caixa.type = "checkbox";
+    caixa.checked = estado.colunasLog.includes(campo);
+    caixa.addEventListener("change", () => alternarColuna(campo));
+    rotulo.append(caixa, campo);
+    return rotulo;
+  }));
+  $("janela-colunas").showModal();
 }
 
 async function carregarLogs(continuar = false) {
-  const consulta = new URLSearchParams({ busca: $("busca-logs").value, dias: $("dias-logs").value });
+  const consulta = new URLSearchParams({
+    busca: $("busca-logs").value,
+    dias: $("dias-logs").value,
+    filtros: JSON.stringify(estado.filtrosLog),
+  });
   if (continuar && estado.proximoLog) consulta.set("depois_de", estado.proximoLog);
+  desenharFiltrosLog();
   const r = await pedir(`/api/logs?${consulta}`);
-  const destino = $("tabela-logs");
   if (!r.ok) {
-    destino.replaceChildren(el("p", "vazio", "Não foi possível consultar os logs agora."));
+    $("tabela-logs").replaceChildren(el("p", "vazio", "Não foi possível consultar os logs agora."));
     return;
   }
   const dados = await r.json();
   estado.logs = continuar ? [...estado.logs, ...dados.logs] : dados.logs;
   estado.proximoLog = dados.proximo;
-  if (!estado.logs.length) {
-    destino.replaceChildren(el("p", "vazio", "Nenhum log encontrado."));
-  } else {
-    destino.replaceChildren(montarTabela([["Quando"], ["Ativo"], ["Fonte"], ["Log"], [""]], estado.logs.map((item) => {
-      const b = item.bruto;
-      const botao = el("button", "botao-discreto botao-tabela", "Ver bruto");
-      botao.type = "button";
-      botao.addEventListener("click", () => abrirLog(item));
-      return [el("td", null, quando(b.timestamp)), el("td", null, b.agent?.name ?? "-"),
-        el("td", "mono", b.location ?? "-"), el("td", "mono", b.full_log ?? "-"), celula(botao)];
-    })));
+  if (!continuar) {
+    const total = Number(dados.total ?? 0).toLocaleString("pt-BR");
+    $("total-logs").textContent = `${dados.total_exato === false ? "Mais de " : ""}${total} logs, inclusive os que não viraram alerta. Clique numa linha para ver os campos. Cada busca fica registrada.`;
+    desenharLinhaDoTempo(dados.linha_do_tempo ?? []);
+    desenharCamposLog(dados.campos ?? {});
   }
+  desenharTabelaLogs();
   $("mais-logs").hidden = !dados.proximo;
 }
 
 $("form-logs").addEventListener("submit", (ev) => { ev.preventDefault(); carregarLogs(); });
 $("mais-logs").addEventListener("click", () => carregarLogs(true));
+$("abrir-colunas").addEventListener("click", abrirColunas);
+$("fechar-colunas").addEventListener("click", () => $("janela-colunas").close());
+$("fechar-log").addEventListener("click", () => $("janela-log").close());
 
 // ------------------------------------------------------------------ ataque e defesa
 
@@ -831,7 +1005,7 @@ async function abrirRegra(regraId) {
   esconderDica();
   const r = await pedir(`/api/regras/${encodeURIComponent(regraId)}`);
   if (!r.ok) return;
-  const { regra, tecnicas, disparos, recentes } = await r.json();
+  const { regra, tecnicas, disparos, recentes, xml } = await r.json();
   $("titulo-tecnica").textContent = `Regra ${regra.regra_id}`;
   const corpo = [];
   const cab = el("h2");
@@ -867,6 +1041,18 @@ async function abrirRegra(regraId) {
   }
   if ((regra.grupos ?? []).length) {
     corpo.push(el("h3", null, "Grupos"), etiquetas(regra.grupos, 30));
+  }
+  if (xml) {
+    corpo.push(el("h3", null, "Regra original"), el("pre", "bruto", xml));
+    const acoes = el("div", "acoes-regra");
+    const copiar = el("button", "botao-primario", "Copiar e personalizar");
+    copiar.type = "button";
+    copiar.addEventListener("click", () => personalizarRegra(xml));
+    const exportar = el("button", "botao-discreto", `Baixar ${regra.arquivo}`);
+    exportar.type = "button";
+    exportar.addEventListener("click", () => baixar(`/api/regras/arquivos/${encodeURIComponent(regra.arquivo)}`, regra.arquivo));
+    acoes.append(exportar, copiar);
+    corpo.push(acoes);
   }
   corpo.push(el("h3", null, "Disparos recentes"));
   if (recentes.length) {
@@ -922,6 +1108,7 @@ function reiniciarCondicoes() {
 
 function dadosDaRegra() {
   if (estado.modoRegra === "sigma") return { formato: "sigma", sigma: $("regra-sigma").value };
+  if (estado.modoRegra === "xml") return { formato: "xml", xml: $("regra-xml").value };
   const tecnica = $("regra-tecnica").value.trim().toUpperCase();
   return {
     formato: "guiada",
@@ -955,6 +1142,7 @@ async function enviarRegra(rota) {
   return corpo;
 }
 
+const ROTULOS_DE_FORMATO = { sigma: "Sigma", guiada: "Guiada", xml: "XML", biblioteca: "Biblioteca" };
 const ESTADOS_DA_REGRA = { pendente: "Aguardando aplicação", ativa: "Ativa", recusada: "Recusada", desativada: "Desativada" };
 
 async function carregarRegrasProprias() {
@@ -977,7 +1165,7 @@ async function carregarRegrasProprias() {
       acao.append(b);
     }
     return [el("td", null, x.titulo), el("td", null, ESTADOS_DA_REGRA[x.estado] ?? x.estado),
-      el("td", null, x.formato === "sigma" ? "Sigma" : "Guiada"), el("td", null, quando(x.criada_em)), el("td", null, x.mensagem ?? "-"), acao];
+      el("td", null, ROTULOS_DE_FORMATO[x.formato] ?? x.formato), el("td", null, quando(x.criada_em)), el("td", null, x.mensagem ?? "-"), acao];
   })));
 }
 
@@ -986,7 +1174,115 @@ function escolherModo(modo) {
   document.querySelectorAll("#janela-regra [data-modo]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.modo === modo)));
   $("campos-guiada").hidden = modo !== "guiada";
   $("campos-sigma").hidden = modo !== "sigma";
+  $("campos-xml").hidden = modo !== "xml";
 }
+
+// Copia uma regra do catálogo para o editor, para personalizar sem mexer na original.
+function personalizarRegra(xml) {
+  $("janela-tecnica").close();
+  $("form-regra").reset();
+  $("erro-regra").hidden = true;
+  $("previa-saida").hidden = true;
+  reiniciarCondicoes();
+  escolherModo("xml");
+  $("regra-xml").value = `<group name="personalizadas,">\n  ${xml}\n</group>`;
+  $("janela-regra").showModal();
+}
+
+// ------------------------------------------------------------------ importar e exportar
+
+async function baixar(rota, nome) {
+  const r = await pedir(rota);
+  if (!r.ok) return;
+  const endereco = URL.createObjectURL(await r.blob());
+  const a = el("a");
+  a.href = endereco;
+  a.download = nome;
+  a.click();
+  URL.revokeObjectURL(endereco);
+}
+
+$("exportar-regras").addEventListener("click", () => baixar("/api/regras/exportar", "regras-roar.json"));
+$("abrir-importar").addEventListener("click", () => {
+  $("form-importar").reset();
+  $("erro-importar").hidden = true;
+  $("relatorio-importar").replaceChildren();
+  $("janela-importar").showModal();
+});
+$("fechar-importar").addEventListener("click", () => $("janela-importar").close());
+$("form-importar").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const arquivo = $("arquivo-importar").files[0];
+  if (!arquivo) return;
+  const formato = arquivo.name.toLowerCase().endsWith(".xml") ? "xml" : "sigma";
+  const r = await pedir("/api/regras/importar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ formato, conteudo: await arquivo.text() }),
+  });
+  const corpo = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    $("erro-importar").textContent = typeof corpo.detail === "string" ? corpo.detail : "Não foi possível importar este arquivo.";
+    $("erro-importar").hidden = false;
+    return;
+  }
+  const relatorio = [el("h3", null, `${corpo.criadas.length} importadas, ${corpo.recusadas.length} recusadas`)];
+  if (corpo.recusadas.length) {
+    relatorio.push(montarTabela([["Regra"], ["Por que não entrou"]],
+      corpo.recusadas.map((x) => [el("td", null, x.titulo), el("td", null, x.motivo)])));
+  }
+  $("relatorio-importar").replaceChildren(...relatorio);
+  carregarRegrasProprias();
+});
+
+// ------------------------------------------------------------------ biblioteca
+
+async function carregarBiblioteca(continuar = false) {
+  const consulta = new URLSearchParams({
+    busca: $("busca-biblioteca").value,
+    so_convertiveis: $("so-convertiveis").checked,
+    deslocamento: continuar ? estado.biblioteca.length : 0,
+  });
+  const r = await pedir(`/api/regras/biblioteca?${consulta}`);
+  const dados = await r.json();
+  estado.biblioteca = continuar ? [...estado.biblioteca, ...dados.regras] : dados.regras;
+  $("resumo-biblioteca").textContent = `${Number(dados.total).toLocaleString("pt-BR")} regras na biblioteca, ${Number(dados.convertiveis).toLocaleString("pt-BR")} podem ser usadas aqui.`;
+  const destino = $("tabela-biblioteca");
+  if (!estado.biblioteca.length) {
+    destino.replaceChildren(el("p", "vazio", "Nenhuma regra encontrada."));
+  } else {
+    destino.replaceChildren(montarTabela([["Regra"], ["Autoria"], ["Onde olha"], ["MITRE"], [""]], estado.biblioteca.map((x) => {
+      const acao = el("td");
+      if (x.convertivel) {
+        const b = el("button", "botao-discreto botao-tabela", "Ativar");
+        b.type = "button";
+        b.addEventListener("click", async () => {
+          const resposta = await pedir(`/api/regras/biblioteca/${encodeURIComponent(x.id)}/ativar`, { method: "POST" });
+          b.textContent = resposta.status === 201 ? "Ativada" : resposta.status === 409 ? "Já ativa" : "Não ativou";
+          b.disabled = true;
+          carregarRegrasProprias();
+        });
+        acao.append(b);
+      } else {
+        acao.textContent = x.motivo ?? "Não pode ser usada";
+      }
+      const nome = el("td");
+      nome.append(el("b", null, x.titulo));
+      if (x.descricao) nome.append(el("div", "texto-secao", x.descricao.slice(0, 160)));
+      return [nome, el("td", null, x.autor ?? "-"), el("td", null, x.origem ?? "-"), celula(etiquetas(x.tecnicas, 3)), acao];
+    })));
+  }
+  $("mais-biblioteca").hidden = estado.biblioteca.length >= dados.total_filtrado;
+}
+
+$("abrir-biblioteca").addEventListener("click", () => {
+  $("janela-biblioteca").showModal();
+  carregarBiblioteca();
+});
+$("fechar-biblioteca").addEventListener("click", () => $("janela-biblioteca").close());
+$("form-biblioteca").addEventListener("submit", (ev) => { ev.preventDefault(); carregarBiblioteca(); });
+$("so-convertiveis").addEventListener("change", () => carregarBiblioteca());
+$("mais-biblioteca").addEventListener("click", () => carregarBiblioteca(true));
 
 document.querySelectorAll("#janela-regra [data-modo]").forEach((b) => b.addEventListener("click", () => escolherModo(b.dataset.modo)));
 $("regra-origem").addEventListener("change", reiniciarCondicoes);

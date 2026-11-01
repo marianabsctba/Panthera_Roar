@@ -113,7 +113,6 @@
     </section>
 
     <section id="vista-logs" class="pagina" aria-label="Logs brutos" hidden>
-      <p class="texto-secao">Tudo o que os ativos enviaram, inclusive o que não virou alerta. Cada busca fica registrada.</p>
       <form id="form-logs" class="filtros" role="search">
         <input id="busca-logs" type="search" placeholder="Palavras no log, como sshd 203.0.113.5" aria-label="Buscar nos logs">
         <select id="dias-logs" aria-label="Período">
@@ -124,8 +123,19 @@
         </select>
         <button type="submit" class="botao-primario">Buscar</button>
       </form>
-      <div id="tabela-logs" class="tabela-rolagem"></div>
-      <button id="mais-logs" type="button" class="botao-discreto" hidden>Carregar mais</button>
+      <div id="filtros-logs" class="filtros-ativos"></div>
+      <div class="logs-resumo">
+        <span id="total-logs" class="texto-secao"></span>
+        <button id="abrir-colunas" type="button" class="botao-discreto botao-tabela">Colunas</button>
+      </div>
+      <div id="linha-do-tempo" class="linha-do-tempo" role="img" aria-label="Volume de logs no tempo"></div>
+      <div class="logs-corpo">
+        <aside id="campos-logs" class="campos-logs" aria-label="Campos dos logs"></aside>
+        <div class="logs-principal">
+          <div id="tabela-logs" class="tabela-rolagem"></div>
+          <button id="mais-logs" type="button" class="botao-discreto" hidden>Carregar mais</button>
+        </div>
+      </div>
     </section>
 
     <section id="vista-ataques" class="pagina" aria-label="Ataque e defesa" hidden>
@@ -165,7 +175,12 @@
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Regras criadas aqui</h2>
-        <button id="nova-regra" type="button" class="botao-primario">Nova regra</button>
+        <div class="acoes-regra">
+          <button id="exportar-regras" type="button" class="botao-discreto">Exportar</button>
+          <button id="abrir-importar" type="button" class="botao-discreto">Importar arquivo</button>
+          <button id="abrir-biblioteca" type="button" class="botao-discreto">Biblioteca</button>
+          <button id="nova-regra" type="button" class="botao-primario">Nova regra</button>
+        </div>
       </div>
       <div id="tabela-proprias" class="tabela-rolagem"></div>
 
@@ -210,6 +225,7 @@
       <div class="periodo" role="group" aria-label="Como criar">
         <button type="button" data-modo="guiada" aria-pressed="true">Guiada</button>
         <button type="button" data-modo="sigma" aria-pressed="false">Colar Sigma</button>
+        <button type="button" data-modo="xml" aria-pressed="false">Escrever à mão</button>
       </div>
       <form id="form-regra" class="formulario-regra">
         <div id="campos-guiada">
@@ -239,6 +255,10 @@
         <div id="campos-sigma" hidden>
           <label>Regra Sigma <textarea id="regra-sigma" rows="14" spellcheck="false" placeholder="title: Minha regra&#10;logsource:&#10;  product: windows&#10;  category: process_creation&#10;detection:&#10;  selecao:&#10;    Image|endswith: '\powershell.exe'&#10;  condition: selecao&#10;level: high"></textarea></label>
         </div>
+        <div id="campos-xml" hidden>
+          <label>Regra em XML <textarea id="regra-xml" rows="14" spellcheck="false" placeholder="&lt;group name=&quot;minhas_regras,&quot;&gt;&#10;  &lt;rule id=&quot;100001&quot; level=&quot;10&quot;&gt;&#10;    &lt;if_sid&gt;5710&lt;/if_sid&gt;&#10;    &lt;srcip&gt;203.0.113.5&lt;/srcip&gt;&#10;    &lt;description&gt;Tentativa vinda de endereço conhecido&lt;/description&gt;&#10;  &lt;/rule&gt;&#10;&lt;/group&gt;"></textarea></label>
+          <p class="texto-secao">Os números das regras são ajustados automaticamente na hora de instalar.</p>
+        </div>
         <p id="erro-regra" class="erro" role="alert" hidden></p>
         <div class="acoes-regra">
           <button id="previa-regra" type="button" class="botao-discreto">Ver como fica</button>
@@ -249,6 +269,56 @@
           <pre id="previa-xml" class="bruto" tabindex="0"></pre>
         </div>
       </form>
+    </div>
+  </dialog>
+
+  <dialog id="janela-colunas" class="janela" aria-labelledby="titulo-colunas">
+    <div class="janela-topo">
+      <h2 id="titulo-colunas">Colunas da tabela</h2>
+      <button id="fechar-colunas" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div id="lista-colunas" class="conteudo-janela lista-colunas"></div>
+  </dialog>
+
+  <dialog id="janela-log" class="janela" aria-labelledby="titulo-log">
+    <div class="janela-topo">
+      <h2 id="titulo-log">Campos do log</h2>
+      <button id="fechar-log" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div id="conteudo-log" class="conteudo-janela"></div>
+  </dialog>
+
+  <dialog id="janela-importar" class="janela" aria-labelledby="titulo-importar">
+    <div class="janela-topo">
+      <h2 id="titulo-importar">Importar regras</h2>
+      <button id="fechar-importar" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div class="conteudo-janela">
+      <form id="form-importar" class="formulario-regra">
+        <p class="texto-secao">Envie um arquivo Sigma (.yml), que pode ter várias regras separadas por ---, ou um arquivo XML de regras.</p>
+        <input id="arquivo-importar" type="file" accept=".yml,.yaml,.xml" required aria-label="Arquivo de regras">
+        <p id="erro-importar" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra"><button type="submit" class="botao-primario">Importar</button></div>
+      </form>
+      <div id="relatorio-importar"></div>
+    </div>
+  </dialog>
+
+  <dialog id="janela-biblioteca" class="janela" aria-labelledby="titulo-biblioteca">
+    <div class="janela-topo">
+      <h2 id="titulo-biblioteca">Biblioteca de regras</h2>
+      <button id="fechar-biblioteca" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div class="conteudo-janela">
+      <p id="resumo-biblioteca" class="texto-secao"></p>
+      <form id="form-biblioteca" class="filtros" role="search">
+        <input id="busca-biblioteca" type="search" placeholder="Título, autor ou técnica MITRE" aria-label="Buscar na biblioteca">
+        <label class="caixa"><input id="so-convertiveis" type="checkbox" checked> Só as que podem ser usadas</label>
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-biblioteca" class="tabela-rolagem"></div>
+      <button id="mais-biblioteca" type="button" class="botao-discreto" hidden>Carregar mais</button>
+      <p class="credito">Regras da comunidade SigmaHQ, sob a Detection Rule License 1.1. A autoria aparece aqui e nos alertas.</p>
     </div>
   </dialog>
 

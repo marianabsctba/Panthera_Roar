@@ -6,6 +6,7 @@
 Apaga no final tudo o que criou.
 """
 
+import json
 import secrets
 import sys
 import tempfile
@@ -137,6 +138,20 @@ def main():
             registrar("cursor inválido é recusado", http.get("/api/logs", params={"depois_de": "{]"}).status_code == 422
                       and http.get("/api/logs", params={"depois_de": '{"a":1}'}).status_code == 422)
             registrar("catálogo aparece na API", http.get("/api/regras").json()["catalogo"] == por_a)
+            resposta = http.get("/api/logs", params={"busca": marca_a}).json()
+            registrar("logs trazem total e linha do tempo", resposta["total"] >= 1 and resposta["linha_do_tempo"], str(resposta["total"]))
+            ativo_a = achados[0]["bruto"]["agent"]["name"]
+            registrar("campos trazem valores com contagem", any(v["valor"] == ativo_a for v in resposta["campos"]["agent.name"]))
+            filtro = json.dumps([{"campo": "agent.name", "valor": ativo_a}])
+            registrar("filtro por campo encontra", http.get("/api/logs", params={"busca": marca_a, "filtros": filtro}).json()["total"] >= 1)
+            excluir = json.dumps([{"campo": "agent.name", "valor": ativo_a, "negar": True}])
+            registrar("excluir por campo tira do resultado", http.get("/api/logs", params={"busca": marca_a, "filtros": excluir}).json()["total"] == 0)
+            for nome, ruim in (("texto qualquer", "nao-e-json"), ("campo com injeção", json.dumps([{"campo": "a b\"}", "valor": "x"}])),
+                               ("consulta embutida", json.dumps([{"campo": "agent.name", "valor": {"match_all": {}}}])),
+                               ("filtros demais", json.dumps([{"campo": "a", "valor": "b"}] * 21))):
+                registrar(f"filtro recusado: {nome}", http.get("/api/logs", params={"filtros": ruim}).status_code == 422)
+            campo_de_b = json.dumps([{"campo": "_index", "valor": f"wazuh-archives-4.x-{b['id']}-x"}])
+            registrar("filtrar pelo índice de outro cliente não abre nada", http.get("/api/logs", params={"filtros": campo_de_b}).json()["logs"] == [])
             http.post("/api/sair")
             http.cookies.clear()
             http.post("/api/entrar", json=ub)

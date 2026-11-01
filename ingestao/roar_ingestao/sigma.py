@@ -171,7 +171,13 @@ def _sem_marcacao(padrao):
     return padrao.replace("&", r"\x26").replace("<", r"\x3c").replace(">", r"\x3e")
 
 
-def _xml_da_regra(identificador, nivel, grupo_pai, linhas, titulo, sigma_id, tecnicas):
+def _descricao(titulo, autor):
+    """A licença DRL pede o autor também nas mensagens geradas por uma regra."""
+    texto = f"{titulo[:160]} (autoria: {autor[:100]})" if autor else titulo[:200]
+    return re.sub(r"[&<>]", " ", texto)
+
+
+def _xml_da_regra(identificador, nivel, grupo_pai, linhas, titulo, sigma_id, tecnicas, autor=None):
     corpo = [f'  <rule id="{identificador}" level="{nivel}">', f"    <if_group>{grupo_pai}</if_group>"]
     for campo, padrao, negado in linhas:
         atributo = ' negate="yes"' if negado else ""
@@ -179,7 +185,7 @@ def _xml_da_regra(identificador, nivel, grupo_pai, linhas, titulo, sigma_id, tec
             corpo.append(f'    <match type="pcre2"{atributo}>{_sem_marcacao(padrao)}</match>')
         else:
             corpo.append(f'    <field name="{escape(campo)}" type="pcre2"{atributo}>{_sem_marcacao(padrao)}</field>')
-    corpo.append(f"    <description>{re.sub(r'[&<>]', ' ', titulo[:200])}</description>")
+    corpo.append(f"    <description>{_descricao(titulo, autor)}</description>")
     if sigma_id:
         corpo.append(f'    <info type="text">sigma:{escape(str(sigma_id))}</info>')
     if tecnicas:
@@ -207,7 +213,7 @@ def converter_regra(regra, proximo_id):
         tecnicas = sorted({f"{t.name}".upper() for t in regra.tags if t.namespace == "attack" and re.fullmatch(r"t\d{4}(\.\d{3})?", t.name)})
         for ramo in ramos:
             resultado.xml.append(_xml_da_regra(proximo_id, nivel, ORIGENS[chave], _juntar_campos(ramo),
-                                               resultado.titulo, regra.id, tecnicas))
+                                               resultado.titulo, regra.id, tecnicas, regra.author))
             proximo_id += 1
     except (NaoConvertivel, SigmaError, AttributeError, TypeError) as erro:
         resultado.xml = []

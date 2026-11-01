@@ -288,6 +288,46 @@ def main():
         registrar("o dono desativa a regra", http.post(f"/api/regras/proprias/{id_a}/desativar").status_code == 204
                   and http.get("/api/regras/proprias").json()["regras"][0]["estado"] == "desativada")
 
+        print("\n== Regras à mão, importação, biblioteca e exportação", flush=True)
+        manual = '<group name="teste,"><rule id="100001" level="10"><if_sid>5710</if_sid><description>Regra manual</description></rule></group>'
+        registrar("XML à mão converte", http.post("/api/regras/converter", json={"formato": "xml", "xml": manual}).status_code == 200)
+        registrar("XML à mão é criado", http.post("/api/regras/proprias", json={"formato": "xml", "xml": manual}).status_code == 201)
+        for nome, ruim in (("XML quebrado", "<group><rule"), ("DOCTYPE", '<!DOCTYPE x [<!ENTITY a "b">]>' + manual),
+                           ("substituir regra existente", manual.replace('level="10"', 'level="10" overwrite="yes"')),
+                           ("sem nível", manual.replace(' level="10"', "")), ("sem descrição", manual.replace("<description>Regra manual</description>", ""))):
+            registrar(f"XML recusado: {nome}", http.post("/api/regras/converter", json={"formato": "xml", "xml": ruim}).status_code == 422)
+
+        boa = "title: Boa\nlogsource: {product: linux, service: syslog}\ndetection:\n  s: ['texto']\n  condition: s\nlevel: low\n"
+        ruim = "title: Ruim\nlogsource: {product: windows, service: security}\ndetection:\n  s: {IpAddress|cidr: 10.0.0.0/8}\n  condition: s\nlevel: low\n"
+        relatorio = http.post("/api/regras/importar", json={"formato": "sigma", "conteudo": boa + "---\n" + ruim}).json()
+        registrar("importação separa o que entrou e o que não entrou", relatorio["criadas"] == ["Boa"] and relatorio["recusadas"][0]["titulo"] == "Ruim", str(relatorio)[:200])
+        registrar("importação fica registrada", ADMIN.execute(
+            "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'importar_regras'", (a["id"],)).fetchone()[0] == 1)
+        registrar("XML ruim na importação vai para o relatório", http.post("/api/regras/importar", json={"formato": "xml", "conteudo": "<rule"}).json()["recusadas"] != [])
+
+        identificador = "0b4a4a2e-2222-4c1c-9d2e-" + uuid.uuid4().hex[:12]
+        ADMIN.execute("INSERT INTO biblioteca_regras (id, titulo, autor, conteudo, convertivel, versao) VALUES (%s, 'Regra pública', 'Autora', %s, true, 'teste')",
+                      (identificador, boa.replace("Boa", "Publica").replace("level: low", "author: Autora\nlevel: low")))
+        lista = http.get("/api/regras/biblioteca", params={"busca": "Regra pública"}).json()
+        registrar("biblioteca mostra a autoria", lista["regras"][0]["autor"] == "Autora")
+        registrar("regra da biblioteca é ativada", http.post(f"/api/regras/biblioteca/{identificador}/ativar").status_code == 201)
+        registrar("ativar de novo avisa que já está ativa", http.post(f"/api/regras/biblioteca/{identificador}/ativar").status_code == 409)
+        registrar("id inválido na biblioteca", http.post("/api/regras/biblioteca/zzz/ativar").status_code == 404)
+        ADMIN.execute("DELETE FROM biblioteca_regras WHERE id = %s", (identificador,))
+        previa_autor = http.post("/api/regras/converter", json={"formato": "sigma", "sigma": boa.replace("level: low", "author: Autora\nlevel: low")}).json()
+        registrar("autoria vai para o alerta, como a licença pede", "autoria: Autora" in previa_autor["xml"])
+
+        exportado = http.get("/api/regras/exportar")
+        registrar("exportação baixa as regras do cliente", "attachment" in exportado.headers.get("content-disposition", "") and "Regra manual" in exportado.text)
+
+        ADMIN.execute("INSERT INTO arquivos_de_regras (arquivo, conteudo) VALUES ('teste_roar.xml', %s) ON CONFLICT (arquivo) DO UPDATE SET conteudo = EXCLUDED.conteudo",
+                      ('<group name="g,"><rule id="5712" level="10"><description>Original</description></rule></group>',))
+        ADMIN.execute("UPDATE regras SET arquivo = 'teste_roar.xml' WHERE cliente_id = %s AND regra_id = '5712'", (a["id"],))
+        registrar("regra abre com o XML original", "Original" in (http.get("/api/regras/5712").json()["xml"] or ""))
+        registrar("arquivo do Wazuh é exportado", "Original" in http.get("/api/regras/arquivos/teste_roar.xml").text)
+        registrar("caminho malicioso no arquivo é recusado", http.get("/api/regras/arquivos/..%2F..%2Fetc%2Fpasswd").status_code == 404)
+        ADMIN.execute("DELETE FROM arquivos_de_regras WHERE arquivo = 'teste_roar.xml'")
+
         print("\n== Entradas e saídas", flush=True)
         registrar("id gigante não vira erro", http.get(f"/api/riscos/{2**70}").status_code == 404)
         registrar("id negativo não vira erro", http.get("/api/grupos/-1").status_code == 404)

@@ -15,6 +15,7 @@ import requests
 import urllib3
 from psycopg.types.json import Jsonb
 
+from . import xml_proprio
 from .ciclo import conexoes, ler_env
 from .normalizar import limpar
 from .sigma import ID_INICIAL, arquivo_de_regras, converter_textos
@@ -43,6 +44,16 @@ def _pedir(gerenciador_id, rota, parametros=None):
                      params=parametros)
     r.raise_for_status()
     return r.json()
+
+
+def _pedir_texto(gerenciador_id, rota, parametros=None):
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    base, senha = _api_do_gerenciador(gerenciador_id)
+    token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", senha), verify=False, timeout=30)
+    token.raise_for_status()
+    r = requests.get(base + rota, headers={"Authorization": f"Bearer {token.text}"}, verify=False, timeout=60, params=parametros)
+    r.raise_for_status()
+    return r.text
 
 
 def buscar_regras(gerenciador_id):
@@ -158,10 +169,28 @@ def sincronizar_defesas(banco, tecnicas, pausa=0.2):
     return novas
 
 
-def _xml_da_regra_propria(linha_id, origem):
+def _xml_da_regra_propria(linha_id, formato, origem):
     # Cada regra própria reserva uma faixa de ids, que não muda quando outras entram ou saem.
-    resultados = converter_textos([origem], id_inicial=ID_INICIAL + linha_id * FAIXA_POR_REGRA)
+    id_inicial = ID_INICIAL + linha_id * FAIXA_POR_REGRA
+    if formato == "xml":
+        return xml_proprio.renumerar(origem, id_inicial) + "\n"
+    resultados = converter_textos([origem], id_inicial=id_inicial)
     return arquivo_de_regras(resultados) if any(r.xml for r in resultados) else None
+
+
+def sincronizar_arquivos(banco, gerenciador_id, regras):
+    """Guarda o XML original dos arquivos de regras, que depois abre e exporta pela tela."""
+    with banco.con.transaction():
+        conhecidos = {a for (a,) in banco.con.execute("SELECT arquivo FROM arquivos_de_regras").fetchall()}
+    for regra in regras:
+        arquivo = regra.get("filename")
+        if not arquivo or arquivo in conhecidos or not str(regra.get("relative_dirname", "")).startswith("ruleset/"):
+            continue
+        conhecidos.add(arquivo)
+        conteudo = _pedir_texto(gerenciador_id, f"/rules/files/{arquivo}", {"raw": "true"})
+        with banco.con.transaction():
+            banco.con.execute("INSERT INTO arquivos_de_regras (arquivo, conteudo) VALUES (%s, %s) ON CONFLICT (arquivo) DO UPDATE"
+                              " SET conteudo = EXCLUDED.conteudo, atualizado_em = now()", (arquivo, limpar(conteudo)))
 
 
 def aplicar_regras_proprias(banco, gerenciador_id, cliente):
@@ -171,9 +200,10 @@ def aplicar_regras_proprias(banco, gerenciador_id, cliente):
     with banco.con.transaction():
         banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
         linhas = banco.con.execute(
-            "SELECT id, origem, estado FROM regras_proprias WHERE gerenciador_id = %s AND estado IN ('ativa', 'pendente') ORDER BY id",
+            "SELECT id, formato, origem, estado FROM regras_proprias WHERE gerenciador_id = %s AND estado IN ('ativa', 'pendente') ORDER BY id",
             (gerenciador_id,)).fetchall()
-    partes = {i: _xml_da_regra_propria(i, origem) for i, origem, _ in linhas}
+    partes = {i: _xml_da_regra_propria(i, formato, origem) for i, formato, origem, _ in linhas}
+    linhas = [(i, origem, estado) for i, _, origem, estado in linhas]
     desejado = hashlib.sha256("".join(p for p in partes.values() if p).encode()).hexdigest()
     marca = PASTA_GERENCIADORES / gerenciador_id / "roar_proprias.aplicado"
     if marca.exists() and marca.read_text() == desejado:
@@ -220,6 +250,7 @@ def sincronizar(banco):
             aplicar_regras_proprias(banco, gerenciador_id, cliente)
             regras = buscar_regras(gerenciador_id)
             total += gravar_regras(banco, gerenciador_id, cliente, regras)
+            sincronizar_arquivos(banco, gerenciador_id, regras)
             tecnicas |= {t for r in regras for t in _textos(r.get("mitre"))}
             gravar_ativos(banco, gerenciador_id, cliente, buscar_ativos(gerenciador_id))
         except Exception as erro:

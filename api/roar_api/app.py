@@ -30,7 +30,7 @@ from requests.adapters import HTTPAdapter
 
 # O mesmo conversor que a instalação das regras usa.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
-from roar_ingestao import sigma  # noqa: E402
+from roar_ingestao import sigma, xml_proprio  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
 ESTATICO = Path(__file__).parent / "estatico"
@@ -298,27 +298,58 @@ def evento_bruto(identificador: int, request: Request, sessao=Depends(sessao_atu
     return linha
 
 
+CAMPOS_DE_LOG = ("agent.name", "location", "decoder.name", "data.srcip", "data.srcuser", "data.dstuser", "data.protocol", "predecoder.program_name")
+
+
+def _filtros_de_campo(texto):
+    """Filtros clicados na tela: [{"campo", "valor", "negar"}]. Só viram comparação exata de campo."""
+    if not texto:
+        return [], []
+    try:
+        filtros = json.loads(texto)
+    except ValueError:
+        raise HTTPException(status_code=422)
+    if not isinstance(filtros, list) or len(filtros) > 20:
+        raise HTTPException(status_code=422)
+    condicoes, exclusoes = [], []
+    for f in filtros:
+        campo = f.get("campo") if isinstance(f, dict) else None
+        valor = f.get("valor") if isinstance(f, dict) else None
+        if (not isinstance(campo, str) or not re.fullmatch(r"[A-Za-z0-9_@][A-Za-z0-9_.@-]{0,120}", campo)
+                or not isinstance(valor, (str, int, float)) or isinstance(valor, bool) or len(str(valor)) > 1000):
+            raise HTTPException(status_code=422)
+        (exclusoes if f.get("negar") is True else condicoes).append({"term": {campo: valor}})
+    return condicoes, exclusoes
+
+
 @app.get("/api/logs")
-def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 7, depois_de: str = ""):
+def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
     """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
     dias = max(1, min(dias, 90))
     busca = busca.strip()[:200]
+    condicoes, exclusoes = _filtros_de_campo(filtros)
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'buscar_logs', %s)",
-                    (sessao["cliente_id"], sessao["usuario_id"], busca or "*"))
+                    (sessao["cliente_id"], sessao["usuario_id"], (busca or "*") + (f" {filtros[:400]}" if filtros else "")))
     if not gerenciadores:
-        return {"logs": [], "proximo": None}
+        return {"logs": [], "proximo": None, "total": 0, "linha_do_tempo": [], "campos": {}}
 
-    filtros = [{"range": {"timestamp": {"gte": f"now-{dias}d"}}}]
+    condicoes.append({"range": {"timestamp": {"gte": f"now-{dias}d"}}})
     if busca:
-        filtros.append({"simple_query_string": {"query": busca, "fields": ["full_log"], "default_operator": "and", "lenient": True}})
+        condicoes.append({"simple_query_string": {"query": busca, "fields": ["full_log"], "default_operator": "and", "lenient": True}})
     consulta = {
         "size": TAMANHO_DA_PAGINA,
         "sort": [{"timestamp": "desc"}, {"_id": "desc"}],
-        "query": {"bool": {"filter": filtros}},
-        "track_total_hits": False,
+        "query": {"bool": {"filter": condicoes, "must_not": exclusoes}},
+        "track_total_hits": 100000,
     }
+    if not depois_de:
+        # Contagens e linha do tempo só na primeira página: as seguintes pedem só mais linhas.
+        consulta["aggs"] = {
+            "linha_do_tempo": {"auto_date_histogram": {"field": "timestamp", "buckets": 48}},
+            **{f"campo_{i}": {"terms": {"field": campo, "size": 8}} for i, campo in enumerate(CAMPOS_DE_LOG)},
+        }
     if depois_de:
         try:
             cursor = json.loads(depois_de)
@@ -333,9 +364,19 @@ def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: 
                                               json=consulta, timeout=30)
     if not resposta.ok:
         raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.")
-    achados = resposta.json()["hits"]["hits"]
-    return {"logs": [{"id": h["_id"], "bruto": h["_source"]} for h in achados],
-            "proximo": json.dumps(achados[-1]["sort"]) if len(achados) == TAMANHO_DA_PAGINA else None}
+    corpo = resposta.json()
+    achados = corpo["hits"]["hits"]
+    agregados = corpo.get("aggregations", {})
+    return {
+        "logs": [{"id": h["_id"], "bruto": h["_source"]} for h in achados],
+        "proximo": json.dumps(achados[-1]["sort"]) if len(achados) == TAMANHO_DA_PAGINA else None,
+        "total": corpo["hits"]["total"]["value"],
+        "total_exato": corpo["hits"]["total"]["relation"] == "eq",
+        "linha_do_tempo": [{"quando": b["key_as_string"], "total": b["doc_count"]}
+                           for b in agregados.get("linha_do_tempo", {}).get("buckets", [])],
+        "campos": {campo: [{"valor": b["key"], "total": b["doc_count"]} for b in agregados.get(f"campo_{i}", {}).get("buckets", [])]
+                   for i, campo in enumerate(CAMPOS_DE_LOG)},
+    }
 
 
 @app.get("/api/ativos")
@@ -484,9 +525,10 @@ def regras(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias
 
 
 class RegraNova(BaseModel):
-    formato: str = Field(pattern="^(sigma|guiada)$")
-    # Sigma colado pela pessoa.
+    formato: str = Field(pattern="^(sigma|guiada|xml)$")
+    # Sigma ou XML escrito pela pessoa.
     sigma: str = Field(default="", max_length=65536)
+    xml: str = Field(default="", max_length=65536)
     # Formulário guiado.
     titulo: str = Field(default="", max_length=200)
     origem: str = Field(default="", max_length=40)
@@ -496,7 +538,13 @@ class RegraNova(BaseModel):
 
 
 def _converter(dados: RegraNova):
-    """Devolve (título, Sigma, XML gerado). Tudo passa pelo mesmo conversor, sem nada instalado ainda."""
+    """Devolve (título, origem, XML gerado, quantas regras). Nada é instalado ainda."""
+    if dados.formato == "xml":
+        try:
+            regras = xml_proprio.analisar(dados.xml)
+        except xml_proprio.XmlInvalido as erro:
+            raise HTTPException(status_code=422, detail=str(erro))
+        return regras[0][0][:200], dados.xml, dados.xml, len(regras)
     try:
         if dados.formato == "guiada":
             origem = sigma.sigma_da_regra_guiada(dados.titulo, dados.origem, dados.nivel, dados.condicoes, dados.tecnicas)
@@ -534,13 +582,10 @@ def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(sessa
         gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em LIMIT 1").fetchone()
         if not gerenciador:
             raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
-        linha = con.execute(
-            """INSERT INTO regras_proprias (cliente_id, gerenciador_id, titulo, formato, origem, xml_regras, criada_por)
-               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (sessao["cliente_id"], gerenciador["id"], titulo, dados.formato, origem, xml, sessao["usuario_id"])).fetchone()
+        novo = _gravar_regra_propria(con, sessao, gerenciador["id"], titulo, dados.formato, origem, xml)
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_regra', %s)",
-                    (sessao["cliente_id"], sessao["usuario_id"], str(linha["id"])))
-    return {"id": linha["id"], "estado": "pendente"}
+                    (sessao["cliente_id"], sessao["usuario_id"], str(novo)))
+    return {"id": novo, "estado": "pendente"}
 
 
 @app.post("/api/regras/proprias/{identificador}/desativar", status_code=204)
@@ -552,6 +597,116 @@ def desativar_regra_propria(identificador: int, request: Request, sessao=Depends
             raise HTTPException(status_code=404)
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_regra', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+class ImportacaoDeRegras(BaseModel):
+    formato: str = Field(pattern="^(sigma|xml)$")
+    conteudo: str = Field(max_length=2_000_000)
+
+
+def _gravar_regra_propria(con, sessao, gerenciador, titulo, formato, origem, xml):
+    return con.execute(
+        """INSERT INTO regras_proprias (cliente_id, gerenciador_id, titulo, formato, origem, xml_regras, criada_por)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (sessao["cliente_id"], gerenciador, titulo, formato, origem, xml, sessao["usuario_id"])).fetchone()["id"]
+
+
+@app.post("/api/regras/importar")
+def importar_regras(dados: ImportacaoDeRegras, request: Request, sessao=Depends(sessao_atual)):
+    """Importa um arquivo inteiro e diz o que entrou e o que não entrou, com o motivo."""
+    criadas, recusadas = [], []
+    if dados.formato == "xml":
+        try:
+            regras = xml_proprio.analisar(dados.conteudo)
+            criadas.append((regras[0][0][:200], dados.conteudo, dados.conteudo))
+        except xml_proprio.XmlInvalido as erro:
+            recusadas.append({"titulo": "Arquivo", "motivo": str(erro)})
+    else:
+        # Um YAML com várias regras separadas por "---" vira uma regra própria para cada.
+        for documento in re.split(r"(?m)^---\s*$", dados.conteudo)[:500]:
+            if not documento.strip():
+                continue
+            resultado = sigma.converter_textos([documento])[0]
+            if resultado.xml:
+                criadas.append((resultado.titulo[:200], documento, "\n".join(resultado.xml)))
+            else:
+                recusadas.append({"titulo": resultado.titulo[:200], "motivo": resultado.motivo})
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        for titulo, origem, xml in criadas:
+            _gravar_regra_propria(con, sessao, gerenciador["id"], titulo, dados.formato, origem, xml)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'importar_regras', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{len(criadas)} criadas, {len(recusadas)} recusadas"))
+    return {"criadas": [c[0] for c in criadas], "recusadas": recusadas}
+
+
+@app.get("/api/regras/exportar")
+def exportar_regras(request: Request, sessao=Depends(sessao_atual)):
+    """As regras criadas aqui, cada uma no formato de origem."""
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("SELECT titulo, formato, origem, xml_regras, estado FROM regras_proprias ORDER BY id").fetchall()
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_regras', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(len(linhas))))
+    return Response(json.dumps({"regras": linhas}, ensure_ascii=False, indent=2, default=str), media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="regras-roar.json"'})
+
+
+@app.get("/api/regras/biblioteca")
+def biblioteca(request: Request, sessao=Depends(sessao_atual), busca: str = "", so_convertiveis: bool = True, deslocamento: int = 0):
+    deslocamento = max(0, min(deslocamento, 100000))
+    condicoes, parametros = ["TRUE"], []
+    busca = busca.strip()[:200]
+    if busca:
+        termo = f"%{_sem_curinga(busca)}%"
+        condicoes.append("(titulo ILIKE %s OR descricao ILIKE %s OR autor ILIKE %s OR array_to_string(tecnicas, ' ') ILIKE %s)")
+        parametros += [termo, termo, termo, termo]
+    if so_convertiveis:
+        condicoes.append("convertivel")
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""SELECT id, titulo, descricao, autor, nivel, origem, tecnicas, endereco, convertivel, motivo,
+                       count(*) OVER () AS total_filtrado
+                FROM biblioteca_regras WHERE {' AND '.join(condicoes)} ORDER BY titulo LIMIT %s OFFSET %s""",
+            (*parametros, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
+        total = con.execute("SELECT count(*) AS total, count(*) FILTER (WHERE convertivel) AS convertiveis FROM biblioteca_regras").fetchone()
+    return {"regras": linhas, "total_filtrado": linhas[0]["total_filtrado"] if linhas else 0, **total}
+
+
+@app.post("/api/regras/biblioteca/{identificador}/ativar", status_code=201)
+def ativar_da_biblioteca(identificador: str, request: Request, sessao=Depends(sessao_atual)):
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", identificador):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        regra = con.execute("SELECT titulo, conteudo, convertivel, motivo FROM biblioteca_regras WHERE id = %s", (identificador,)).fetchone()
+        if not regra:
+            raise HTTPException(status_code=404)
+        if not regra["convertivel"]:
+            raise HTTPException(status_code=422, detail=f"Esta regra não pode ser usada: {regra['motivo']}")
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        ja_ativa = con.execute("SELECT 1 FROM regras_proprias WHERE origem = %s AND estado IN ('ativa', 'pendente')", (regra["conteudo"],)).fetchone()
+        if ja_ativa:
+            raise HTTPException(status_code=409, detail="Esta regra já está ativa.")
+        novo = _gravar_regra_propria(con, sessao, gerenciador["id"], regra["titulo"][:200], "biblioteca", regra["conteudo"], "")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ativar_da_biblioteca', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], identificador))
+    return {"id": novo, "estado": "pendente"}
+
+
+@app.get("/api/regras/arquivos/{arquivo}")
+def arquivo_de_regras(arquivo: str, request: Request, sessao=Depends(sessao_atual)):
+    """Exporta um arquivo de regras do Wazuh tal como ele é distribuído."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}\.xml", arquivo):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("SELECT conteudo FROM arquivos_de_regras WHERE arquivo = %s", (arquivo,)).fetchone()
+    if not linha:
+        raise HTTPException(status_code=404)
+    return Response(linha["conteudo"], media_type="application/xml",
+                    headers={"Content-Disposition": f'attachment; filename="{arquivo}"'})
 
 
 @app.get("/api/regras/{regra_id}")
@@ -572,7 +727,9 @@ def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(sessao_atua
         recentes = con.execute(
             """SELECT id, ocorrido_em, severidade, agente_nome AS ativo, host(ip_origem) AS ip_origem, usuario FROM eventos
                WHERE regra_id = %s ORDER BY id DESC LIMIT 10""", (regra_id,)).fetchall()
-    return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes}
+        arquivo = con.execute("SELECT conteudo FROM arquivos_de_regras WHERE arquivo = %s", (regra["arquivo"],)).fetchone()
+    xml = xml_proprio.trecho_da_regra(arquivo["conteudo"], regra_id) if arquivo else None
+    return {"regra": regra, "tecnicas": nomes, "disparos": disparos, "recentes": recentes, "xml": xml}
 
 
 def _inteiro_valido(identificador):
