@@ -10,10 +10,13 @@ import argparse
 import ipaddress
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
+
+import requests
 
 from . import cofre, rede_externa
 
@@ -21,6 +24,7 @@ log = logging.getLogger("roar.inteligencia")
 
 MAIOR_RESPOSTA = 64 * 1024 * 1024
 POR_PAGINA = 2000
+TEMPO_DA_PLATAFORMA_LOCAL = 300
 MAXIMO_DE_PAGINAS = 200
 EVENTOS_POR_CICLO = 2000
 DIAS_NO_PASSADO = 90
@@ -275,11 +279,50 @@ def buscar_no_passado(banco, cliente, novos, dias=DIAS_NO_PASSADO):
     return total
 
 
+def _pedir_local(metodo, endereco, cabecalhos, **kwargs):
+    """A plataforma da própria instalação mora em endereço interno, que a proteção das fontes externas recusaria."""
+    try:
+        resposta = requests.request(metodo, endereco, headers=cabecalhos, timeout=TEMPO_DA_PLATAFORMA_LOCAL, **kwargs)
+    except requests.RequestException as erro:
+        raise FonteComProblema(f"A plataforma local não respondeu ({type(erro).__name__}).")
+    if resposta.status_code >= 300:
+        raise FonteComProblema(f"A plataforma local respondeu com o código {resposta.status_code}.")
+    return resposta.json()
+
+
+def plataforma_local():
+    """Endereço e chave ficam só no serviço: a organização nunca recebe a chave da instalação."""
+    from .ciclo import ler_env
+    env = ler_env(os.getenv("ROAR_ENV", "/opt/panthera-roar/.env"))
+    endereco, chave = env.get("ROAR_MISP_ENDERECO"), env.get("MISP_CHAVE")
+    return (endereco, chave) if endereco and chave else None
+
+
+def garantir_fonte_local(banco, cliente, local=None):
+    """Toda organização já nasce com a fonte. Quem a desligou continua com ela desligada: a linha fica."""
+    if not (local or plataforma_local()):
+        return False
+    with banco.con.transaction():
+        _com_cliente(banco, cliente)
+        return bool(banco.con.execute(
+            """INSERT INTO intel_fontes (cliente_id, nome, tipo, endereco, a_cada_minutos, criado_por, interna)
+               VALUES (%s, 'Plataforma local', 'misp', 'interno', 60, '00000000-0000-0000-0000-000000000000', true)
+               ON CONFLICT (cliente_id) WHERE interna DO NOTHING RETURNING id""", (cliente,)).fetchone())
+
+
 def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None):
     buscadores = {"misp": buscar_misp, "taxii": buscar_taxii}
     segredo = None
     try:
-        if fonte["segredo"]:
+        if fonte.get("interna"):
+            local = plataforma_local()
+            if not local:
+                raise FonteComProblema("A plataforma local não está instalada.")
+            fonte = {**fonte, "endereco": local[0]}
+            segredo = local[1]
+            if not buscar:
+                buscar = lambda f, s: buscar_misp(f, s, chamar=_pedir_local)  # noqa: E731
+        elif fonte["segredo"]:
             with banco.con.transaction():
                 _com_cliente(banco, cliente)
                 selado = banco.con.execute("SELECT selado FROM segredos WHERE nome = %s", (fonte["segredo"],)).fetchone()
@@ -304,11 +347,12 @@ def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None):
 def fontes_vencidas(banco, cliente, agora=None):
     with banco.con.transaction():
         _com_cliente(banco, cliente)
-        linhas = banco.con.execute("SELECT id, tipo, endereco, colecao, segredo FROM intel_fontes WHERE ativa AND proxima_em <= %s ORDER BY id", (agora or datetime.now(timezone.utc),)).fetchall()
-    return [dict(zip(("id", "tipo", "endereco", "colecao", "segredo"), l)) for l in linhas]
+        linhas = banco.con.execute("SELECT id, tipo, endereco, colecao, segredo, interna FROM intel_fontes WHERE ativa AND proxima_em <= %s ORDER BY id", (agora or datetime.now(timezone.utc),)).fetchall()
+    return [dict(zip(("id", "tipo", "endereco", "colecao", "segredo", "interna"), l)) for l in linhas]
 
 
 def ciclo(banco, cliente):
+    garantir_fonte_local(banco, cliente)
     for fonte in fontes_vencidas(banco, cliente):
         sincronizar_fonte(banco, cliente, fonte)
     return buscar_nos_eventos_novos(banco, cliente)

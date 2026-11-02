@@ -7,7 +7,7 @@ import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDoBruto
 import { numero } from "../formato";
 import { Fatos } from "./Ataques";
 
-interface Fonte { id: number; nome: string; tipo: string; endereco: string; colecao: string | null; com_credencial: boolean; ativa: boolean; a_cada_minutos: number; proxima_em: string | null; ultima_em: string | null; ultimo_erro: string | null; indicadores: number }
+interface Fonte { id: number; nome: string; tipo: string; endereco: string; colecao: string | null; com_credencial: boolean; ativa: boolean; interna: boolean; a_cada_minutos: number; proxima_em: string | null; ultima_em: string | null; ultimo_erro: string | null; indicadores: number }
 interface Ocorrencia { evento_id: number; ocorrido_em: string; encontrada_em: string | null; no_passado: boolean; tipo: string; valor: string; descricao: string | null; fonte: string; regra_descricao: string | null; severidade: string; ativo: string | null }
 interface Visao { fontes: Fonte[]; ocorrencias: Ocorrencia[] }
 
@@ -200,7 +200,7 @@ export function Inteligencia() {
 
   return (
     <>
-      <Cabecalho titulo="Inteligência" ajuda="Opcional. Os indicadores vêm para o Roar e são comparados com os eventos, inclusive os antigos. Nada volta para a fonte, e nada é bloqueado sozinho.">
+      <Cabecalho titulo="Inteligência" ajuda="A plataforma local já vem ligada, e dá para desligar se você usa outra. Os indicadores vêm para o Roar e são comparados com os eventos, inclusive os antigos. Nada volta para a fonte, e nada é bloqueado sozinho.">
         {pode("gerir_fontes") && <Button variant="filled" leftSection={<IconPlus size={14} />} onClick={() => setNova(true)}>Nova fonte</Button>}
       </Cabecalho>
       {!dados ? <Carregando erro={erro} /> : (
@@ -212,16 +212,16 @@ export function Inteligencia() {
               vazio="Nenhuma fonte ligada. O Roar funciona normalmente sem nenhuma."
               aoClicarLinha={(f) => setFonteAberta(f.id)}
               colunas={[
-                { titulo: "Fonte", celula: (f) => <Text size="sm" fw={500}>{f.nome}</Text> },
+                { titulo: "Fonte", celula: (f) => <Group gap={6}><Text size="sm" fw={500}>{f.nome}</Text>{f.interna && <Estado tipo={f.ativa ? "ativa" : "outro"}>{f.ativa ? "Incluída" : "Desligada"}</Estado>}</Group> },
                 { titulo: "Tipo", largura: 80, celula: (f) => f.tipo.toUpperCase() },
                 { titulo: "Indicadores", alinhar: "right", largura: 100, celula: (f) => numero(f.indicadores) },
                 { titulo: "Última busca", largura: 130, celula: (f) => <Data valor={f.ultima_em} /> },
                 { titulo: "Situação", largura: 200, celula: (f) => <SituacaoDaFonte fonte={f} pedida={Boolean(pedidas[f.id])} /> },
                 { titulo: "", largura: 40, celula: (f) => (
-                  <AcoesDaLinha rotulo={`Ações de ${f.nome}`} itens={pode("gerir_fontes") ? [
+                  <AcoesDaLinha rotulo={`Ações de ${f.nome}`} itens={!pode("gerir_fontes") ? [] : f.ativa ? [
                     { texto: "Buscar agora", aoClicar: () => buscarAgora(f) },
-                    { texto: "Desativar", perigo: true, aoClicar: () => setDesativar(f) },
-                  ] : []} />
+                    { texto: f.interna ? "Desligar" : "Desativar", perigo: true, aoClicar: () => setDesativar(f) },
+                  ] : [{ texto: "Ligar", aoClicar: async () => { await enviar(`/api/inteligencia/fontes/${f.id}/ligar`); recarregar(); } }]} />
                 ) },
               ]}
             />

@@ -23,7 +23,7 @@ from pathlib import Path
 import requests
 import yaml
 
-from . import yara_regras
+from . import contexto, yara_regras
 from .ciclo import conexoes
 from .sigma import converter_textos
 
@@ -191,7 +191,7 @@ def ciclo(banco):
             log.warning("biblioteca %s: %s", nome, type(erro).__name__)
             _registrar(banco, nome, erro="Não foi possível buscar a versão nova. A atual continua valendo.")
             falhou = True
-    return not falhou
+    return contexto.ciclo(banco) and not falhou
 
 
 def main():

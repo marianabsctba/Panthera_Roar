@@ -47,7 +47,7 @@ from roar_ingestao import cofre, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
-from roar_ingestao import sigma, xml_proprio, yara_regras  # noqa: E402
+from roar_ingestao import contexto, sigma, xml_proprio, yara_regras  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
@@ -592,7 +592,9 @@ def fila(request: Request, sessao=Depends(exige(permissoes.VER)), limite: int = 
                       (SELECT v.agente_nome FROM eventos v WHERE v.cliente_id = g.cliente_id AND v.grupo_id = g.id
                         ORDER BY v.id DESC LIMIT 1) AS ativo,
                       (SELECT v.regra_descricao FROM eventos v WHERE v.cliente_id = g.cliente_id AND v.grupo_id = g.id
-                        ORDER BY v.nivel DESC, v.id DESC LIMIT 1) AS descricao
+                        ORDER BY v.nivel DESC, v.id DESC LIMIT 1) AS descricao,
+                      EXISTS (SELECT 1 FROM intel_ocorrencias o JOIN eventos v ON v.id = o.evento_id WHERE v.grupo_id = g.id) AS indicador,
+                      (SELECT string_agg(DISTINCT r.rotulo, ', ') FROM contexto_redes r WHERE r.rede >>= g.ip_origem) AS rede
                FROM grupos_alerta g WHERE g.nivel >= %s ORDER BY g.nivel DESC, g.ultima_em DESC LIMIT %s""",
             (NIVEL_MINIMO_NA_FILA, limite)).fetchall()
     return {"riscos": riscos, "grupos": grupos}
@@ -717,10 +719,51 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             f"""SELECT id, ocorrido_em, severidade, nivel, regra_id, regra_descricao, agente_nome AS ativo,
-                       host(ip_origem) AS ip_origem, usuario, pais, cidade, regiao, operadora, asn
+                       host(ip_origem) AS ip_origem, usuario, pais, cidade, regiao, operadora, asn,
+                       EXISTS (SELECT 1 FROM intel_ocorrencias o WHERE o.evento_id = eventos.id) AS indicador,
+                       (SELECT string_agg(DISTINCT r.rotulo, ', ') FROM contexto_redes r WHERE r.rede >>= eventos.ip_origem) AS rede
                 FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
             (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
     return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}
+
+
+@app.get("/api/eventos/{identificador}/contexto")
+def contexto_do_evento(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    """Só resultados de comparação: quem não pode ver o log bruto também pode saber que a origem é uma saída Tor."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        ev = con.execute("SELECT host(ip_origem) AS ip, pais, cidade, regiao, operadora, asn, bruto FROM eventos WHERE id = %s", (identificador,)).fetchone()
+        if not ev:
+            raise HTTPException(status_code=404)
+        vistos = contexto.observaveis_do_alerta(ev["bruto"])
+        sinais = []
+        for o in con.execute(
+            """SELECT DISTINCT i.tipo, i.valor, i.descricao, f.nome AS fonte, o.no_passado FROM intel_ocorrencias o
+               JOIN intel_indicadores i ON i.id = o.indicador_id JOIN intel_fontes f ON f.id = i.fonte_id WHERE o.evento_id = %s LIMIT 10""", (identificador,)).fetchall():
+            sinais.append({"tom": "agrava", "texto": f"Indicador de ameaça: {o['valor'][:60]}", "detalhe": f"{o['fonte']}. {o['descricao'] or ''}".strip()[:300]})
+        origem = None
+        if ev["ip"]:
+            for r in con.execute("SELECT DISTINCT lista, rotulo FROM contexto_redes WHERE rede >>= %s::inet LIMIT 5", (ev["ip"],)).fetchall():
+                sinais.append({"tom": "agrava" if r["lista"] == "tor" else "informa", "texto": r["rotulo"] if r["lista"] == "tor" else f"Rede de {r['rotulo']}"})
+            soma = con.execute(
+                """SELECT count(*) AS vezes, count(DISTINCT agente_id) AS ativos, min(ocorrido_em) AS primeira_em FROM eventos
+                   WHERE ip_origem = %s::inet AND ocorrido_em >= now() - interval '30 days'""", (ev["ip"],)).fetchone()
+            local = ", ".join(x for x in (ev["cidade"], ev["pais"]) if x) or None
+            origem = {"ip": ev["ip"], "operadora": ev["operadora"], "asn": ev["asn"], "local": local, **soma}
+        def itens(lista, chaves):
+            if not chaves:
+                return []
+            return con.execute("SELECT chave, rotulo, detalhe, endereco FROM contexto_itens WHERE lista = %s AND chave = ANY(%s)", (lista, chaves)).fetchall()
+        for i in itens("loldrivers", vistos["resumos"]):
+            sinais.append({"tom": "agrava", "texto": i["rotulo"], "detalhe": i["detalhe"], "endereco": i["endereco"]})
+        for i in itens("lolbas", vistos["programas"]):
+            sinais.append({"tom": "informa", "texto": f"{i['rotulo']} costuma ser usado em ataques", "detalhe": i["detalhe"], "endereco": i["endereco"]})
+        for i in itens("gtfobins", vistos["programas"]):
+            sinais.append({"tom": "informa", "texto": f"{i['rotulo']} permite abuso no Linux", "detalhe": i["detalhe"], "endereco": i["endereco"]})
+        for i in itens("tranco", contexto.dominios_candidatos(vistos["dominios"]))[:3]:
+            sinais.append({"tom": "atenua", "texto": f"{i['chave']} é um site popular", "detalhe": f"Posição {i['rotulo']} no ranking de sites. Site popular também pode hospedar coisa ruim."})
+        grupos = [{"tecnica": i["chave"], "grupos": i["rotulo"], "total": i["detalhe"], "endereco": i["endereco"]} for i in itens("attack", vistos["tecnicas"])[:3]]
+    return {"sinais": sinais, "origem": origem, "grupos": grupos}
 
 
 @app.get("/api/eventos/{identificador}/bruto")
@@ -1447,9 +1490,9 @@ class NovaFonteDeInteligencia(BaseModel):
 @app.get("/api/inteligencia")
 def inteligencia(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = ""):
     with do_cliente(request, sessao) as con:
-        fontes = con.execute("""SELECT f.id, f.nome, f.tipo, f.endereco, f.colecao, f.segredo IS NOT NULL AS com_credencial, f.ativa, f.a_cada_minutos, f.proxima_em, f.ultima_em, f.ultimo_erro,
+        fontes = con.execute("""SELECT f.id, f.nome, f.tipo, f.endereco, f.colecao, f.segredo IS NOT NULL AS com_credencial, f.ativa, f.interna, f.a_cada_minutos, f.proxima_em, f.ultima_em, f.ultimo_erro,
                                        (SELECT count(*) FROM intel_indicadores i WHERE i.fonte_id = f.id) AS indicadores
-                                FROM intel_fontes f WHERE f.ativa ORDER BY f.nome""").fetchall()
+                                FROM intel_fontes f WHERE f.ativa OR f.interna ORDER BY f.interna DESC, f.nome""").fetchall()
         condicao, valores = "", []
         busca = busca.strip()[:200]
         if busca:
@@ -1498,6 +1541,16 @@ def desativar_fonte_de_inteligencia(identificador: int, request: Request, sessao
         if not con.execute("UPDATE intel_fontes SET ativa = false WHERE id = %s AND ativa RETURNING id", (identificador,)).fetchone():
             raise HTTPException(status_code=404)
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_fonte_de_inteligencia', %s)", (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.post("/api/inteligencia/fontes/{identificador}/ligar", status_code=204)
+def ligar_fonte_local(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Só a fonte da instalação volta assim. As outras foram tiradas de vez: quem quiser cria de novo, com a credencial."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE intel_fontes SET ativa = true, proxima_em = now() WHERE id = %s AND interna AND NOT ativa RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ligar_fonte_de_inteligencia', %s)", (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
 
 
 @app.post("/api/inteligencia/fontes/{identificador}/sincronizar", status_code=202)
@@ -2559,7 +2612,9 @@ def grupo(identificador: int, request: Request, sessao=Depends(exige(permissoes.
     with do_cliente(request, sessao) as con:
         dados = con.execute(
             """SELECT g.id, g.severidade, g.nivel, g.total, g.regras, g.primeira_em, g.ultima_em,
-                      host(g.ip_origem) AS ip_origem, g.agente_id FROM grupos_alerta g WHERE g.id = %s""",
+                      host(g.ip_origem) AS ip_origem, g.agente_id,
+                      EXISTS (SELECT 1 FROM intel_ocorrencias o JOIN eventos v ON v.id = o.evento_id WHERE v.grupo_id = g.id) AS indicador
+               FROM grupos_alerta g WHERE g.id = %s""",
             (identificador,)).fetchone()
         if not dados:
             raise HTTPException(status_code=404)

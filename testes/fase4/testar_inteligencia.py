@@ -34,6 +34,7 @@ from roar_ingestao import cofre  # noqa: E402
 from roar_ingestao import inteligencia as intel  # noqa: E402
 from roar_ingestao.armazenamento import Armazenamento  # noqa: E402
 
+intel.plataforma_local = lambda: None  # Estes testes usam só fontes próprias.
 RESULTADOS = []
 ENV = dict(l.strip().split("=", 1) for l in open("/opt/panthera-roar/.env", encoding="utf-8") if "=" in l and not l.startswith("#"))
 SUFIXO = uuid.uuid4().hex[:8]

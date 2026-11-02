@@ -44,7 +44,7 @@ ROTAS = {
     ("GET", "/api/normas"): "ver", ("GET", "/api/arquivos"): "ver", ("GET", "/api/regras"): "ver", ("POST", "/api/regras/converter"): "gerir_regras",
     ("GET", "/api/regras/proprias"): "ver", ("POST", "/api/regras/proprias"): "gerir_regras", ("PUT", "/api/regras/proprias/{identificador}"): "gerir_regras",
     ("POST", "/api/regras/proprias/{identificador}/desativar"): "gerir_regras", ("POST", "/api/regras/importar"): "gerir_regras", ("GET", "/api/regras/exportar"): "ver",
-    ("GET", "/api/yara"): "ver", ("POST", "/api/yara/regras"): "gerir_fontes", ("POST", "/api/yara/regras/{identificador}/desativar"): "gerir_fontes",
+    ("GET", "/api/eventos/{identificador}/contexto"): "ver", ("POST", "/api/inteligencia/fontes/{identificador}/ligar"): "gerir_fontes", ("GET", "/api/yara"): "ver", ("POST", "/api/yara/regras"): "gerir_fontes", ("POST", "/api/yara/regras/{identificador}/desativar"): "gerir_fontes",
     ("POST", "/api/yara/biblioteca"): "gerir_fontes", ("POST", "/api/yara/biblioteca/atualizar"): "gerir_fontes", ("GET", "/api/yara/biblioteca/regras"): "ver", ("POST", "/api/yara/biblioteca/regras/{nome}/{acao}"): "gerir_fontes",
     ("GET", "/api/regras/biblioteca"): "ver", ("POST", "/api/regras/biblioteca/{identificador}/ativar"): "gerir_regras", ("GET", "/api/regras/arquivos/{arquivo}"): "ver",
     ("GET", "/api/regras/{regra_id}"): "ver", ("PUT", "/api/regras/{regra_id}/versao"): "gerir_regras", ("POST", "/api/regras/{regra_id}/desligar"): "gerir_regras",

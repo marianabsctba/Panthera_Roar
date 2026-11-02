@@ -100,7 +100,7 @@ unidade inteligencia root .env ingestao "$PY -u -m roar_ingestao.inteligencia"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
-unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.biblioteca"
+unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.biblioteca" "MemoryHigh=2G"
 unidade selo roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.selo" "ReadWritePaths=$DESTINO/selo"
 unidade ueba roar-svc servicos.env ueba "$PY -u -m roar_ueba.motor" "Environment=PYTHONPATH=$APP/ueba:$APP/ingestao"
 unidade disparo roar-svc servicos.env motor "$PY -u -m roar_motor.disparo"

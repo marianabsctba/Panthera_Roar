@@ -6,7 +6,7 @@
 # Sem domínio, usa localhost com certificado próprio.
 set -euo pipefail
 
-DOMINIO=localhost; EMAIL=""; ORGANIZACAO="Minha organização"; COM_GREENBONE=0; PERFIL=completo
+DOMINIO=localhost; EMAIL=""; ORGANIZACAO="Minha organização"; COM_GREENBONE=0; PERFIL=completo; SEM_MISP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dominio) DOMINIO="$2"; shift 2 ;;
@@ -14,6 +14,7 @@ while [ $# -gt 0 ]; do
     --organizacao) ORGANIZACAO="$2"; shift 2 ;;
     --perfil) PERFIL="$2"; shift 2 ;;
     --com-greenbone) COM_GREENBONE=1; shift ;;
+    --sem-misp) SEM_MISP=1; shift ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
 done
@@ -119,6 +120,10 @@ docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d
 
 if [ -n "$EMAIL" ]; then
   PYTHONPATH="$RAIZ/ingestao" "$DESTINO/venv/bin/python" -m roar_ingestao.provisao primeiro-acesso --organizacao "$ORGANIZACAO" --email "$EMAIL"
+fi
+
+if [ "$SEM_MISP" = 0 ] && [ "$PERFIL" != vulnerabilidades ]; then
+  bash "$BASE/misp.sh"
 fi
 
 if [ "$COM_GREENBONE" = 1 ]; then

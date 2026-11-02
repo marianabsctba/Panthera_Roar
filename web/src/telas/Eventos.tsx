@@ -1,4 +1,5 @@
-import { ActionIcon, Anchor, Box, Button, CopyButton, Drawer, Group, Pill, Select, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
+import { Badge, ActionIcon, Anchor, Box, Button, CopyButton, Drawer, Group, Pill, Select, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
+import { PainelDeContexto } from "./Contexto";
 import { IconCheck, IconCopy } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -49,6 +50,9 @@ export interface EventoResumo {
   ativo?: string | null;
   usuario?: string | null;
   ip_origem?: string | null;
+  operadora?: string | null;
+  rede?: string | null;
+  indicador?: boolean;
   pais?: string | null;
   cidade?: string | null;
   regiao?: string | null;
@@ -72,6 +76,7 @@ function CorpoDoEvento({ evento, aoFiltrar }: { evento: EventoResumo; aoFiltrar?
   const ir = (filtro: FiltroDoEvento) => (aoFiltrar ? () => aoFiltrar(filtro) : undefined);
   return (
     <Stack gap="md">
+      <PainelDeContexto evento={evento.id} />
       <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="sm">
         {evento.ocorrido_em && <Fato rotulo="Quando" valor={<Data valor={evento.ocorrido_em} />} />}
         {evento.severidade && <Fato rotulo="Severidade" valor={<Severidade valor={evento.severidade} />} />}
@@ -249,7 +254,7 @@ export function Eventos() {
                 { titulo: "Usuário", celula: (e) => <span className="mono">{e.usuario ?? "-"}</span> },
                 { titulo: "Origem", celula: (e) => {
                   const local = localDoEvento(e);
-                  return <><span className="mono">{e.ip_origem ?? "-"}</span>{local && <Text size="xs" c="dimmed">{local}</Text>}</>;
+                  return <><Group gap={6} wrap="nowrap"><span className="mono">{e.ip_origem ?? "-"}</span>{e.indicador && <Badge size="xs" color="red" variant="light" radius="sm" tt="none">Indicador</Badge>}</Group>{local && <Text size="xs" c="dimmed">{local}</Text>}{(e.operadora || e.rede) && <Text size="xs" c="dimmed">{e.rede ?? e.operadora}</Text>}</>;
                 } },
                 { titulo: "", largura: 40, celula: (e) => (
                   <AcoesDaLinha rotulo="Ações do evento" itens={[
