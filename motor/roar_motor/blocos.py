@@ -135,7 +135,7 @@ def _garante_externo(condicao):
     return condicao == {"campo": "alvo_externo", "op": "igual", "valor": True}
 
 
-def _validar_blocos(blocos, profundidade, externo, contagem, validar_acao, aprovado=False):
+def _validar_blocos(blocos, profundidade, externo, contagem, validar_acao, aprovado=False, de_fora=False):
     if not isinstance(blocos, list):
         raise DefinicaoInvalida("Os blocos precisam ser uma lista.")
     if profundidade > PROFUNDIDADE_MAXIMA:
@@ -153,20 +153,23 @@ def _validar_blocos(blocos, profundidade, externo, contagem, validar_acao, aprov
                 raise DefinicaoInvalida("Ação desconhecida.")
             if bloco["acao"] == "bloquear_ip" and not externo:
                 raise DefinicaoInvalida("Bloquear um endereço exige, antes, a condição de endereço externo.")
+            # A lista vem de terceiros: se ela vier errada ou adulterada, quem decide o bloqueio ainda é uma pessoa.
+            if bloco["acao"] == "bloquear_ip" and de_fora and not aprovado:
+                raise DefinicaoInvalida("Bloquear por indicador de ameaça exige, antes, um bloco de pedir aprovação.")
             # Um alerta errado derrubaria uma pessoa de verdade: aqui, sempre passa por alguém.
             if bloco["acao"] == "desativar_conta" and not aprovado:
                 raise DefinicaoInvalida("Desativar uma conta exige, antes, um bloco de pedir aprovação.")
             validar_acao(bloco["acao"], bloco.get("parametros", {}))
         elif tipo == "se":
             _validar_condicao(bloco.get("condicao"))
-            _validar_blocos(bloco.get("entao"), profundidade + 1, externo or _garante_externo(bloco["condicao"]), contagem, validar_acao, aprovado)
-            _validar_blocos(bloco.get("senao", []), profundidade + 1, externo, contagem, validar_acao, aprovado)
+            _validar_blocos(bloco.get("entao"), profundidade + 1, externo or _garante_externo(bloco["condicao"]), contagem, validar_acao, aprovado, de_fora)
+            _validar_blocos(bloco.get("senao", []), profundidade + 1, externo, contagem, validar_acao, aprovado, de_fora)
         elif tipo == "paralelo":
             ramos = bloco.get("ramos")
             if not isinstance(ramos, list) or not 2 <= len(ramos) <= 5:
                 raise DefinicaoInvalida("Um bloco paralelo precisa de 2 a 5 ramos.")
             for ramo in ramos:
-                _validar_blocos(ramo, profundidade + 1, externo, contagem, validar_acao, aprovado)
+                _validar_blocos(ramo, profundidade + 1, externo, contagem, validar_acao, aprovado, de_fora)
         else:
             raise DefinicaoInvalida(f"Bloco desconhecido: {tipo}.")
 
@@ -197,5 +200,5 @@ def validar(definicao, validar_acao=lambda acao, parametros: None):
         _validar_condicao(condicao)
     if not definicao.get("blocos"):
         raise DefinicaoInvalida("Coloque pelo menos um bloco em Então.")
-    _validar_blocos(definicao["blocos"], 1, any(_garante_externo(c) for c in condicoes), [0], validar_acao)
+    _validar_blocos(definicao["blocos"], 1, any(_garante_externo(c) for c in condicoes), [0], validar_acao, de_fora=quando["tipo"] == "indicador")
     return definicao

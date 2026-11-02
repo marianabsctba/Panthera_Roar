@@ -160,7 +160,7 @@ export const AJUDA = [
     ] },
     { id: "automacao", vista: "automacao", titulo: "Automação", blocos: [
       "Um playbook diz o que fazer quando um alerta acontece. É montado em blocos, sem programar.",
-      "Ele pode disparar por um alerta de regra, pelo risco de uma pessoa ou ativo, ou quando um evento bate com um indicador de ameaça das suas fontes de inteligência. Achado em evento antigo aparece em Inteligência, mas não dispara resposta. Como a lista vem de fora, comece esse gatilho com um bloco de aprovação.",
+      "Ele pode disparar por um alerta de regra, pelo risco de uma pessoa ou ativo, ou quando um evento bate com um indicador de ameaça das suas fontes de inteligência. Achado em evento antigo aparece em Inteligência, mas não dispara resposta. Como a lista vem de fora, bloquear por esse gatilho sempre pede um bloco de aprovação antes.",
       { h: "O que um playbook pode fazer" },
       { lista: [
         "Bloquear um endereço em um ativo, por tempo limitado. Só vale para endereço externo.",

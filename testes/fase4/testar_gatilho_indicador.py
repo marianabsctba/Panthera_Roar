@@ -49,6 +49,22 @@ def testar_formato():
         registrar("bloquear ainda exige endereço externo", False)
     except blocos.DefinicaoInvalida:
         registrar("bloquear ainda exige endereço externo", True)
+    externo = {"campo": "alvo_externo", "op": "igual", "valor": True}
+    bloquear = {"tipo": "acao", "acao": "bloquear_ip", "parametros": {}}
+
+    def recusado(definicao):
+        try:
+            blocos.validar(definicao)
+            return False
+        except blocos.DefinicaoInvalida as erro:
+            return "aprovação" in str(erro)
+
+    registrar("bloquear por indicador sem aprovação é recusado", recusado({**DEFINICAO, "se": [externo], "blocos": [bloquear]}))
+    registrar("nem dentro de um se", recusado({**DEFINICAO, "blocos": [{"tipo": "se", "condicao": externo, "entao": [bloquear]}]}))
+    registrar("nem em ramo paralelo", recusado({**DEFINICAO, "se": [externo], "blocos": [{"tipo": "paralelo", "ramos": [[REGISTRAR], [bloquear]]}]}))
+    registrar("nem com a aprovação depois", recusado({**DEFINICAO, "se": [externo], "blocos": [bloquear, {"tipo": "aprovacao"}]}))
+    registrar("com aprovação antes, passa", blocos.validar({**DEFINICAO, "se": [externo], "blocos": [{"tipo": "aprovacao"}, bloquear]}))
+    registrar("gatilho de regra segue podendo bloquear sozinho", blocos.validar({"quando": {"tipo": "evento", "regra_id": "5712"}, "se": [externo], "blocos": [bloquear]}))
     base = {"id": 1, "origem_tipo": "indicador"}
     registrar("não dispara playbook de regra", not blocos.atende({"quando": {"tipo": "evento", "regra_id": "1"}, "blocos": []}, base))
     registrar("dispara o de indicador", blocos.atende(DEFINICAO, base))
