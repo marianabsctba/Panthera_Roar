@@ -26,11 +26,11 @@ def registrar(nome, passou, detalhe=""):
 
 def main():
     ajuda = (ESTATICO / "ajuda.js").read_text(encoding="utf-8")
-    html = (ESTATICO / "index.html").read_text(encoding="utf-8")
-    js = (ESTATICO / "roar.js").read_text(encoding="utf-8")
+    menu = (RAIZ / "web/src/Aplicacao.tsx").read_text(encoding="utf-8")
+    tela = (RAIZ / "web/src/telas/Ajuda.tsx").read_text(encoding="utf-8")
 
     print("== Telas", flush=True)
-    telas = set(re.findall(r'data-vista="([a-z]+)"', html)) - {"ajuda"}
+    telas = set(re.findall(r'\{ id: "([a-z]+)", rotulo:', menu)) - {"ajuda"}
     artigos_de_tela = set(re.findall(r'vista: "([a-z]+)"', ajuda))
     registrar("há telas para conferir", len(telas) >= 14, str(len(telas)))
     registrar("toda tela tem artigo", not telas - artigos_de_tela, str(telas - artigos_de_tela))
@@ -42,20 +42,15 @@ def main():
     alvos = set(re.findall(r'artigo: "([a-z-]+)"', ajuda))
     registrar("há atalhos para conferir", alvos)
     registrar("todo atalho leva a um artigo", not alvos - set(ids), str(alvos - set(ids)))
-    registrar("o artigo inicial existe", 'artigoAberto = "primeiros-passos"' in js and "primeiros-passos" in ids)
+    registrar("o artigo inicial existe", '|| "primeiros-passos"' in tela and "primeiros-passos" in ids)
 
     print("\n== Página", flush=True)
-    registrar("o código da tela importa a ajuda", 'import { AJUDA } from "/estatico/ajuda.js";' in js)
+    registrar("a tela usa a ajuda", "AJUDA" in tela)
     registrar("nenhum recurso externo", "http://" not in ajuda and "https://" not in ajuda)
     for proibido in ("wazuh", "opensearch", "temporal", "keycloak", "postgres", "rabbitmq"):
         registrar(f"sem nome de bastidor: {proibido}", proibido not in ajuda.lower())
     registrar("sem travessão", "—" not in ajuda and "–" not in ajuda)
     registrar("não monta HTML com texto", "innerHTML" not in ajuda and "insertAdjacentHTML" not in ajuda)
-
-    # Um nome declarado duas vezes derruba o módulo inteiro, e a tela abre em branco.
-    declarados = re.findall(r"^(?:const|let|function|async function) +([A-Za-z_$][\w$]*)", js, re.M)
-    repetidos = {n for n in declarados if declarados.count(n) > 1}
-    registrar("nenhum nome declarado duas vezes no código da tela", not repetidos, str(repetidos))
 
     # A tela e o CSS podem ser pesados, mas nada do mapa vem de fora.
     registrar("o mapa vem do próprio servidor", (ESTATICO / "mapa-paises.json").stat().st_size > 1000)
@@ -69,7 +64,7 @@ def main():
     registrar("sem nota não vira baixa", prioridade(None, 0.0, None) == "sem_dados" and "Sem nota" in ajuda)
     from roar_api import mfa
     registrar("10 códigos de recuperação", mfa.CODIGOS_DE_RECUPERACAO == 10 and "10 códigos de recuperação" in ajuda)
-    registrar("o limite do risco é o da tela", "O alerta abre em 60 pontos" in ajuda and "O alerta abre em 60 pontos" in html)
+    registrar("o limite do risco é o da tela", "O alerta abre em 60 pontos" in ajuda and "O alerta abre em 60 pontos" in (RAIZ / "web/src/telas/Regras.tsx").read_text(encoding="utf-8"))
     from roar_motor.blocos import ACOES_CONHECIDAS
     registrar("a ajuda cobre as ações dos playbooks", set(ACOES_CONHECIDAS) == {"bloquear_ip", "desativar_conta", "webhook", "registrar"}, str(ACOES_CONHECIDAS))
 

@@ -150,7 +150,7 @@ const semAcento = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "
 
 function irParaAtivos() {
   // A aplicação acompanha a rota pelo popstate.
-  window.history.pushState(null, "", "/novo/ativos");
+  window.history.pushState(null, "", "/ativos");
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 

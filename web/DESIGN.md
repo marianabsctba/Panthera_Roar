@@ -47,4 +47,4 @@ Isto é uma ferramenta de investigação, não um relatório.
 
 ## Construção
 
-Na pasta `web`, `npm run construir` confere os tipos e gera os arquivos em `api/roar_api/estatico/novo`.
+Na pasta `web`, `npm run construir` confere os tipos e gera os arquivos em `api/roar_api/estatico/console`.

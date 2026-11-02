@@ -9,6 +9,7 @@ Usa o banco de verdade e apaga no final tudo o que criou.
 import hashlib
 import json
 import random
+import re
 import secrets
 import sys
 import uuid
@@ -360,14 +361,18 @@ def main():
         registrar("tela abre", inicio.status_code == 200 and "Panthera" in inicio.text)
         registrar("política de conteúdo bloqueia script de fora", "default-src 'self'" in politica and "unsafe" not in politica)
         registrar("tela não pode ser embutida", "frame-ancestors 'none'" in politica)
-        js = (ESTATICO / "roar.js").read_text(encoding="utf-8")
-        registrar("tela nunca monta HTML com dado", not any(x in js.replace("nunca com innerHTML", "") for x in
-                  ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(")))
-        html = (ESTATICO / "index.html").read_text(encoding="utf-8")
+        registrar("endereço da tela devolve a mesma página", http.get("/fila").status_code == 200 and "Panthera" in http.get("/fila").text)
+        registrar("rota de API desconhecida continua 404", http.get("/api/nao-existe").status_code == 404)
+        antigo = http.get("/novo/ajuda/mfa", follow_redirects=False)
+        registrar("endereço antigo leva ao novo", antigo.status_code in (302, 307) and antigo.headers["location"] == "/ajuda/mfa")
+        registrar("endereço antigo não redireciona para fora", http.get("/novo//atacante.example", follow_redirects=False).headers["location"] == "/")
+        registrar("a console antiga saiu", not (ESTATICO / "roar.js").exists() and not (ESTATICO / "index.html").exists())
+        js = "".join(p.read_text(encoding="utf-8") for p in (RAIZ / "web/src").rglob("*.ts*"))
+        registrar("tela nunca monta HTML com dado", not any(x in js for x in
+                  ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(")))
+        html = (ESTATICO / "console/index.html").read_text(encoding="utf-8")
         registrar("nenhum script embutido na página", "<script>" not in html and " onclick=" not in html)
-        # O namespace do SVG parece um endereço, mas nada é baixado dele.
-        sem_namespace = (html + js).replace("http://www.w3.org/2000/svg", "")
-        registrar("nenhum recurso externo", "http://" not in sem_namespace and "https://" not in sem_namespace)
+        registrar("nenhum recurso externo", "http://" not in html and "https://" not in html and not re.search(r"""(?:fetch|import)\(\s*["'`]https?:""", js))
         texto = html + js
         registrar("tela não cita ferramentas", not any(x in texto.lower() for x in ("wazuh", "shuffle", "temporal", "opensearch")))
 

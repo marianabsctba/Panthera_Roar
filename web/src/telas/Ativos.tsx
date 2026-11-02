@@ -69,7 +69,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos }: { ativo: Ativo | null;
             <Fato rotulo="Sistema">{ativo.sistema ?? "-"}</Fato>
             <Fato rotulo="Endereço"><span className="mono">{ativo.ip ?? "-"}</span></Fato>
             <Fato rotulo="Identificador"><span className="mono">{ativo.agente_id}</span></Fato>
-            <Fato rotulo="Versão do agente">{ativo.versao?.replace(/^\s*wazuh\s*/i, "") ?? "-"}</Fato>
+            <Fato rotulo="Versão do agente">{ativo.versao?.replace(/^\D+/, "") ?? "-"}</Fato>
             <Fato rotulo="Grupos">{ativo.grupos?.length ? ativo.grupos.join(", ") : "-"}</Fato>
             <Fato rotulo="Última conexão"><Data valor={ativo.ultima_conexao} /></Fato>
           </Stack>

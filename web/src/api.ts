@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 
 export interface Eu {
   nome: string;
+  plataforma: boolean;
   cliente: string;
   fuso?: string;
   perfil: string;

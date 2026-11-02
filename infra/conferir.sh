@@ -27,9 +27,9 @@ curl_borda() { curl -sk --resolve "$DOMINIO:443:127.0.0.1" "$@"; }
 echo "== Serviços"
 PERFIL="$(cat "$DESTINO/perfil" 2>/dev/null || echo completo)"
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca" ;;
+  vulnerabilidades) SERVICOS="api varredura cves organizacoes" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca organizacoes" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca organizacoes" ;;
 esac
 echo "Perfil: $PERFIL"
 for nome in $SERVICOS; do

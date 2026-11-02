@@ -12,6 +12,8 @@ import { tema } from "./tema";
 
 // A política de segurança só aceita a tag de estilo do Mantine com a chave desta resposta.
 const chave = document.querySelector<HTMLMetaElement>('meta[name="roar-chave-de-estilo"]')?.content ?? "";
+// A trava de rolagem de modais e gavetas cria a própria tag de estilo e procura a chave nesta variável.
+(globalThis as { __webpack_nonce__?: string }).__webpack_nonce__ = chave;
 
 // Sem animações as gavetas abrem na hora: é o que permite testar a tela sem ninguém olhando.
 // Vale só para este carregamento: esse modo também tira as camadas flutuantes, e não pode ficar grudado no navegador de ninguém.

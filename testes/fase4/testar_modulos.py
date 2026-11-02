@@ -80,10 +80,11 @@ def main():
             registrar("perfil desconhecido cai no completo", modulos.PERFIS.get("xpto", modulos.PERFIS["completo"]) == modulos.PERFIS["completo"])
 
         print("\n== Tela", flush=True)
-        html = (modulo.ESTATICO / "index.html").read_text(encoding="utf-8")
+        menu = (RAIZ / "web/src/Aplicacao.tsx").read_text(encoding="utf-8")
         import re
-        botoes = re.findall(r'<button type="button" data-vista="([a-z]+)"([^>]*)>', html)
-        sem_marca = [v for v, resto in botoes if "data-modulo" not in resto and v not in ("usuarios", "auditoria", "ajuda")]
+        botoes = re.findall(r'\{ id: "([a-z]+)", rotulo: "[^"]+", icone: \w+,([^}]*)\}', menu)
+        registrar("o menu tem as telas", len(botoes) >= 14, str(len(botoes)))
+        sem_marca = [v for v, resto in botoes if "modulo:" not in resto and v not in ("organizacoes", "usuarios", "auditoria", "ajuda")]
         registrar("toda aba de módulo diz a que módulo pertence", not sem_marca, str(sem_marca))
     finally:
         modulo.MODULOS = original

@@ -172,12 +172,12 @@ def main():
             registrar("texto enorme não quebra", http.get("/api/eventos", params={"pais": "x" * 5000}).status_code == 200)
 
         print("\n== Tela", flush=True)
-        js = (modulo.ESTATICO / "roar.js").read_text(encoding="utf-8")
+        js = (RAIZ / "web/src/telas/MapaOrigens.tsx").read_text(encoding="utf-8")
         mapa = json.loads((modulo.ESTATICO / "mapa-paises.json").read_text(encoding="utf-8"))
         codigos = {p["c"] for p in mapa["paises"]} | {p["c"] for p in mapa["pontos"]}
         registrar("o mapa tem os países", len(codigos) > 200 and {"BR", "US", "RU", "CN", "SG", "HK"} <= codigos, str(len(codigos)))
         registrar("nome diferente aponta para país que existe no mapa", all(c in codigos for c in ("HK", "MO", "MM", "CD", "CG", "CI", "BA", "TT", "PS", "NL")))
-        registrar("a tela desenha o mapa sem montar HTML", "createElementNS" in js and "desenharMapa" in js)
+        registrar("a tela desenha o mapa sem montar HTML", "<path" in js and "innerHTML" not in js)
         # A posição do ponto só faz sentido se usar a mesma projeção do desenho: Andorra está no próprio arquivo do mapa.
         andorra = next(p for p in mapa["pontos"] if p["c"] == "AD")
         f, l = 42.5 * 3.141592653589793 / 180, 1.52 * 3.141592653589793 / 180

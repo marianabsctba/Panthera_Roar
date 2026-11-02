@@ -140,7 +140,7 @@ function consultaDosFiltros({ busca, severidade, dias, contexto }: Filtros) {
 
 /** Outras telas chegam aqui com um filtro, como o país clicado no mapa ou a regra de uma técnica. */
 export function irParaEventos(filtros: Record<string, string>) {
-  window.history.pushState(null, "", `/novo/eventos?${new URLSearchParams(filtros)}`);
+  window.history.pushState(null, "", `/eventos?${new URLSearchParams(filtros)}`);
   // É o evento que a aplicação já escuta para trocar de tela.
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
@@ -198,12 +198,12 @@ export function Eventos() {
   useEffect(() => { buscar(); }, [buscar]);
 
   useEffect(() => {
-    if (window.location.pathname.startsWith("/novo/eventos")) window.history.replaceState(null, "", `/novo/eventos?${consulta}`);
+    if (window.location.pathname.startsWith("/eventos")) window.history.replaceState(null, "", `/eventos?${consulta}`);
   }, [consulta]);
 
   useEffect(() => {
     const voltar = () => {
-      if (!window.location.pathname.startsWith("/novo/eventos")) return;
+      if (!window.location.pathname.startsWith("/eventos")) return;
       setFiltros(filtrosDaUrl());
       setVersaoDaBusca((v) => v + 1);
     };

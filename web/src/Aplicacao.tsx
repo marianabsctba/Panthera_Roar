@@ -1,7 +1,7 @@
-import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
-  IconAlertTriangle, IconArrowBackUp, IconBell, IconBook2, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
+  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
   IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -21,6 +21,7 @@ import { Inteligencia } from "./telas/Inteligencia";
 import { Integridade } from "./telas/Integridade";
 import { Logs } from "./telas/Logs";
 import { Normas } from "./telas/Normas";
+import { Organizacoes } from "./telas/Organizacoes";
 import { Panorama } from "./telas/Panorama";
 import { Prova } from "./telas/Prova";
 import { Regras } from "./telas/Regras";
@@ -29,7 +30,7 @@ import { Usuarios } from "./telas/Usuarios";
 import { Vulnerabilidades } from "./telas/Vulnerabilidades";
 
 
-interface Item { id: string; rotulo: string; icone: ComponentType<{ size?: number; stroke?: number }>; modulo?: string; permissao?: string; tela?: ComponentType }
+interface Item { id: string; rotulo: string; icone: ComponentType<{ size?: number; stroke?: number }>; modulo?: string; permissao?: string; soPlataforma?: boolean; tela: ComponentType }
 
 const GRUPOS: { titulo: string; itens: Item[] }[] = [
   { titulo: "Monitorar", itens: [
@@ -59,6 +60,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { id: "auditoria", rotulo: "Auditoria", icone: IconDatabase, permissao: "ver_auditoria", tela: Auditoria },
   ] },
   { titulo: "Administrar", itens: [
+    { id: "organizacoes", rotulo: "Organizações", icone: IconBuildingSkyscraper, soPlataforma: true, tela: Organizacoes },
     { id: "usuarios", rotulo: "Usuários", icone: IconUsers, permissao: "gerir_usuarios", tela: Usuarios },
     { id: "ajuda", rotulo: "Ajuda", icone: IconHelpCircle, tela: Ajuda },
   ] },
@@ -83,7 +85,7 @@ class ProtecaoDaTela extends Component<{ children: ReactNode; chave: string }, {
   }
 }
 
-const vistaDaUrl = () => window.location.pathname.replace(/^\/novo\/?/, "").split("/")[0] || "panorama";
+const vistaDaUrl = () => window.location.pathname.split("/")[1] || "panorama";
 
 export function Aplicacao() {
   const [eu, setEu] = useState<Eu | null>(null);
@@ -121,16 +123,12 @@ export function Aplicacao() {
   if (fase === "entrada" || fase === "codigo") return <Entrada aoEntrar={abrir} pedirCodigo={fase === "codigo"} />;
   if (!eu) return <Center h="100%"><Loader color="gray" size="sm" /></Center>;
 
-  const visivel = (i: Item) => (!i.modulo || eu.modulos.includes(i.modulo)) && (!i.permissao || eu.permissoes.includes(i.permissao));
-  const atual = TELAS.find((i) => i.id === vista && i.tela && visivel(i)) ?? TELAS.find((i) => i.tela && visivel(i));
+  const visivel = (i: Item) => (!i.modulo || eu.modulos.includes(i.modulo)) && (!i.permissao || eu.permissoes.includes(i.permissao)) && (!i.soPlataforma || eu.plataforma);
+  const atual = TELAS.find((i) => i.id === vista && visivel(i)) ?? TELAS.find(visivel);
   const Tela = atual?.tela;
 
   const ir = (i: Item) => {
-    if (!i.tela) {
-      window.location.assign("/");
-      return;
-    }
-    window.history.pushState(null, "", `/novo/${i.id}`);
+    window.history.pushState(null, "", `/${i.id}`);
     setVista(i.id);
     close();
   };
@@ -172,7 +170,6 @@ export function Aplicacao() {
                 <Menu.Item fz="sm" leftSection={<IconKey size={14} />} onClick={() => setVerSenha(true)}>Trocar senha</Menu.Item>
                 <Menu.Item fz="sm" leftSection={<IconDeviceMobile size={14} />} onClick={() => setVerMfa(true)}>Autenticador</Menu.Item>
                 <Menu.Divider />
-                <Menu.Item fz="sm" leftSection={<IconArrowBackUp size={14} />} component="a" href="/">Voltar à console atual</Menu.Item>
                 <Menu.Item fz="sm" leftSection={<IconLogout size={14} />} onClick={sair}>Sair</Menu.Item>
               </Menu.Dropdown>
             </Menu>
@@ -191,7 +188,7 @@ export function Aplicacao() {
                   {itens.map((i) => {
                     const Icone = i.icone;
                     return (
-                      <button key={i.id} type="button" className="menu-item" aria-current={atual?.id === i.id ? "page" : undefined} onClick={() => ir(i)} title={i.tela ? undefined : "Ainda na console atual"} style={i.tela ? undefined : { opacity: 0.55 }}>
+                      <button key={i.id} type="button" className="menu-item" aria-current={atual?.id === i.id ? "page" : undefined} onClick={() => ir(i)}>
                         <Icone size={16} stroke={1.6} />
                         <span>{i.rotulo}</span>
                       </button>
@@ -208,7 +205,7 @@ export function Aplicacao() {
         <AppShell.Main style={{ background: "var(--mantine-color-dark-8)" }}>
           <Box maw={1400} mx="auto">
             {violada && <Alert color="red" variant="filled" mb="md" p="xs" title="">A conferência dos selos encontrou registros alterados. Veja em Prova e evidência.</Alert>}
-            {eu.trocar_senha || (eu.mfa_obrigatorio && !eu.mfa_ativo) ? null : Tela ? <ProtecaoDaTela chave={atual!.id}><Tela /></ProtecaoDaTela> : <Button component="a" href="/" leftSection={<IconBook2 size={14} />}>Abrir a console atual</Button>}
+            {eu.trocar_senha || (eu.mfa_obrigatorio && !eu.mfa_ativo) || !Tela ? null : <ProtecaoDaTela chave={atual!.id}><Tela /></ProtecaoDaTela>}
           </Box>
         </AppShell.Main>
       </AppShell>

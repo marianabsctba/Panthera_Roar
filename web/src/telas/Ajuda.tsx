@@ -56,7 +56,7 @@ function MontarBloco({ bloco, aoAbrirArtigo }: { bloco: Bloco; aoAbrirArtigo: (i
   );
 }
 
-const artigoDaUrl = () => window.location.pathname.split("/")[3] || "primeiros-passos";
+const artigoDaUrl = () => window.location.pathname.split("/")[2] || "primeiros-passos";
 
 export function Ajuda() {
   const eu = useEu();
@@ -97,12 +97,12 @@ export function Ajuda() {
 
   const abrir = (id: string) => {
     setArtigoAberto(id);
-    window.history.replaceState(null, "", `/novo/ajuda/${id}`);
+    window.history.replaceState(null, "", `/ajuda/${id}`);
     // Em tela estreita o artigo fica abaixo do índice: sem isto, o clique parece não fazer nada.
     refArtigo.current?.scrollIntoView({ block: "start" });
   };
   const irParaTela = (vista: string) => {
-    window.history.pushState(null, "", `/novo/${vista}`);
+    window.history.pushState(null, "", `/${vista}`);
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
 

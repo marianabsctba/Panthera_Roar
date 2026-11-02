@@ -97,6 +97,8 @@ unidade ingestao root .env ingestao "$PY -u -m roar_ingestao.ciclo"
 unidade fontes root .env ingestao "$PY -u -m roar_ingestao.fontes"
 unidade varredura root .env ingestao "$PY -u -m roar_ingestao.varredura"
 unidade inteligencia root .env ingestao "$PY -u -m roar_ingestao.inteligencia"
+# Quem cria gerenciador precisa do Docker, e a API não tem: ela só registra o pedido.
+unidade organizacoes root .env ingestao "$PY -u -m roar_ingestao.organizacoes"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
@@ -131,9 +133,9 @@ mkdir -p "$APP/infra"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca"; DESLIGAR="varredura" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca"; DESLIGAR="" ;;
+  vulnerabilidades) SERVICOS="api varredura cves organizacoes"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca organizacoes"; DESLIGAR="varredura" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca organizacoes"; DESLIGAR="" ;;
 esac
 systemctl daemon-reload
 for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done

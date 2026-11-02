@@ -5,7 +5,7 @@ export const AJUDA = [
       "O Panthera Roar recebe logs dos seus ativos e serviços, transforma o que importa em alertas, soma o risco de cada pessoa e pode responder sozinho, ou pedir a sua decisão antes.",
       { h: "Na primeira semana" },
       { passos: [
-        "Ligue o autenticador da sua conta, no botão Autenticador, no alto da tela.",
+        "Ligue o autenticador da sua conta: clique no seu nome, no alto da tela, e escolha Autenticador.",
         "Em Fontes de dados, conecte os primeiros ativos e serviços. Cada conector explica o passo a passo.",
         "Em Ativos, confira se os ativos apareceram como conectados.",
         "Em Integridade, diga quais pastas importantes vigiar, além das que já vêm monitoradas.",
@@ -25,7 +25,7 @@ export const AJUDA = [
       "Além da senha, o autenticador pede um código de 6 dígitos gerado no seu celular. Serve qualquer aplicativo do padrão TOTP.",
       { h: "Ligar" },
       { passos: [
-        "Clique em Autenticador, no alto da tela, e confirme a senha.",
+        "Clique no seu nome, no alto da tela, escolha Autenticador e confirme a senha.",
         "Leia o QR com o aplicativo, ou digite a chave.",
         "Digite o código que o aplicativo mostra. Só depois disso o autenticador fica ligado.",
         "Guarde os 10 códigos de recuperação fora do celular. Eles não aparecem de novo.",
@@ -202,13 +202,24 @@ export const AJUDA = [
     ] },
   ] },
   { grupo: "Administrar", artigos: [
+    { id: "organizacoes", vista: "organizacoes", titulo: "Organizações", blocos: [
+      "As empresas atendidas por esta instalação. Os dados de cada uma ficam isolados das outras, e quem entra em uma não vê as demais. Esta tela aparece só para quem administra a instalação, não para os administradores de cada organização.",
+      { h: "Criar uma organização" },
+      { passos: [
+        "Clique em Nova organização e informe o nome e o e-mail de quem vai administrá-la.",
+        "Guarde a senha temporária: ela aparece só uma vez, e será trocada no primeiro acesso.",
+        "Acompanhe em Pedidos recentes. A organização fica pronta em alguns minutos, porque ganha um gerenciador próprio.",
+      ] },
+      { h: "Remover uma organização" },
+      "No menu da linha, escolha Remover e digite o nome para confirmar. Eventos, regras, pessoas e o gerenciador são apagados, sem volta. Os selos de integridade ficam, porque são prova. A organização em que você está não pode ser removida.",
+    ] },
     { id: "usuarios", vista: "usuarios", titulo: "Usuários", blocos: [
       "Crie as contas, escolha o perfil e veja quem usa autenticador. Mudar o perfil ou desativar encerra as sessões daquela pessoa na hora. A tabela no fim da tela mostra o que cada perfil pode fazer.",
       { h: "Exigir o autenticador" },
       "Marque a opção para exigir de todos. Quem ainda não tem precisa configurar antes de ver qualquer dado. Para ligar a exigência, o seu autenticador precisa estar ligado.",
       { h: "Quem perdeu o celular" },
       "Remover autenticador derruba as sessões da pessoa e fica na auditoria. Confirme por outro canal que é ela mesma quem está pedindo: esse pedido é um golpe conhecido.",
-      "Na sua própria conta, use a janela Autenticador, que pede a senha e o código.",
+      "Na sua própria conta, clique no seu nome e escolha Autenticador, que pede a senha e o código.",
     ] },
     { id: "auditoria", vista: "auditoria", titulo: "Auditoria", blocos: [
       "A trilha guarda quem entrou, saiu e errou a senha, quem criou ou mudou acessos, regras, fontes e playbooks, quem viu ou exportou dados, e quais ativos entraram e saíram. Filtre por período, ação ou pessoa, e exporte em CSV. A exportação também fica na trilha.",

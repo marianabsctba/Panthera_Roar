@@ -30,7 +30,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -295,7 +295,9 @@ def eu(request: Request, sessao=Depends(sessao_atual)):
     if sessao["mfa_ativo"] and not sessao["mfa_pendente"]:
         with request.app.state.banco.connection() as con:
             restantes = con.execute("SELECT roar_mfa_codigos_restantes(%s) AS n", (sessao["usuario_id"],)).fetchone()["n"]
-    return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"],
+    with request.app.state.banco.connection() as con:
+        plataforma = con.execute("SELECT roar_e_plataforma(%s) AS p", (sessao["usuario_id"],)).fetchone()["p"]
+    return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"], "plataforma": plataforma,
             "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ())),
             "mfa_pendente": sessao["mfa_pendente"], "mfa_ativo": sessao["mfa_ativo"], "mfa_obrigatorio": sessao["mfa_obrigatorio"],
             "mfa_codigos_restantes": restantes, "modulos": sorted(MODULOS)}
@@ -571,6 +573,59 @@ def redefinir_senha(identificador: uuid.UUID, request: Request, sessao=Depends(e
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'redefinir_senha', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
     return {"senha_temporaria": temporaria}
+
+
+class OrganizacaoNova(BaseModel):
+    nome: str = Field(min_length=1, max_length=120, pattern=r"\S")
+    email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class RemocaoDeOrganizacao(BaseModel):
+    confirmacao: str = Field(max_length=120)
+
+
+def exige_plataforma(request: Request, sessao=Depends(sessao_atual)):
+    """Poder sobre a instalação, não sobre uma organização: ser administrador da própria não basta."""
+    _sessao_liberada(sessao)
+    with request.app.state.banco.connection() as con:
+        if not con.execute("SELECT roar_e_plataforma(%s) AS p", (sessao["usuario_id"],)).fetchone()["p"]:
+            raise HTTPException(status_code=403, detail="Só quem administra a instalação pode fazer isto.")
+    return sessao
+
+
+@app.get("/api/organizacoes")
+def listar_organizacoes(request: Request, sessao=Depends(exige_plataforma)):
+    with request.app.state.banco.connection() as con:
+        return {"organizacoes": con.execute("SELECT * FROM roar_listar_organizacoes(%s)", (sessao["usuario_id"],)).fetchall(),
+                "pedidos": con.execute("SELECT * FROM roar_listar_pedidos_de_organizacao(%s)", (sessao["usuario_id"],)).fetchall()}
+
+
+@app.post("/api/organizacoes", status_code=201)
+def pedir_organizacao(dados: OrganizacaoNova, request: Request, sessao=Depends(exige_plataforma)):
+    """A API só registra o pedido: quem cria o gerenciador é o serviço de organizações. A senha aparece só nesta resposta."""
+    temporaria = secrets.token_urlsafe(18)
+    nome = dados.nome.strip()
+    with do_cliente(request, sessao) as con:
+        novo = con.execute("SELECT roar_pedir_organizacao(%s, %s, %s, %s) AS id",
+                           (sessao["usuario_id"], nome, dados.email.strip(), hasher.hash(temporaria))).fetchone()["id"]
+        if novo == -1:
+            raise HTTPException(status_code=409, detail="Já existe uma organização com este nome.")
+        if novo == -2:
+            raise HTTPException(status_code=409, detail="Não foi possível usar este e-mail.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_organizacao', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], nome))
+    return {"id": novo, "senha_temporaria": temporaria}
+
+
+@app.post("/api/organizacoes/{cliente}/remover", status_code=202)
+def pedir_remocao_de_organizacao(cliente: uuid.UUID, dados: RemocaoDeOrganizacao, request: Request, sessao=Depends(exige_plataforma)):
+    with do_cliente(request, sessao) as con:
+        novo = con.execute("SELECT roar_pedir_remocao_de_organizacao(%s, %s, %s) AS id", (sessao["usuario_id"], cliente, dados.confirmacao)).fetchone()["id"]
+        if novo is None:
+            raise HTTPException(status_code=409, detail="Confira o nome. A organização em que você está não pode ser removida.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'remover_organizacao', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], dados.confirmacao))
+    return {"id": novo}
 
 
 @app.get("/api/fila")
@@ -2637,15 +2692,17 @@ app.mount("/estatico", StaticFiles(directory=ESTATICO), name="estatico")
 
 @app.get("/novo", include_in_schema=False)
 @app.get("/novo/{resto:path}", include_in_schema=False)
-def nova_tela(request: Request, resto: str = ""):
-    """A console nova, por enquanto ao lado da atual. Toda rota dela devolve a mesma página."""
-    pagina = ESTATICO / "novo" / "index.html"
-    if not pagina.exists():
+def endereco_antigo(resto: str = ""):
+    """Quem guardou o endereço de quando a console nova ficava ao lado da antiga."""
+    return RedirectResponse(f"/{resto}" if re.fullmatch(r"[a-z0-9/-]*", resto) and not resto.startswith("/") else "/")
+
+
+# Fica por último: toda rota da console devolve a mesma página, mas caminho de API desconhecido continua 404.
+@app.get("/{resto:path}", include_in_schema=False)
+def console(request: Request, resto: str = ""):
+    pagina = ESTATICO / "console" / "index.html"
+    # Arquivo que não existe e rota fechada não podem parecer tela.
+    if resto.split("/")[0] in ("api", "docs", "redoc") or "." in resto or not pagina.exists():
         raise HTTPException(status_code=404)
     request.state.chave_de_estilo = secrets.token_urlsafe(18)
     return Response(pagina.read_text(encoding="utf-8").replace("__CHAVE__", request.state.chave_de_estilo), media_type="text/html")
-
-
-@app.get("/", include_in_schema=False)
-def inicio():
-    return FileResponse(ESTATICO / "index.html")
