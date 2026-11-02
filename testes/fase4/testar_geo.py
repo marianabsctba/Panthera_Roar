@@ -53,6 +53,7 @@ def main():
     registrar("país com acento também", "GeoLocation.country_name" in json.dumps(consulta.analisar("país=Brazil").filtro))
     registrar("cidade também", "GeoLocation.city_name" in json.dumps(consulta.analisar("cidade=Curitiba").filtro))
     registrar("estado também", "GeoLocation.region_name" in json.dumps(consulta.analisar("estado=Parana").filtro))
+    registrar("operadora também", "Operadora.organization_name" in json.dumps(consulta.analisar("operadora=Vivo").filtro))
     registrar("contar por país", consulta.analisar("| contar por pais").contar_por == "GeoLocation.country_name")
 
     admin = psycopg.connect(f"postgresql://roar_admin:{ENV['BANCO_SENHA']}@127.0.0.1:5433/roar", autocommit=True)
@@ -68,12 +69,14 @@ def main():
         gerenciadores.append(g)
         return c, g, email, senha
 
-    def evento(c, g, pais, severidade="alta", nivel=10, cidade=None, regiao=None, lat=-25.5):
+    def evento(c, g, pais, severidade="alta", nivel=10, cidade=None, regiao=None, lat=-25.5, operadora=None):
         bruto = {"rule": {"id": "5712"}}
         if pais:
             bruto["GeoLocation"] = {"country_name": pais, "location": {"lat": 1, "lon": 1}}
         if cidade:
             bruto["GeoLocation"].update(city_name=cidade, region_name=regiao, location={"lat": lat, "lon": -49.3})
+        if operadora:
+            bruto["Operadora"] = {"organization_name": operadora, "asn": 53187}
         admin.execute("""INSERT INTO eventos (cliente_id, origem, origem_id, ocorrido_em, nivel, severidade, regra_id, regra_descricao, gerenciador_id, agente_id, bruto)
                          VALUES (%s, 'wazuh', %s, %s, %s, %s, '5712', 'Teste', %s, '001', %s)""",
                       (c, uuid.uuid4().hex, datetime.now(timezone.utc), nivel, severidade, g, Jsonb(bruto)))
@@ -129,6 +132,20 @@ def main():
             registrar("injeção no filtro de cidade não quebra", http.get("/api/eventos", params={"cidade": "'; DROP TABLE eventos; --"}).json()["eventos"] == [])
             registrar("a automação não lê a cidade", not admin.execute("SELECT has_column_privilege('roar_soar', 'eventos', 'cidade', 'SELECT') OR has_column_privilege('roar_soar', 'eventos', 'regiao', 'SELECT')").fetchone()[0])
             admin.execute("DELETE FROM eventos WHERE cidade IS NOT NULL AND cliente_id = ANY(%s)", (clientes,))
+
+            print("\n== Operadora", flush=True)
+            for _ in range(2):
+                evento(ca, ga, "Brazil", "alta", 10, operadora="Universidade de Teste")
+            evento(cb, gb, "Brazil", "alta", 10, operadora="Operadora de Outro Cliente")
+            ops = http.get("/api/panorama").json()["operadoras"]
+            registrar("conta por operadora", ops and ops[0]["operadora"] == "Universidade de Teste" and ops[0]["total"] == 2 and ops[0]["asn"] == "53187", str(ops)[:160])
+            registrar("não mostra operadora de outro cliente", not any(o["operadora"] == "Operadora de Outro Cliente" for o in ops))
+            e = http.get("/api/eventos", params={"operadora": "Universidade de Teste"}).json()["eventos"]
+            registrar("filtra por operadora", len(e) == 2 and e[0]["operadora"] == "Universidade de Teste" and e[0]["asn"] == "53187", str(len(e)))
+            registrar("operadora de outro cliente não filtra", http.get("/api/eventos", params={"operadora": "Operadora de Outro Cliente"}).json()["eventos"] == [])
+            registrar("injeção no filtro de operadora não quebra", http.get("/api/eventos", params={"operadora": "'; DROP TABLE eventos; --"}).json()["eventos"] == [])
+            registrar("a automação não lê a operadora", not admin.execute("SELECT has_column_privilege('roar_soar', 'eventos', 'operadora', 'SELECT')").fetchone()[0])
+            admin.execute("DELETE FROM eventos WHERE operadora IS NOT NULL AND cliente_id = ANY(%s)", (clientes,))
 
             print("\n== O que cada número do panorama abre", flush=True)
             hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")

@@ -642,11 +642,16 @@ def panorama(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
                 FROM eventos WHERE pais IS NOT NULL AND cidade IS NOT NULL AND nivel >= %s AND ocorrido_em >= {desde}
                 GROUP BY 1, 2, 3 ORDER BY total DESC, cidade LIMIT 300""",
             (NIVEL_MINIMO_NA_FILA, dias)).fetchall()
+        operadoras = con.execute(
+            f"""SELECT operadora, asn, count(*) AS total, count(*) FILTER (WHERE severidade IN ('alta', 'critica')) AS graves
+                FROM eventos WHERE operadora IS NOT NULL AND nivel >= %s AND ocorrido_em >= {desde}
+                GROUP BY 1, 2 ORDER BY total DESC, operadora LIMIT 20""",
+            (NIVEL_MINIMO_NA_FILA, dias)).fetchall()
         # Muitos endereços de operadora só dizem o país: sem este número, o mapa pareceria cobrir tudo.
         sem_cidade = con.execute(
             f"SELECT count(*) AS n FROM eventos WHERE pais IS NOT NULL AND cidade IS NULL AND nivel >= %s AND ocorrido_em >= {desde}",
             (NIVEL_MINIMO_NA_FILA, dias)).fetchone()["n"]
-    return {"por_dia": por_dia, "sinais": sinais, "origens": origens, "paises": paises, "cidades": cidades, "sem_cidade": sem_cidade,
+    return {"por_dia": por_dia, "sinais": sinais, "origens": origens, "paises": paises, "cidades": cidades, "sem_cidade": sem_cidade, "operadoras": operadoras,
             "riscos": [r for r in riscos if r["risco"] >= 1]}
 
 
@@ -657,7 +662,7 @@ def _sem_curinga(texto):
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
             dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
-            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = ""):
+            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = "", operadora: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -697,6 +702,9 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if entidade:
         condicoes.append("(usuario = %s OR agente_nome = %s)")
         parametros += [entidade[:200], entidade[:200]]
+    if operadora:
+        condicoes.append("operadora = %s")
+        parametros.append(operadora[:200])
     if regra:
         condicoes.append("regra_id = %s")
         parametros.append(regra[:16])
@@ -709,7 +717,7 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             f"""SELECT id, ocorrido_em, severidade, nivel, regra_id, regra_descricao, agente_nome AS ativo,
-                       host(ip_origem) AS ip_origem, usuario, pais, cidade, regiao
+                       host(ip_origem) AS ip_origem, usuario, pais, cidade, regiao, operadora, asn
                 FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
             (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
     return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}

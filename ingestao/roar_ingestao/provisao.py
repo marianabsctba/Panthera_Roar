@@ -100,6 +100,11 @@ def preparar():
         # O processador original escolhe o índice por um campo enviado pelo gerenciador. Cada
         # gerenciador já grava direto no próprio índice, então o índice fica sendo o da requisição.
         pipeline["processors"] = [p for p in pipeline["processors"] if "date_index_name" not in p]
+        # Para cada campo de onde sai o local do endereço, sai também a operadora, da base que já vem no indexador.
+        pipeline["processors"] += [
+            {"geoip": {"field": p["geoip"]["field"], "database_file": "GeoLite2-ASN.mmdb", "target_field": "Operadora",
+                       "properties": ["asn", "organization_name"], "ignore_missing": True, "ignore_failure": True}}
+            for p in pipeline["processors"] if "geoip" in p]
         _pedir(indexer, "PUT", f"_ingest/pipeline/filebeat-{versao}-wazuh-{conjunto}-pipeline", pipeline)
 
     # Sem isso os índices crescem até encher o disco, principalmente os de log bruto.

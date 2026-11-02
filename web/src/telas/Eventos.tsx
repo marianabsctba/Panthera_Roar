@@ -109,7 +109,7 @@ export function GavetaDoEvento({ evento, aoFechar, aoFiltrar }: { evento: Evento
 
 // ------------------------------------------------------------------ filtros vindos da URL
 
-const FILTROS_DE_CONTEXTO = ["pais", "cidade", "alertas", "dia", "severidades", "origem", "sinal", "entidade", "regra", "agente"] as const;
+const FILTROS_DE_CONTEXTO = ["pais", "cidade", "alertas", "dia", "severidades", "origem", "sinal", "entidade", "regra", "agente", "operadora"] as const;
 type Contexto = Partial<Record<(typeof FILTROS_DE_CONTEXTO)[number], string>>;
 interface Filtros { busca: string; severidade: string; dias: string; contexto: Contexto }
 
@@ -151,6 +151,7 @@ function rotuloDoContexto(chave: keyof Contexto, valor: string) {
     case "sinal": return `Sinal: ${SINAIS[valor] ?? valor}`;
     case "entidade": return `Ativo ou usuário: ${valor}`;
     case "regra": return `Regra: ${valor}`;
+    case "operadora": return `Operadora: ${valor}`;
     case "agente": return `Ativo: ${valor}`;
   }
 }

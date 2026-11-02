@@ -43,7 +43,7 @@ export const AJUDA = [
       "Use os botões de 7, 30 ou 90 dias. Em Ver dados, os números do gráfico aparecem em tabela.",
       { h: "Países" },
       "O mapa mostra de onde vieram os alertas com endereço externo. Clique em um país para ver os eventos dele. Em Logs brutos, use pais=Brazil, com o nome em inglês. Em Automação, um playbook pode agir conforme o país.",
-      "Cada ponto no mapa é uma cidade: quanto maior, mais alertas. Use os botões acima dele para aproximar, como Brasil ou Europa, e clique em um ponto para ver os eventos dela. Em Logs brutos, use cidade=Curitiba ou estado=Parana, sem acento no estado.",
+      "Principais operadoras mostra de quais redes vêm os alertas, e em Logs brutos dá para buscar com operadora=. Cada ponto no mapa é uma cidade: quanto maior, mais alertas. Use os botões acima dele para aproximar, como Brasil ou Europa, e clique em um ponto para ver os eventos dela. Em Logs brutos, use cidade=Curitiba ou estado=Parana, sem acento no estado.",
       { aviso: "A cidade é ainda menos certa que o país. Costuma acertar em empresas e universidades, mas em operadora pode apontar para a sede, ou nem identificar. Não use para localizar uma pessoa." },
       { aviso: "É o país provável do endereço, pela base GeoLite2. Endereço pode ser forjado, ou passar por VPN e proxy: não bloqueie só por isso." },
       { h: "Volume recebido" },

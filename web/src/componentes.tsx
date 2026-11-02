@@ -167,7 +167,7 @@ export function GavetaDoBruto({ evento, aoFechar }: { evento: number | null; aoF
   );
 }
 
-interface EventoDaLista { id: number; ocorrido_em: string; severidade: string; regra_descricao: string | null; regra_id: string; ativo: string | null; usuario: string | null; ip_origem: string | null; pais: string | null; cidade: string | null; regiao: string | null }
+interface EventoDaLista { id: number; ocorrido_em: string; severidade: string; regra_descricao: string | null; regra_id: string; ativo: string | null; usuario: string | null; ip_origem: string | null; pais: string | null; cidade: string | null; regiao: string | null; operadora: string | null }
 
 export interface FiltroDeEventos { rotulo: string; consulta: Record<string, string> }
 
@@ -192,7 +192,7 @@ export function GavetaDeEventos({ filtro, aoFechar }: { filtro: FiltroDeEventos 
                 { titulo: "Severidade", celula: (e) => <Severidade valor={e.severidade} /> },
                 { titulo: "Evento", celula: (e) => e.regra_descricao ?? e.regra_id },
                 { titulo: "Ativo", celula: (e) => e.ativo ?? "-" },
-                { titulo: "Origem", celula: (e) => <><span className="mono">{e.ip_origem ?? "-"}</span>{e.cidade && <Text size="xs" c="dimmed">{nomeDaCidade({ cidade: e.cidade, regiao: e.regiao, pais: e.pais })}</Text>}{!e.cidade && e.pais && <Text size="xs" c="dimmed">{nomeDoPais(e.pais)}</Text>}</> },
+                { titulo: "Origem", celula: (e) => <><span className="mono">{e.ip_origem ?? "-"}</span>{e.cidade && <Text size="xs" c="dimmed">{nomeDaCidade({ cidade: e.cidade, regiao: e.regiao, pais: e.pais })}</Text>}{!e.cidade && e.pais && <Text size="xs" c="dimmed">{nomeDoPais(e.pais)}</Text>}{e.operadora && <Text size="xs" c="dimmed">{e.operadora}</Text>}</> },
                 { titulo: "", largura: 40, celula: (e) => <AcoesDaLinha rotulo="Ações do evento" itens={pode("ver_bruto") ? [{ texto: "Ver como chegou", aoClicar: () => setBruto(e.id) }] : []} /> },
               ]}
             />

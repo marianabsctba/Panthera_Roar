@@ -16,6 +16,7 @@ interface PanoramaDados {
   paises: Pais[];
   cidades: Cidade[];
   sem_cidade: number;
+  operadoras: { operadora: string; asn: string | null; total: number; graves: number }[];
 }
 interface Volume {
   dias: number;
@@ -205,6 +206,9 @@ export function Panorama() {
             <Stack gap="md" h="100%">
               <Painel titulo="Maior risco agora">
                 <Ranking itens={dados.riscos.map((r) => ({ rotulo: r.entidade, valor: Math.round(r.risco) }))} vazio="Ninguém com risco no momento." aoClicar={(e) => abrir(`Eventos de ${e}`, { entidade: e })} />
+              </Painel>
+              <Painel titulo="Principais operadoras">
+                <Ranking itens={dados.operadoras.slice(0, 6).map((o) => ({ rotulo: o.operadora, valor: o.total }))} vazio="Nenhum alerta com operadora identificada." aoClicar={(o) => abrir(`Alertas vindos de ${o}`, { alertas: "true", operadora: o })} />
               </Painel>
               <Painel titulo="Principais origens">
                 <Ranking itens={dados.origens.slice(0, 6).map((o) => ({ rotulo: o.origem, valor: o.total }))} vazio="Nenhuma origem no período." aoClicar={(o) => abrir(`Alertas vindos de ${o}`, { alertas: "true", origem: o })} />

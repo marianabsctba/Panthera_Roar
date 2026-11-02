@@ -23,6 +23,7 @@ APELIDOS = {
     "log": "full_log", "texto": "full_log", "quando": "timestamp", "regra": "rule.id", "nivel": "rule.level", "nível": "rule.level",
     "pais": "GeoLocation.country_name", "país": "GeoLocation.country_name", "cidade": "GeoLocation.city_name",
     "estado": "GeoLocation.region_name",
+    "operadora": "Operadora.organization_name", "asn": "Operadora.asn",
 }
 PALAVRAS_E = {"e", "and"}
 PALAVRAS_OU = {"ou", "or"}
