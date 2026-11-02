@@ -150,7 +150,20 @@ export const AJUDA = [
       { aviso: "Enviado não é o mesmo que confirmado. O histórico só diz que o bloqueio foi confirmado quando o próprio ativo responde. Um ativo sem firewall recebe o pedido e não bloqueia." },
     ] },
     { id: "vulnerabilidades", vista: "vulnerabilidades", titulo: "Vulnerabilidades", blocos: [
-      "A base pública de CVEs, para consultar qualquer falha pelo código ou por uma palavra, com uma prioridade que parte da exploração real, e não só da nota.",
+      "Aqui ficam as falhas encontradas nos seus ativos, a evolução das correções e a base pública de CVEs.",
+      { h: "Como começar" },
+      { passos: [
+        "Em Varreduras, crie um modelo: tipo, se é intrusivo e quais portas.",
+        "Crie um alvo com os endereços, a repetição e, se puder, uma credencial de varredura, que encontra bem mais.",
+        "Clique em Varrer agora, ou espere a agenda. O padrão é a cada 30 dias.",
+      ] },
+      { h: "Achados" },
+      "Cada achado guarda quando apareceu, quem decidiu o quê e a evidência. Corrigido só vale quando uma varredura tão completa quanto a que encontrou deixa de encontrar: sem credencial, não dá para provar que sumiu o que só aparece com credencial. Se voltar a aparecer, ele reabre sozinho.",
+      "Para aceitar um risco ou marcar falso positivo, é preciso escrever o motivo, que fica no histórico.",
+      { h: "Exposição" },
+      "Cada achado aberto vale crítica 10, alta 5, média 2 ou baixa 1 ponto, multiplicados pelo peso do ativo, de 1 a 5, que você define em Ativos.",
+      { h: "Base de CVEs" },
+      "Consulte qualquer falha pelo código ou por uma palavra, com uma prioridade que parte da exploração real, e não só da nota.",
       { h: "Como a prioridade é decidida" },
       { chaves: [
         ["Agora", "exploração confirmada, no catálogo KEV"],
@@ -159,7 +172,7 @@ export const AJUDA = [
         ["Sem nota", "ainda sem CVSS: não dá para dizer que é baixa"],
         ["Baixa", "as demais"],
       ] },
-      { aviso: "Esta tela mostra a base pública. Ela ainda não diz quais falhas existem nos seus ativos." },
+      { aviso: "Só varra o que você tem autorização para testar. Varredura intrusiva pode derrubar serviço frágil: combine a janela antes." },
     ] },
   ] },
   { grupo: "Administrar", artigos: [

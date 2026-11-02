@@ -322,6 +322,103 @@
     </section>
 
     <section id="vista-vulnerabilidades" class="pagina" aria-label="Vulnerabilidades" hidden>
+      <div class="sub-abas" role="tablist" aria-label="Vulnerabilidades">
+        <button type="button" role="tab" data-sub="panorama" aria-selected="true">Panorama</button>
+        <button type="button" role="tab" data-sub="achados" aria-selected="false">Achados</button>
+        <button type="button" role="tab" data-sub="ativos" aria-selected="false">Ativos</button>
+        <button type="button" role="tab" data-sub="varreduras" aria-selected="false">Varreduras</button>
+        <button type="button" role="tab" data-sub="base" aria-selected="false">Base de CVEs</button>
+      </div>
+
+      <div id="vuln-panorama">
+        <div id="vuln-numeros" class="fim-numeros"></div>
+        <figure class="grafico">
+          <figcaption>Achados abertos por dia</figcaption>
+          <div id="vuln-evolucao" class="area-colunas"></div>
+          <details><summary>Ver dados</summary><div id="vuln-evolucao-dados" class="tabela-rolagem"></div></details>
+        </figure>
+        <p id="vuln-metodo" class="texto-secao"></p>
+      </div>
+
+      <div id="vuln-achados" hidden>
+        <form id="form-achados" class="filtros" role="search">
+          <input id="busca-achados" type="search" spellcheck="false" placeholder="Título, ativo, endereço ou CVE" aria-label="Buscar achado">
+          <select id="severidade-achados" aria-label="Severidade">
+            <option value="">Todas as severidades</option>
+            <option value="critica">Crítica</option>
+            <option value="alta">Alta</option>
+            <option value="media">Média</option>
+            <option value="baixa">Baixa</option>
+            <option value="informativa">Informativa</option>
+          </select>
+          <select id="estado-achados" aria-label="Situação">
+            <option value="aberto" selected>Abertos</option>
+            <option value="corrigido">Corrigidos</option>
+            <option value="aceito">Riscos aceitos</option>
+            <option value="falso_positivo">Falsos positivos</option>
+            <option value="">Todas as situações</option>
+          </select>
+          <button type="submit" class="botao-primario">Buscar</button>
+          <button id="exportar-achados" type="button" class="botao-discreto">Exportar em CSV</button>
+        </form>
+        <div id="tabela-achados" class="tabela-rolagem"></div>
+        <button id="mais-achados" type="button" class="botao-discreto" hidden>Carregar mais</button>
+      </div>
+
+      <div id="vuln-ativos" hidden>
+        <p class="texto-secao">O peso diz o quanto o ativo importa para o negócio e multiplica a exposição. Os ativos aparecem quando uma varredura os alcança.</p>
+        <div id="tabela-vuln-ativos" class="tabela-rolagem"></div>
+      </div>
+
+      <div id="vuln-varreduras" hidden>
+        <div class="titulo-com-acao">
+          <h2 class="titulo-secao">Alvos</h2>
+          <button id="novo-alvo" type="button" class="botao-primario" data-permissao="gerir_vulnerabilidades">Novo alvo</button>
+        </div>
+        <form id="form-alvo" class="formulario-regra" hidden novalidate autocomplete="off">
+          <div class="simulacao">Só varra o que você tem autorização para testar. Varredura intrusiva pode derrubar serviço frágil: combine a janela antes.</div>
+          <div class="linha-campos">
+            <label>Nome <input id="alvo-nome" type="text" maxlength="120"></label>
+            <label>Modelo <select id="alvo-modelo"></select></label>
+            <label>Repetir a cada (dias, 0 só sob demanda) <input id="alvo-dias" type="number" min="0" max="365" value="30"></label>
+          </div>
+          <label>Endereços, redes ou nomes, separados por vírgula ou espaço <input id="alvo-hosts" type="text" spellcheck="false" placeholder="10.0.0.5, 10.0.1.0/24, srv-rh.exemplo.test"></label>
+          <div class="linha-campos">
+            <label>Credencial <select id="alvo-cred-tipo"><option value="">Sem credencial</option><option value="ssh">SSH (Linux, equipamentos)</option><option value="smb">SMB (Windows)</option><option value="snmp">SNMP (rede)</option></select></label>
+            <label>Usuário <input id="alvo-cred-usuario" type="text" maxlength="120" autocomplete="off"></label>
+            <label>Senha <input id="alvo-cred-senha" type="password" autocomplete="new-password"></label>
+          </div>
+          <p class="texto-secao">A senha fica cifrada e não volta para a tela. Crie uma conta só para varredura, com o menor privilégio possível.</p>
+          <p id="alvo-erro" class="erro" role="alert" hidden></p>
+          <div class="acoes-regra">
+            <button id="alvo-cancelar" type="button" class="botao-discreto">Cancelar</button>
+            <button type="submit" class="botao-primario">Criar</button>
+          </div>
+        </form>
+        <div id="tabela-alvos" class="tabela-rolagem"></div>
+        <div class="titulo-com-acao">
+          <h2 class="titulo-secao">Modelos</h2>
+          <button id="novo-modelo" type="button" class="botao-discreto" data-permissao="gerir_vulnerabilidades">Novo modelo</button>
+        </div>
+        <form id="form-modelo" class="formulario-regra" hidden novalidate autocomplete="off">
+          <div class="linha-campos">
+            <label>Nome <input id="modelo-nome" type="text" maxlength="120"></label>
+            <label>Tipo <select id="modelo-ferramenta"><option value="rede">Rede e servidores</option><option value="web">Aplicação web</option><option value="conteiner">Contêiner</option><option value="nuvem">Nuvem</option></select></label>
+          </div>
+          <label class="caixa"><input id="modelo-intrusiva" type="checkbox"> Intrusiva: tenta explorar a falha</label>
+          <label class="caixa"><input id="modelo-portas" type="checkbox"> Todas as portas, não só as comuns</label>
+          <p id="modelo-erro" class="erro" role="alert" hidden></p>
+          <div class="acoes-regra">
+            <button id="modelo-cancelar" type="button" class="botao-discreto">Cancelar</button>
+            <button type="submit" class="botao-primario">Criar</button>
+          </div>
+        </form>
+        <div id="tabela-modelos" class="tabela-rolagem"></div>
+        <h2 class="titulo-secao">Histórico de varreduras</h2>
+        <div id="tabela-varreduras" class="tabela-rolagem"></div>
+      </div>
+
+      <div id="vuln-base" hidden>
       <h2 class="titulo-secao">Base de CVEs</h2>
       <p id="resumo-cves" class="texto-secao"></p>
       <p id="aviso-cves" class="erro" role="status" hidden></p>
@@ -340,6 +437,7 @@
       </form>
       <div id="tabela-cves" class="tabela-rolagem"></div>
       <p class="credito">Dados do registro CVE, da NVD, do catálogo KEV da CISA e do EPSS, atualizados por eles. Este produto usa dados da API da NVD, mas não é endossado nem certificado pela NVD.</p>
+      </div>
     </section>
 
     <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>

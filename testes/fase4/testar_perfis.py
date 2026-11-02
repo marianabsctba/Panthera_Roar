@@ -30,8 +30,8 @@ SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/e
                  ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
-    "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria"},
-    "engenharia": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks"},
+    "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
+    "engenharia": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "gerir_vulnerabilidades"},
     "analista_n2": {"ver", "ver_bruto", "aprovar"},
     "analista_n1": {"ver", "ver_bruto"},
     "auditor": {"ver", "ver_auditoria"},
@@ -54,6 +54,10 @@ ROTAS = {
     ("POST", "/api/automacao/aprovacoes/{identificador}/aprovar"): "aprovar", ("POST", "/api/automacao/aprovacoes/{identificador}/recusar"): "aprovar",
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
     ("GET", "/api/auditoria"): "ver_auditoria", ("GET", "/api/auditoria/exportar"): "ver_auditoria", ("GET", "/api/notificacoes"): "ver_auditoria", ("POST", "/api/notificacoes/lidas"): "ver_auditoria",
+    ("GET", "/api/vuln/indicadores"): "ver", ("GET", "/api/vuln/achados"): "ver", ("GET", "/api/vuln/achados/exportar"): "ver", ("GET", "/api/vuln/achados/{identificador}"): "ver",
+    ("POST", "/api/vuln/achados/{identificador}/estado"): "gerir_vulnerabilidades", ("GET", "/api/vuln/ativos"): "ver", ("PUT", "/api/vuln/ativos/{identificador}"): "gerir_vulnerabilidades",
+    ("GET", "/api/vuln/modelos"): "ver", ("POST", "/api/vuln/modelos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/alvos"): "ver", ("POST", "/api/vuln/alvos"): "gerir_vulnerabilidades",
+    ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",
     ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",

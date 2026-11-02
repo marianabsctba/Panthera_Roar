@@ -417,6 +417,12 @@ th.numero-celula { text-align: right; }
 .ajuda-artigo > * { margin-bottom: 12px; }
 .ajuda-artigo h3 { margin-top: 20px; color: var(--rosa-claro); font-size: .95rem; }
 @media (max-width: 800px) { .ajuda { grid-template-columns: 1fr; } }
+.sub-abas { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--borda); }
+.sub-abas button { padding: 8px 12px; color: var(--texto-2); cursor: pointer; background: none; border: 0; border-bottom: 2px solid transparent; }
+.sub-abas button[aria-selected="true"] { color: var(--texto); border-bottom-color: var(--rosa); font-weight: 600; }
+.vuln-colunas { display: flex; align-items: flex-end; gap: 2px; height: 140px; }
+.vuln-coluna { flex: 1; min-height: 1px; background: var(--rosa); border-radius: 4px 4px 0 0; }
+#vuln-numeros { margin-bottom: 14px; }
 .com-avisos { border-color: var(--rosa); color: var(--texto); }
 .com-avisos b { color: var(--rosa-claro); }
 .qr-mfa { justify-self: start; width: fit-content; padding: 8px; background: #fff; border-radius: 10px; line-height: 0; }

@@ -1715,16 +1715,228 @@ async function carregarCves() {
 $("form-cves").addEventListener("submit", (ev) => { ev.preventDefault(); carregarCves(); });
 $("prioridade-cves").addEventListener("change", () => carregarCves());
 
+// ------------------------------------------------------------------ gestão de vulnerabilidades
+
+const ROTULO_SEVERIDADE = { critica: "Crítica", alta: "Alta", media: "Média", baixa: "Baixa", informativa: "Informativa" };
+const ROTULO_ESTADO_ACHADO = { aberto: "Aberto", corrigido: "Corrigido", aceito: "Risco aceito", falso_positivo: "Falso positivo" };
+const ROTULO_VARREDURA = { pendente: "Na fila", em_andamento: "Em andamento", concluida: "Concluída", falhou: "Falhou" };
+const ROTULO_FERRAMENTA = { rede: "Rede e servidores", web: "Aplicação web", conteiner: "Contêiner", nuvem: "Nuvem" };
+const SUB_VULN = { panorama: carregarIndicadoresVuln, achados: () => carregarAchados(), ativos: carregarAtivosVuln, varreduras: carregarVarreduras, base: carregarCves };
+let subVuln = "panorama";
+let achadosCarregados = 0;
+
+function trocarSubVuln(nome) {
+  subVuln = nome;
+  document.querySelectorAll(".sub-abas button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.sub === nome)));
+  Object.keys(SUB_VULN).forEach((s) => { $(`vuln-${s}`).hidden = s !== nome; });
+  SUB_VULN[nome]();
+}
+
+async function carregarIndicadoresVuln() {
+  const r = await pedir("/api/vuln/indicadores");
+  if (!r.ok) return;
+  const d = await r.json();
+  const numero = (rotulo, valor) => {
+    const n = el("div", "numero");
+    n.append(el("b", null, valor), el("span", null, rotulo));
+    return n;
+  };
+  $("vuln-numeros").replaceChildren(
+    numero("Críticos abertos", d.abertos.critica.toLocaleString("pt-BR")), numero("Altos abertos", d.abertos.alta.toLocaleString("pt-BR")),
+    numero("Médios abertos", d.abertos.media.toLocaleString("pt-BR")), numero("Baixos abertos", d.abertos.baixa.toLocaleString("pt-BR")),
+    numero("Com exploração confirmada", d.urgentes.toLocaleString("pt-BR")), numero("Exposição", Number(d.exposicao).toLocaleString("pt-BR")),
+    numero(`Descobertos em ${d.periodo} dias`, d.descobertos.toLocaleString("pt-BR")), numero(`Corrigidos em ${d.periodo} dias`, d.corrigidos.toLocaleString("pt-BR")),
+    numero("Dias para corrigir, em média", d.dias_para_corrigir === null ? "-" : d.dias_para_corrigir.toLocaleString("pt-BR")), numero("Riscos aceitos ou falsos", d.aceitos.toLocaleString("pt-BR")));
+  const maior = Math.max(1, ...d.evolucao.map((e) => e.abertos));
+  const colunas = el("div", "vuln-colunas");
+  colunas.append(...d.evolucao.map((e) => {
+    const c = el("div", "vuln-coluna");
+    c.style.height = `${(e.abertos / maior) * 100}%`;
+    c.title = `${new Date(e.dia).toLocaleDateString("pt-BR", { timeZone: estado.fuso })}: ${e.abertos} abertos`;
+    return c;
+  }));
+  $("vuln-evolucao").replaceChildren(colunas);
+  $("vuln-evolucao-dados").replaceChildren(montarTabela([["Dia"], ["Abertos"]], d.evolucao.filter((e) => e.abertos).map((e) => [el("td", null, new Date(e.dia).toLocaleDateString("pt-BR", { timeZone: estado.fuso })), el("td", null, String(e.abertos))])));
+  const p = d.pontos;
+  $("vuln-metodo").textContent = `Como a exposição é calculada: cada achado aberto vale crítica ${p.critica}, alta ${p.alta}, média ${p.media} ou baixa ${p.baixa} pontos, multiplicados pelo peso do ativo. ` + (d.ultima_varredura ? `Última varredura em ${quando(d.ultima_varredura)}.` : "Nenhuma varredura concluída ainda.");
+}
+
+function filtrosDeAchado() {
+  return new URLSearchParams({ busca: $("busca-achados").value, severidade: $("severidade-achados").value, estado: $("estado-achados").value });
+}
+
+async function carregarAchados(mais = false) {
+  const consulta = filtrosDeAchado();
+  if (mais) consulta.set("deslocamento", achadosCarregados);
+  const r = await pedir(`/api/vuln/achados?${consulta}`);
+  if (!r.ok) return;
+  const { achados, tem_mais } = await r.json();
+  achadosCarregados = (mais ? achadosCarregados : 0) + achados.length;
+  $("mais-achados").hidden = !tem_mais;
+  const linhas = achados.map((a) => [el("td", null, ROTULO_SEVERIDADE[a.severidade]), el("td", null, a.titulo), el("td", "mono", a.ativo ?? a.host), el("td", "mono", a.porta ?? "-"), el("td", "mono", a.cves[0] ?? "-"),
+    el("td", null, a.cvss === null ? "-" : a.cvss.toFixed(1)), el("td", null, a.prioridade === "agora" ? "Agora" : "-"), el("td", null, ROTULO_ESTADO_ACHADO[a.estado]), el("td", null, quando(a.primeira_vez))]);
+  const clicaveis = (corpo, inicio) => [...corpo.rows].slice(inicio).forEach((linha, i) => {
+    linha.classList.add("linha-clicavel");
+    linha.addEventListener("click", () => abrirAchado(achados[i].id));
+  });
+  if (mais) {
+    const corpo = $("tabela-achados").querySelector("tbody");
+    const inicio = corpo.rows.length;
+    corpo.append(...linhas.map((c) => { const tr = el("tr"); tr.append(...c); return tr; }));
+    clicaveis(corpo, inicio);
+    return;
+  }
+  if (!achados.length) {
+    $("tabela-achados").replaceChildren(el("p", "texto-secao", "Nenhum achado neste filtro."));
+    return;
+  }
+  const tabela = montarTabela([["Severidade"], ["Achado"], ["Ativo"], ["Porta"], ["CVE"], ["CVSS"], ["Exploração"], ["Situação"], ["Visto em"]], linhas);
+  clicaveis(tabela.tBodies[0], 0);
+  $("tabela-achados").replaceChildren(tabela);
+}
+
+async function abrirAchado(id) {
+  const r = await pedir(`/api/vuln/achados/${id}`);
+  if (!r.ok) return;
+  const a = await r.json();
+  $("titulo-tecnica").textContent = a.titulo;
+  const corpo = [el("p", "texto-secao", `${ROTULO_SEVERIDADE[a.severidade]}${a.cvss === null ? "" : `, CVSS ${a.cvss.toFixed(1)}`} · ${a.ativo ?? a.host}${a.porta ? `, porta ${a.porta}` : ""} · ${ROTULO_ESTADO_ACHADO[a.estado]}`)];
+  if (a.cves.length) {
+    const cves = el("p");
+    a.cves.forEach((c) => cves.append(botaoDeTabela(c, "botao-discreto", () => abrirCve(c)), " "));
+    corpo.push(cves);
+  }
+  if (a.solucao) corpo.push(el("h3", null, "Como corrigir"), el("p", null, a.solucao));
+  if (a.evidencia) corpo.push(el("h3", null, "Evidência"), el("pre", "bruto", a.evidencia));
+  if (pode("gerir_vulnerabilidades") && a.estado !== "corrigido") {
+    const motivo = el("input");
+    motivo.placeholder = "Motivo: quem decidiu, por quê e até quando";
+    motivo.maxLength = 1000;
+    const erro = el("p", "erro");
+    erro.hidden = true;
+    const mudar = (novo) => botaoDeTabela({ aberto: "Reabrir", aceito: "Aceitar o risco", falso_positivo: "Falso positivo" }[novo], "botao-discreto", async () => {
+      const m = await postarJson(`/api/vuln/achados/${id}/estado`, { estado: novo, motivo: motivo.value });
+      if (!m.ok) {
+        erro.textContent = await detalheDoErro(m, "Não foi possível mudar.");
+        erro.hidden = false;
+        return;
+      }
+      $("janela-tecnica").close();
+      await carregarAchados();
+    });
+    const acoes = el("div", "acoes-regra");
+    acoes.append(...(a.estado === "aberto" ? ["aceito", "falso_positivo"] : ["aberto"]).map(mudar));
+    corpo.push(el("h3", null, "Decisão"), motivo, erro, acoes);
+  }
+  corpo.push(el("h3", null, "Histórico"), montarTabela([["Quando"], ["Mudança"], ["Por"], ["Motivo"]], a.historico.map((h) => [el("td", null, quando(h.quando)),
+    el("td", null, `${h.de ? `${ROTULO_ESTADO_ACHADO[h.de]} para ` : ""}${ROTULO_ESTADO_ACHADO[h.para]}`), el("td", null, h.por ?? (h.varredura_id ? `Varredura ${h.varredura_id}` : "-")), el("td", null, h.motivo ?? "-")])));
+  $("conteudo-tecnica").replaceChildren(...corpo);
+  $("janela-tecnica").showModal();
+}
+
+async function carregarAtivosVuln() {
+  const r = await pedir("/api/vuln/ativos");
+  if (!r.ok) return;
+  const { ativos } = await r.json();
+  if (!ativos.length) {
+    $("tabela-vuln-ativos").replaceChildren(el("p", "texto-secao", "Nenhum ativo varrido ainda."));
+    return;
+  }
+  const pesos = [1, 2, 3, 4, 5].map((p) => [String(p), `Peso ${p}`]);
+  $("tabela-vuln-ativos").replaceChildren(montarTabela([["Ativo"], ["Endereço"], ["Peso"], ["Abertos"], ["Graves"], ["Corrigidos"], ["Exposição"], ["Última varredura"]], ativos.map((t) => {
+    const peso = el("td", null, pode("gerir_vulnerabilidades") ? null : String(t.peso));
+    if (pode("gerir_vulnerabilidades")) {
+      peso.append(selecao(pesos, String(t.peso), async (v) => {
+        await postarJson(`/api/vuln/ativos/${t.id}`, { peso: Number(v) }, "PUT");
+        await carregarAtivosVuln();
+      }));
+    }
+    return [el("td", null, t.nome ?? t.host), el("td", "mono", t.host), peso, el("td", null, String(t.abertos)), el("td", null, String(t.graves)), el("td", null, String(t.corrigidos)), el("td", null, Number(t.exposicao).toLocaleString("pt-BR")), el("td", null, quando(t.ultima_varredura))];
+  })));
+}
+
+async function carregarVarreduras() {
+  const [ra, rm, rv] = await Promise.all([pedir("/api/vuln/alvos"), pedir("/api/vuln/modelos"), pedir("/api/vuln/varreduras")]);
+  if (!ra.ok || !rm.ok || !rv.ok) return;
+  const [{ alvos }, { modelos }, { varreduras }] = await Promise.all([ra.json(), rm.json(), rv.json()]);
+  const atual = $("alvo-modelo").value;
+  $("alvo-modelo").replaceChildren(...modelos.map((m) => { const o = el("option", null, m.nome); o.value = m.id; return o; }));
+  if (atual) $("alvo-modelo").value = atual;
+  $("tabela-modelos").replaceChildren(modelos.length
+    ? montarTabela([["Modelo"], ["Tipo"], ["Modo"], ["Portas"]], modelos.map((m) => [el("td", null, m.nome), el("td", null, ROTULO_FERRAMENTA[m.ferramenta]), el("td", null, m.intrusiva ? "Intrusiva" : "Não intrusiva"), el("td", null, m.todas_portas ? "Todas" : "Comuns")]))
+    : el("p", "texto-secao", "Crie um modelo para poder cadastrar alvos."));
+  $("tabela-alvos").replaceChildren(alvos.length
+    ? montarTabela([["Alvo"], ["Endereços"], ["Modelo"], ["Credencial"], ["Repetição"], ["Próxima"], [""]], alvos.map((a) => {
+      const acoes = el("td");
+      if (pode("gerir_vulnerabilidades")) {
+        acoes.append(botaoDeTabela("Varrer agora", "botao-discreto", async () => {
+          if (a.intrusiva && !window.confirm(`A varredura de ${a.nome} é intrusiva e pode afetar os serviços. Continuar?`)) return;
+          const v = await postarJson("/api/vuln/varreduras", { alvo_id: a.id });
+          if (!v.ok) window.alert(await detalheDoErro(v, "Não foi possível pedir a varredura."));
+          await carregarVarreduras();
+        }), " ", botaoDeTabela("Desativar", "botao-discreto", async () => {
+          await pedir(`/api/vuln/alvos/${a.id}`, { method: "DELETE" });
+          await carregarVarreduras();
+        }));
+      }
+      return [el("td", null, a.nome), el("td", "mono", a.hosts.join(", ")), el("td", null, a.modelo), el("td", null, a.com_credencial ? `${a.credencial_tipo.toUpperCase()}: ${a.credencial_usuario}` : "Sem credencial"),
+        el("td", null, a.a_cada_dias ? `A cada ${a.a_cada_dias} dias` : "Sob demanda"), el("td", null, quando(a.proxima_em)), acoes];
+    }))
+    : el("p", "texto-secao", "Nenhum alvo cadastrado."));
+  $("tabela-varreduras").replaceChildren(varreduras.length
+    ? montarTabela([["Alvo"], ["Modelo"], ["Situação"], ["Origem"], ["Pedida em"], ["Terminou em"], ["Hosts"], ["Com credencial"], ["Novos"], ["Corrigidos"]], varreduras.map((v) => [el("td", null, v.alvo), el("td", null, v.modelo),
+      el("td", null, v.mensagem ? `${ROTULO_VARREDURA[v.estado]}: ${v.mensagem}` : ROTULO_VARREDURA[v.estado]), el("td", null, v.agendada ? "Agenda" : "Pedido"), el("td", null, quando(v.pedida_em)), el("td", null, quando(v.terminada_em)),
+      el("td", null, v.hosts_respondendo ?? "-"), el("td", null, v.autenticada === null ? "-" : v.autenticada ? "Sim" : "Não"), el("td", null, v.novos ?? "-"), el("td", null, v.corrigidos ?? "-")]))
+    : el("p", "texto-secao", "Nenhuma varredura ainda."));
+}
+
+document.querySelectorAll(".sub-abas button").forEach((b) => b.addEventListener("click", () => trocarSubVuln(b.dataset.sub)));
+$("form-achados").addEventListener("submit", (ev) => { ev.preventDefault(); carregarAchados(); });
+$("mais-achados").addEventListener("click", () => carregarAchados(true));
+$("exportar-achados").addEventListener("click", () => baixar(`/api/vuln/achados/exportar?${filtrosDeAchado()}`, "vulnerabilidades-roar.csv"));
+$("novo-alvo").addEventListener("click", () => { $("form-alvo").hidden = false; $("alvo-erro").hidden = true; $("alvo-nome").focus(); });
+$("alvo-cancelar").addEventListener("click", () => { $("form-alvo").reset(); $("form-alvo").hidden = true; });
+$("novo-modelo").addEventListener("click", () => { $("form-modelo").hidden = false; $("modelo-erro").hidden = true; $("modelo-nome").focus(); });
+$("modelo-cancelar").addEventListener("click", () => { $("form-modelo").reset(); $("form-modelo").hidden = true; });
+$("form-alvo").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await postarJson("/api/vuln/alvos", {
+    nome: $("alvo-nome").value.trim(), hosts: $("alvo-hosts").value.split(/[\s,]+/).filter(Boolean), modelo_id: Number($("alvo-modelo").value), a_cada_dias: Number($("alvo-dias").value),
+    credencial_tipo: $("alvo-cred-tipo").value || null, credencial_usuario: $("alvo-cred-usuario").value.trim() || null, credencial_senha: $("alvo-cred-senha").value || null,
+  });
+  $("alvo-cred-senha").value = "";
+  if (!r.ok) {
+    $("alvo-erro").textContent = await detalheDoErro(r, "Confira o nome, o modelo e os endereços.");
+    $("alvo-erro").hidden = false;
+    return;
+  }
+  $("form-alvo").reset();
+  $("form-alvo").hidden = true;
+  await carregarVarreduras();
+});
+$("form-modelo").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await postarJson("/api/vuln/modelos", { nome: $("modelo-nome").value.trim(), ferramenta: $("modelo-ferramenta").value, intrusiva: $("modelo-intrusiva").checked, todas_portas: $("modelo-portas").checked });
+  if (!r.ok) {
+    $("modelo-erro").textContent = await detalheDoErro(r, "Confira o nome do modelo.");
+    $("modelo-erro").hidden = false;
+    return;
+  }
+  $("form-modelo").reset();
+  $("form-modelo").hidden = true;
+  await carregarVarreduras();
+});
+
 // ------------------------------------------------------------------ usuários
 
 const O_QUE_CADA_UM_FAZ = [
   ["Ver painéis, fila, eventos, regras e fontes", "ver"], ["Ver log e alerta brutos", "ver_bruto"], ["Decidir aprovações da automação", "aprovar"],
   ["Criar e mudar regras", "gerir_regras"], ["Criar e mudar playbooks", "gerir_playbooks"], ["Criar e mudar fontes de dados", "gerir_fontes"],
-  ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"], ["Ver a trilha de auditoria e os avisos", "ver_auditoria"],
+  ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"], ["Ver a trilha de auditoria e os avisos", "ver_auditoria"], ["Gerir varreduras, pesos e aceite de risco", "gerir_vulnerabilidades"],
 ];
 const PERMISSOES_POR_PERFIL = {
-  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios", "ver_auditoria"],
-  engenharia: ["ver", "ver_bruto", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente"],
+  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"],
+  engenharia: ["ver", "ver_bruto", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_vulnerabilidades"],
   analista_n2: ["ver", "ver_bruto", "aprovar"],
   analista_n1: ["ver", "ver_bruto"],
   auditor: ["ver", "ver_auditoria"],
@@ -3041,7 +3253,7 @@ function trocarVista(vista) {
   if (vista === "auditoria") { carregarAuditoria(); atualizarAvisos(); }
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
-  if (vista === "vulnerabilidades") carregarCves();
+  if (vista === "vulnerabilidades") trocarSubVuln(subVuln);
   if (vista === "automacao") carregarAutomacao();
   if (vista === "logs" && !estado.logs.length) carregarLogs();
   if (vista === "ataques") carregarAtaques();

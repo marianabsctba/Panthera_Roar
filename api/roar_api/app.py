@@ -45,6 +45,7 @@ from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_api import evidencia, mfa, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, fim  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
+from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
@@ -995,6 +996,253 @@ def notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA
 def marcar_notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA))):
     with do_cliente(request, sessao) as con:
         con.execute("UPDATE notificacoes SET lida_em = now(), lida_por = %s WHERE lida_em IS NULL", (sessao["usuario_id"],))
+
+
+SEVERIDADES = ("critica", "alta", "media", "baixa", "informativa")
+ACHADOS_POR_PAGINA = 100
+# A prioridade vem da base de CVEs: a falha mais urgente entre as que o achado cita.
+PRIORIDADE_DO_ACHADO = """(SELECT c.prioridade FROM cves c WHERE c.cve = ANY(a.cves)
+                          ORDER BY array_position(ARRAY['agora', 'alta', 'media', 'baixa', 'sem_dados'], c.prioridade) LIMIT 1) AS prioridade"""
+
+
+class NovoModelo(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    ferramenta: str = Field(pattern="^(rede|web|conteiner|nuvem)$")
+    intrusiva: bool = False
+    todas_portas: bool = False
+
+
+class NovoAlvo(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    hosts: list[str] = Field(min_length=1, max_length=256)
+    modelo_id: int
+    a_cada_dias: int = Field(default=30, ge=0, le=365)
+    credencial_tipo: str | None = Field(default=None, pattern="^(ssh|smb|snmp)$")
+    credencial_usuario: str | None = Field(default=None, max_length=120)
+    credencial_senha: str | None = Field(default=None, max_length=4096)
+
+
+class PedidoDeVarredura(BaseModel):
+    alvo_id: int
+
+
+class MudancaDeAchado(BaseModel):
+    estado: str = Field(pattern="^(aberto|aceito|falso_positivo)$")
+    motivo: str = Field(default="", max_length=1000)
+
+
+class MudancaDeAtivo(BaseModel):
+    peso: int = Field(ge=1, le=5)
+
+
+@app.get("/api/vuln/indicadores")
+def indicadores_de_vulnerabilidades(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 90):
+    """Descoberta, priorização e remediação, com a conta aberta para quem quiser refazer."""
+    dias = max(7, min(dias, 730))
+    with do_cliente(request, sessao) as con:
+        abertos = {l["severidade"]: l["n"] for l in con.execute("SELECT severidade, count(*) AS n FROM vuln_achados WHERE estado = 'aberto' GROUP BY 1").fetchall()}
+        exposicao = con.execute(f"""SELECT coalesce(sum(t.peso * CASE a.severidade {" ".join(f"WHEN '{s}' THEN {p}" for s, p in vulnerabilidades.PONTOS.items())} END), 0) AS pontos, count(DISTINCT a.ativo_id) AS ativos
+                                    FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id WHERE a.estado = 'aberto'""").fetchone()
+        urgentes = con.execute(f"SELECT count(*) AS n FROM (SELECT {PRIORIDADE_DO_ACHADO} FROM vuln_achados a WHERE a.estado = 'aberto') x WHERE prioridade = 'agora'").fetchone()["n"]
+        remediacao = con.execute("""SELECT count(*) FILTER (WHERE primeira_vez >= now() - make_interval(days => %(d)s)) AS descobertos,
+                                           count(*) FILTER (WHERE estado = 'corrigido' AND corrigido_em >= now() - make_interval(days => %(d)s)) AS corrigidos,
+                                           count(*) FILTER (WHERE estado IN ('aceito', 'falso_positivo')) AS aceitos,
+                                           extract(epoch FROM avg(corrigido_em - primeira_vez) FILTER (WHERE estado = 'corrigido' AND corrigido_em >= now() - make_interval(days => %(d)s))) / 86400 AS dias_para_corrigir
+                                    FROM vuln_achados""", {"d": dias}).fetchone()
+        # Reconstituído da história, e não de uma foto: inclui o que voltou depois de corrigido.
+        evolucao = con.execute("""WITH dias AS (SELECT generate_series(date_trunc('day', now()) - make_interval(days => %s), date_trunc('day', now()), interval '1 day') AS dia),
+                                  ultimo AS (SELECT d.dia, h.achado_id, (array_agg(h.para ORDER BY h.quando DESC, h.id DESC))[1] AS estado
+                                             FROM dias d JOIN vuln_historico h ON h.quando < d.dia + interval '1 day' GROUP BY 1, 2)
+                                  SELECT d.dia, count(u.achado_id) FILTER (WHERE u.estado = 'aberto') AS abertos FROM dias d LEFT JOIN ultimo u USING (dia) GROUP BY 1 ORDER BY 1""", (min(dias, 90),)).fetchall()
+        ultima = con.execute("SELECT max(terminada_em) AS em FROM vuln_varreduras WHERE estado = 'concluida'").fetchone()["em"]
+    return {"abertos": {s: abertos.get(s, 0) for s in SEVERIDADES}, "exposicao": exposicao["pontos"], "ativos_expostos": exposicao["ativos"], "urgentes": urgentes,
+            "descobertos": remediacao["descobertos"], "corrigidos": remediacao["corrigidos"], "aceitos": remediacao["aceitos"],
+            "dias_para_corrigir": round(float(remediacao["dias_para_corrigir"]), 1) if remediacao["dias_para_corrigir"] is not None else None,
+            "evolucao": evolucao, "ultima_varredura": ultima, "periodo": dias, "pontos": vulnerabilidades.PONTOS}
+
+
+def _filtros_de_achado(severidade, estado, ativo, busca):
+    condicoes, valores = [], []
+    if severidade in SEVERIDADES:
+        condicoes.append("a.severidade = %s")
+        valores.append(severidade)
+    if estado in ("aberto", "corrigido", "aceito", "falso_positivo"):
+        condicoes.append("a.estado = %s")
+        valores.append(estado)
+    if ativo:
+        condicoes.append("a.ativo_id = %s")
+        valores.append(ativo)
+    busca = busca.strip()[:200]
+    if busca:
+        condicoes.append("(a.titulo ILIKE %s OR t.host ILIKE %s OR t.nome ILIKE %s OR %s = ANY(a.cves))")
+        padrao = "%" + busca.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        valores.extend([padrao, padrao, padrao, busca.upper()])
+    return (" WHERE " + " AND ".join(condicoes)) if condicoes else "", valores
+
+
+CONSULTA_DE_ACHADOS = f"""SELECT a.id, a.ativo_id, t.host, t.nome AS ativo, t.peso, a.fonte, a.titulo, a.cves, a.cvss, a.severidade, a.porta, a.estado, a.primeira_vez, a.ultima_vez, a.corrigido_em, {PRIORIDADE_DO_ACHADO}
+                         FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id"""
+ORDEM_DE_ACHADOS = "ORDER BY array_position(ARRAY['aberto', 'aceito', 'falso_positivo', 'corrigido'], a.estado), array_position(ARRAY['critica', 'alta', 'media', 'baixa', 'informativa'], a.severidade), t.peso DESC, a.id DESC"
+
+
+@app.get("/api/vuln/achados")
+def achados_de_vulnerabilidade(request: Request, sessao=Depends(exige(permissoes.VER)), severidade: str = "", estado: str = "aberto", ativo: int | None = None, busca: str = "", deslocamento: int = 0):
+    onde, valores = _filtros_de_achado(severidade, estado, ativo, busca)
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(f"{CONSULTA_DE_ACHADOS}{onde} {ORDEM_DE_ACHADOS} LIMIT %s OFFSET %s", (*valores, ACHADOS_POR_PAGINA + 1, max(0, deslocamento))).fetchall()
+    return {"achados": linhas[:ACHADOS_POR_PAGINA], "tem_mais": len(linhas) > ACHADOS_POR_PAGINA}
+
+
+@app.get("/api/vuln/achados/exportar")
+def exportar_achados(request: Request, sessao=Depends(exige(permissoes.VER)), severidade: str = "", estado: str = "aberto", ativo: int | None = None, busca: str = ""):
+    onde, valores = _filtros_de_achado(severidade, estado, ativo, busca)
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(f"{CONSULTA_DE_ACHADOS}{onde} {ORDEM_DE_ACHADOS} LIMIT 100000", valores).fetchall()
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_vulnerabilidades', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{len(linhas)} linhas"))
+    saida = io.StringIO()
+    escritor = csv.writer(saida)
+    colunas = ("host", "ativo", "titulo", "severidade", "cvss", "prioridade", "estado", "porta", "fonte")
+    escritor.writerow([*colunas, "cves", "primeira_vez", "ultima_vez", "corrigido_em"])
+    for l in linhas:
+        escritor.writerow([*(_celula_segura(l[c]) for c in colunas), " ".join(l["cves"]), l["primeira_vez"].isoformat(), l["ultima_vez"].isoformat(), l["corrigido_em"].isoformat() if l["corrigido_em"] else ""])
+    return Response(saida.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="vulnerabilidades-roar.csv"'})
+
+
+@app.get("/api/vuln/achados/{identificador}")
+def detalhe_de_achado(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        achado = con.execute(f"""SELECT a.*, t.host, t.nome AS ativo, t.peso, {PRIORIDADE_DO_ACHADO} FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id WHERE a.id = %s""", (identificador,)).fetchone()
+        if not achado:
+            raise HTTPException(status_code=404)
+        nomes = _nomes_das_pessoas(con) if permissoes.pode(sessao["perfil"], permissoes.GERIR_USUARIOS) else {}
+        historico = con.execute("SELECT quando, de, para, por, varredura_id, motivo FROM vuln_historico WHERE achado_id = %s ORDER BY quando DESC, id DESC", (identificador,)).fetchall()
+    return {**achado, "historico": [{**h, "por": nomes.get(h["por"], "Pessoa da equipe") if h["por"] else None} for h in historico]}
+
+
+@app.post("/api/vuln/achados/{identificador}/estado", status_code=204)
+def mudar_estado_de_achado(identificador: int, dados: MudancaDeAchado, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    """Ninguém marca como corrigido na mão: quem prova a correção é a varredura."""
+    _inteiro_valido(identificador)
+    motivo = dados.motivo.strip()
+    if dados.estado != "aberto" and len(motivo) < 10:
+        raise HTTPException(status_code=422, detail="Explique o motivo: aceitar um risco precisa ficar justificado.")
+    with do_cliente(request, sessao) as con:
+        achado = con.execute("SELECT estado FROM vuln_achados WHERE id = %s FOR UPDATE", (identificador,)).fetchone()
+        if not achado:
+            raise HTTPException(status_code=404)
+        if achado["estado"] == "corrigido":
+            raise HTTPException(status_code=409, detail="Este achado já foi corrigido segundo a última varredura.")
+        if achado["estado"] != dados.estado:
+            con.execute("UPDATE vuln_achados SET estado = %s WHERE id = %s", (dados.estado, identificador))
+            con.execute("INSERT INTO vuln_historico (cliente_id, achado_id, de, para, por, motivo) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (sessao["cliente_id"], identificador, achado["estado"], dados.estado, sessao["usuario_id"], motivo or None))
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_achado', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {dados.estado}"))
+
+
+@app.get("/api/vuln/ativos")
+def ativos_de_vulnerabilidade(request: Request, sessao=Depends(exige(permissoes.VER))):
+    casos = " ".join(f"WHEN '{s}' THEN {p}" for s, p in vulnerabilidades.PONTOS.items())
+    with do_cliente(request, sessao) as con:
+        return {"ativos": con.execute(f"""SELECT t.id, t.host, t.nome, t.sistema, t.peso, t.monitorado, t.primeira_vez, t.ultima_varredura,
+                                                 count(*) FILTER (WHERE a.estado = 'aberto') AS abertos,
+                                                 count(*) FILTER (WHERE a.estado = 'aberto' AND a.severidade IN ('critica', 'alta')) AS graves,
+                                                 count(*) FILTER (WHERE a.estado = 'corrigido') AS corrigidos,
+                                                 coalesce(sum(t.peso * CASE a.severidade {casos} END) FILTER (WHERE a.estado = 'aberto'), 0) AS exposicao
+                                          FROM vuln_ativos t LEFT JOIN vuln_achados a ON a.ativo_id = t.id GROUP BY t.id ORDER BY exposicao DESC, t.host LIMIT 5000""").fetchall()}
+
+
+@app.put("/api/vuln/ativos/{identificador}", status_code=204)
+def mudar_ativo_de_vulnerabilidade(identificador: int, dados: MudancaDeAtivo, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE vuln_ativos SET peso = %s, peso_definido_por = %s WHERE id = %s RETURNING id", (dados.peso, sessao["usuario_id"], identificador)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_peso_de_ativo', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} peso {dados.peso}"))
+
+
+@app.get("/api/vuln/modelos")
+def modelos_de_varredura(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        return {"modelos": con.execute("SELECT id, nome, ferramenta, intrusiva, todas_portas FROM vuln_modelos WHERE ativo ORDER BY nome").fetchall()}
+
+
+@app.post("/api/vuln/modelos", status_code=201)
+def criar_modelo_de_varredura(dados: NovoModelo, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("INSERT INTO vuln_modelos (cliente_id, nome, ferramenta, intrusiva, todas_portas, criado_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                                (sessao["cliente_id"], dados.nome.strip(), dados.ferramenta, dados.intrusiva, dados.todas_portas, sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_modelo_de_varredura', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome.strip()[:200]))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe um modelo com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.get("/api/vuln/alvos")
+def alvos_de_varredura(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        return {"alvos": con.execute("""SELECT a.id, a.nome, a.hosts, a.modelo_id, m.nome AS modelo, m.intrusiva, a.credencial_tipo, a.credencial_usuario, a.credencial_segredo IS NOT NULL AS com_credencial, a.a_cada_dias, a.proxima_em
+                                        FROM vuln_alvos a JOIN vuln_modelos m ON m.id = a.modelo_id WHERE a.ativo ORDER BY a.nome""").fetchall()}
+
+
+@app.post("/api/vuln/alvos", status_code=201)
+def criar_alvo_de_varredura(dados: NovoAlvo, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    """Varrer é tocar em sistema dos outros: a tela avisa, e quem criou o alvo fica na auditoria."""
+    try:
+        hosts = sorted({vulnerabilidades.validar_host(h) for h in dados.hosts})
+    except vulnerabilidades.HostInvalido as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    if bool(dados.credencial_tipo) != bool(dados.credencial_usuario and dados.credencial_senha):
+        raise HTTPException(status_code=422, detail="Para usar credencial, informe o tipo, o usuário e a senha.")
+    nome = dados.nome.strip()
+    try:
+        with do_cliente(request, sessao) as con:
+            if not con.execute("SELECT 1 FROM vuln_modelos WHERE id = %s AND ativo", (dados.modelo_id,)).fetchone():
+                raise HTTPException(status_code=422, detail="Modelo de varredura desconhecido.")
+            segredo = None
+            if dados.credencial_tipo:
+                segredo = f"varredura-{secrets.token_hex(8)}"
+                selado = cofre.selar(cofre.ler_publica(), sessao["cliente_id"], segredo, dados.credencial_senha)
+                con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)", (sessao["cliente_id"], segredo, selado, sessao["usuario_id"]))
+            linha = con.execute("""INSERT INTO vuln_alvos (cliente_id, nome, hosts, modelo_id, credencial_tipo, credencial_usuario, credencial_segredo, a_cada_dias, proxima_em, criado_por)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s > 0 THEN now() ELSE NULL END, %s) RETURNING id""",
+                                (sessao["cliente_id"], nome, hosts, dados.modelo_id, dados.credencial_tipo, dados.credencial_usuario, segredo, dados.a_cada_dias, dados.a_cada_dias, sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_alvo_de_varredura', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{nome[:120]}: {' '.join(hosts)[:600]}"))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe um alvo com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.delete("/api/vuln/alvos/{identificador}", status_code=204)
+def desativar_alvo_de_varredura(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    """Os achados e a história continuam: tirar da agenda não apaga o que foi visto."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE vuln_alvos SET ativo = false, proxima_em = NULL WHERE id = %s AND ativo RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_alvo_de_varredura', %s)", (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.get("/api/vuln/varreduras")
+def varreduras(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        return {"varreduras": con.execute("""SELECT v.id, a.nome AS alvo, m.nome AS modelo, v.estado, v.pedida_por IS NULL AS agendada, v.pedida_em, v.iniciada_em, v.terminada_em, v.autenticada, v.hosts_respondendo, v.novos, v.corrigidos, v.mensagem
+                                             FROM vuln_varreduras v JOIN vuln_alvos a ON a.id = v.alvo_id JOIN vuln_modelos m ON m.id = v.modelo_id ORDER BY v.id DESC LIMIT 200""").fetchall()}
+
+
+@app.post("/api/vuln/varreduras", status_code=201)
+def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    try:
+        with do_cliente(request, sessao) as con:
+            alvo = con.execute("SELECT id, modelo_id, nome FROM vuln_alvos WHERE id = %s AND ativo", (dados.alvo_id,)).fetchone()
+            if not alvo:
+                raise HTTPException(status_code=404)
+            linha = con.execute("INSERT INTO vuln_varreduras (cliente_id, alvo_id, modelo_id, pedida_por) VALUES (%s, %s, %s, %s) RETURNING id", (sessao["cliente_id"], alvo["id"], alvo["modelo_id"], sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_varredura', %s)", (sessao["cliente_id"], sessao["usuario_id"], alvo["nome"][:200]))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Este alvo já tem uma varredura em andamento.")
+    return {"id": linha["id"]}
 
 
 @app.get("/api/cves")
