@@ -7,6 +7,7 @@
 
 import argparse
 import json
+import os
 import re
 import secrets
 import shutil
@@ -167,10 +168,12 @@ def configuracao_do_gerenciador(conf):
 # Cada prazo vira o comando firewall-drop<segundos>, que o ativo desfaz sozinho ao vencer.
 # O grupo não existe em regra nenhuma: o bloqueio só sai quando um playbook pede, nunca por regra.
 SEGUNDOS_DE_BLOQUEIO = (3600, 86400, 604800)
+# netsh e win_route-null são os equivalentes de Windows.
+RESPOSTAS_COM_PRAZO = ("firewall-drop", "host-deny", "route-null", "netsh", "win_route-null", "disable-account")
 _RESPOSTAS_COM_PRAZO = "\n<ossec_config>\n" + "".join(
-    f"  <active-response>\n    <disabled>no</disabled>\n    <command>firewall-drop</command>\n    <location>local</location>\n"
+    f"  <active-response>\n    <disabled>no</disabled>\n    <command>{c}</command>\n    <location>local</location>\n"
     f"    <rules_group>roar_so_por_playbook</rules_group>\n    <timeout>{s}</timeout>\n  </active-response>\n"
-    for s in SEGUNDOS_DE_BLOQUEIO
+    for c in RESPOSTAS_COM_PRAZO for s in SEGUNDOS_DE_BLOQUEIO
 ) + "</ossec_config>\n"
 
 
@@ -305,14 +308,33 @@ def remover_regras(gerenciador_id, nome):
     return valida, detalhe
 
 
-def aplicar_configuracao(gerenciador_id, fragmento):
+def _instalar_credenciais(pasta, gerenciador_id, arquivos):
+    """Troca o conjunto inteiro: credencial de fonte removida não pode continuar no gerenciador."""
+    _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "sh", "-c",
+             "rm -rf /var/ossec/etc/roar-credenciais /root/.aws/credentials; mkdir -p /var/ossec/etc/roar-credenciais /root/.aws; "
+             "chown root:wazuh /var/ossec/etc/roar-credenciais; chmod 750 /var/ossec/etc/roar-credenciais; chmod 700 /root/.aws")
+    temporario = pasta / "credencial.tmp"
+    for caminho, conteudo in arquivos.items():
+        descritor = os.open(temporario, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descritor, "w", encoding="utf-8") as f:
+            f.write(conteudo)
+        _compose(pasta, gerenciador_id, "cp", str(temporario), f"gerenciador:{caminho}")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "root:wazuh", caminho)
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "640", caminho)
+    temporario.unlink(missing_ok=True)
+
+
+def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None):
     """Troca o trecho das fontes de dados. Se reprovar, volta ao arquivo anterior e não reinicia."""
+    arquivos = arquivos or {}
     pasta = DESTINO / "gerenciadores" / gerenciador_id
     caminho = "/var/ossec/etc/ossec.conf"
     montado, anterior = pasta / "ossec.conf", pasta / "ossec.conf.anterior"
     anterior.write_bytes(subprocess.run(
         ["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
          "exec", "-T", "gerenciador", "cat", caminho], capture_output=True, check=True).stdout)
+    guardados = pasta / "credenciais.json"
+    arquivos_anteriores = json.loads(guardados.read_text()) if guardados.exists() else {}
 
     def instalar(arquivo):
         _compose(pasta, gerenciador_id, "cp", str(arquivo), f"gerenciador:{caminho}")
@@ -322,10 +344,12 @@ def aplicar_configuracao(gerenciador_id, fragmento):
     novo = pasta / "ossec.conf.novo"
     novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text()) + fragmento)
     instalar(novo)
+    _instalar_credenciais(pasta, gerenciador_id, arquivos)
     # O analisador sozinho aprova um syslog inválido, que só derrubaria o recebimento ao reiniciar.
     valida, detalhe = _configuracao_valida(gerenciador_id, ("wazuh-analysisd", "wazuh-remoted", "wazuh-modulesd"))
     if not valida:
         instalar(anterior)
+        _instalar_credenciais(pasta, gerenciador_id, arquivos_anteriores)
         return False, detalhe
 
     def reiniciar():
@@ -337,10 +361,16 @@ def aplicar_configuracao(gerenciador_id, fragmento):
     if resultado.returncode != 0:
         # A coleta do cliente não pode ficar parada: volta ao que funcionava e sobe de novo.
         instalar(anterior)
+        _instalar_credenciais(pasta, gerenciador_id, arquivos_anteriores)
         reiniciar()
         return False, {"status": "erro", "saida": (resultado.stderr or resultado.stdout)[-400:]}
     # O arquivo montado é o que o contêiner copia ao ser recriado.
     shutil.copy(novo, montado)
+    novo.unlink()
+    montado.chmod(0o640)
+    descritor = os.open(guardados, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descritor, "w", encoding="utf-8") as f:
+        json.dump(arquivos, f)
     return True, detalhe
 
 

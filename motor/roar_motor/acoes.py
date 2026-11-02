@@ -6,6 +6,7 @@ e público, e o endereço do webhook é o que a pessoa configurou no playbook, n
 
 import ipaddress
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,16 @@ PASTA_GERENCIADORES = Path(os.getenv("ROAR_GERENCIADORES", "/opt/panthera-roar/g
 # Os mesmos prazos estão na configuração do gerenciador, em provisao.SEGUNDOS_DE_BLOQUEIO.
 DURACOES_EM_MINUTOS = (60, 1440, 10080)
 DURACAO_PADRAO = 60
+METODO_PADRAO = "firewall"
+# O mesmo pedido vira um comando diferente em cada sistema. None: não existe nesse sistema.
+COMANDOS_DE_BLOQUEIO = {
+    "firewall": {"linux": "firewall-drop", "windows": "netsh"},
+    "rota": {"linux": "route-null", "windows": "win_route-null"},
+    "hosts": {"linux": "host-deny", "windows": None},
+}
+CONTA_VALIDA = re.compile(r"[A-Za-z_][A-Za-z0-9._-]{0,63}")
+# Desativar qualquer uma destas derruba o ativo ou tira o acesso de quem responderia ao incidente.
+CONTAS_NUNCA_DESATIVADAS = {"root", "administrator", "administrador", "admin", "system", "wazuh", "ossec", "daemon", "bin", "sshd", "nobody"}
 
 
 class AcaoRecusada(Exception):
@@ -60,10 +71,24 @@ def validar_acao(acao, parametros):
         redes_protegidas(protegidos)
         if parametros.get("duracao_minutos", DURACAO_PADRAO) not in DURACOES_EM_MINUTOS:
             raise AcaoRecusada("O bloqueio dura 1 hora, 1 dia ou 7 dias.")
+        if parametros.get("metodo", METODO_PADRAO) not in COMANDOS_DE_BLOQUEIO:
+            raise AcaoRecusada("Forma de bloqueio desconhecida.")
+    elif acao == "desativar_conta":
+        protegidas = parametros.get("protegidas", [])
+        if not isinstance(protegidas, list) or len(protegidas) > 200:
+            raise AcaoRecusada("A lista de contas protegidas é inválida.")
+        if parametros.get("duracao_minutos", DURACAO_PADRAO) not in DURACOES_EM_MINUTOS:
+            raise AcaoRecusada("A conta volta em 1 hora, 1 dia ou 7 dias.")
 
 
-def recusa_prevista(acao, parametros, alvo):
+def recusa_prevista(acao, parametros, alvo, usuario=None):
     """A simulação mostra o que seria recusado, sem chamar nada de fora."""
+    if acao == "desativar_conta":
+        try:
+            conta_permitida(usuario, parametros.get("protegidas", []))
+        except AcaoRecusada:
+            return "conta protegida ou sem conta"
+        return None
     if acao != "bloquear_ip":
         return None
     try:
@@ -106,20 +131,67 @@ def bloquear_ip(gerenciador_id, contexto, parametros):
     # O endereço de origem de um log pode ser forjado para derrubar um parceiro ou o próprio cliente.
     if any(ipaddress.ip_address(alvo) in rede for rede in redes_protegidas(parametros.get("protegidos", []))):
         raise AcaoRecusada(f"O endereço {alvo} está na lista de protegidos deste playbook.")
+    agente = _agente_do_contexto(contexto)
+    duracao = _duracao(parametros)
+    metodo = parametros.get("metodo", METODO_PADRAO)
+    if metodo not in COMANDOS_DE_BLOQUEIO:
+        raise AcaoRecusada("Forma de bloqueio desconhecida.")
+    comando = COMANDOS_DE_BLOQUEIO[metodo][_plataforma(gerenciador_id, agente)]
+    if not comando:
+        raise AcaoRecusada(f"A forma de bloqueio {metodo} não existe no sistema deste ativo.")
+    _resposta_ativa(gerenciador_id, agente, f"{comando}{duracao * 60}", {"srcip": alvo})
+    # Isto só diz que o pedido saiu. A confirmação é o alerta do ativo, que a tela procura depois.
+    return {"enviado": alvo, "ativo": agente, "expira_em_minutos": duracao, "comando": comando}
+
+
+def conta_permitida(texto, protegidas=()):
+    """O nome vem de um alerta e vira argumento de um script no ativo: só passa o que é claramente um nome."""
+    conta = str(texto or "").strip()
+    if not CONTA_VALIDA.fullmatch(conta):
+        raise AcaoRecusada("O alerta não trouxe um nome de conta válido.")
+    if conta.lower() in CONTAS_NUNCA_DESATIVADAS or conta.lower() in {str(p).strip().lower() for p in protegidas}:
+        raise AcaoRecusada(f"A conta {conta} é protegida e não pode ser desativada.")
+    return conta
+
+
+def desativar_conta(gerenciador_id, contexto, parametros):
+    """Vale para o ativo do alerta, e a conta volta sozinha ao fim do prazo. Em Windows o script não existe."""
+    conta = conta_permitida(contexto.get("usuario"), parametros.get("protegidas", []))
+    agente = _agente_do_contexto(contexto)
+    duracao = _duracao(parametros)
+    if _plataforma(gerenciador_id, agente) == "windows":
+        raise AcaoRecusada("Desativar conta ainda não existe para ativos Windows.")
+    _resposta_ativa(gerenciador_id, agente, f"disable-account{duracao * 60}", {"dstuser": conta})
+    return {"enviado": conta, "ativo": agente, "expira_em_minutos": duracao, "comando": "disable-account"}
+
+
+def _agente_do_contexto(contexto):
     agente = str(contexto.get("agente_id") or "")
     if not agente.isdigit() or agente == "000":
-        raise AcaoRecusada("Sem ativo para aplicar o bloqueio.")
+        raise AcaoRecusada("Sem ativo para aplicar a resposta.")
+    return agente
+
+
+def _duracao(parametros):
     duracao = parametros.get("duracao_minutos", DURACAO_PADRAO)
     if duracao not in DURACOES_EM_MINUTOS:
-        raise AcaoRecusada("O bloqueio dura 1 hora, 1 dia ou 7 dias.")
-    resposta = _api_do_gerenciador(
-        gerenciador_id, "PUT", "/active-response", params={"agents_list": agente},
-        json={"command": f"firewall-drop{duracao * 60}", "alert": {"data": {"srcip": alvo}}},
-    )
+        raise AcaoRecusada("A resposta dura 1 hora, 1 dia ou 7 dias.")
+    return duracao
+
+
+def _plataforma(gerenciador_id, agente):
+    resposta = _api_do_gerenciador(gerenciador_id, "GET", "/agents", params={"agents_list": agente, "select": "os.platform"})
+    itens = resposta.get("data", {}).get("affected_items") or []
+    if not itens:
+        raise AcaoRecusada("Este ativo não existe no gerenciador.")
+    return "windows" if itens[0].get("os", {}).get("platform") == "windows" else "linux"
+
+
+def _resposta_ativa(gerenciador_id, agente, comando, dados):
+    resposta = _api_do_gerenciador(gerenciador_id, "PUT", "/active-response", params={"agents_list": agente},
+                                   json={"command": comando, "alert": {"data": dados}})
     if resposta.get("data", {}).get("total_failed_items", 0) or not resposta.get("data", {}).get("total_affected_items"):
-        raise RuntimeError(f"O ativo não recebeu o bloqueio: {str(resposta.get('data', {}).get('failed_items'))[:300]}")
-    # Isto só diz que o pedido saiu. A confirmação é o alerta do ativo, que a tela procura depois.
-    return {"enviado": alvo, "ativo": agente, "expira_em_minutos": duracao}
+        raise RuntimeError(f"O ativo não recebeu a resposta: {str(resposta.get('data', {}).get('failed_items'))[:300]}")
 
 
 def _destino_permitido(endereco):
@@ -148,4 +220,4 @@ def registrar(gerenciador_id, contexto, parametros):
     return {"nota": str(parametros.get("texto", ""))[:1000]}
 
 
-ACOES = {"bloquear_ip": bloquear_ip, "webhook": webhook, "registrar": registrar}
+ACOES = {"bloquear_ip": bloquear_ip, "desativar_conta": desativar_conta, "webhook": webhook, "registrar": registrar}

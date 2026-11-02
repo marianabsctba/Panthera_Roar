@@ -89,7 +89,7 @@ def avaliar(con, cliente):
                     definicao = {**definicao, "blocos": [{"tipo": "aprovacao"}, *definicao["blocos"]]}
             contexto = {"playbook": playbook["nome"], "alvo": fato["alvo"], "agente_id": fato["agente_id"],
                         "origem_tipo": fato["origem_tipo"], "origem_id": fato["origem_id"], "titulo": fato["titulo"],
-                        "nivel": fato.get("nivel"), "severidade": fato.get("severidade")}
+                        "nivel": fato.get("nivel"), "severidade": fato.get("severidade"), "usuario": fato.get("usuario")}
             nova = con.execute(
                 """INSERT INTO execucoes (cliente_id, playbook_id, gerenciador_id, origem_tipo, origem_id, alvo, agente_id, titulo, definicao, contexto)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)

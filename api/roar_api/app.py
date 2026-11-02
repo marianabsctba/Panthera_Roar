@@ -878,6 +878,9 @@ def _saude_da_fonte(fonte, origens):
             return {"saude": "nunca_recebeu", "ultimo_dado": None}
         parada = (datetime.now(timezone.utc) - ultimo).total_seconds() >= MINUTOS_ATE_PARADA * 60
         return {"saude": "parada" if parada else "recebendo", "ultimo_dado": ultimo.isoformat()}
+    # Aviso não recebe dado: quem mostra se funcionou é o serviço de destino.
+    if fonte["tipo"] in fontes_de_dados.TIPOS_DE_AVISO:
+        return {"saude": None, "ultimo_dado": None}
     if origens is None:
         return {"saude": "desconhecida", "ultimo_dado": None}
     ultimos = []
@@ -891,7 +894,8 @@ def _saude_da_fonte(fonte, origens):
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
     else:
         # Os módulos de nuvem aparecem com o próprio nome no lugar da origem.
-        ultimos = [u for local, u in origens if u and local == fonte["tipo"]]
+        nome = {"msgraph": "ms-graph", "aws": "Wazuh-AWS", "azure": "azure", "gcp": "Wazuh-GCloud"}.get(fonte["tipo"], fonte["tipo"])
+        ultimos = [u for local, u in origens if u and local == nome]
     if not ultimos:
         return {"saude": "nunca_recebeu", "ultimo_dado": None}
     ultimo = max(ultimos) / 1000
@@ -935,9 +939,10 @@ def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(sessao_atual)
 
 class FonteDeNuvem(BaseModel):
     nome: str = Field(min_length=1, max_length=120)
-    tipo: str = Field(pattern="^(github|office365)$")
+    tipo: str = Field(pattern="^(github|office365|msgraph|aws|azure|gcp|slack|pagerduty|virustotal|maltiverse)$")
     campos: dict[str, str]
-    segredo: str = Field(min_length=1, max_length=4096)
+    # O arquivo de conta de serviço do Google Cloud passa de 2 KB com facilidade.
+    segredo: str = Field(min_length=1, max_length=20_000)
 
 
 @app.post("/api/fontes/nuvem", status_code=201)
@@ -945,6 +950,7 @@ def criar_fonte_de_nuvem(dados: FonteDeNuvem, request: Request, sessao=Depends(s
     """A credencial sai daqui cifrada, e nenhuma rota a devolve depois."""
     try:
         config = fontes_de_dados.validar_nuvem(dados.tipo, dados.campos)
+        fontes_de_dados.validar_segredo(dados.tipo, dados.segredo)
     except fontes_de_dados.FonteInvalida as erro:
         raise HTTPException(status_code=422, detail=str(erro))
     nome_do_segredo = f"fonte-{secrets.token_hex(8)}"
@@ -953,6 +959,9 @@ def criar_fonte_de_nuvem(dados: FonteDeNuvem, request: Request, sessao=Depends(s
         gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
         if not gerenciador:
             raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        # O módulo do Google Cloud aceita só uma seção por gerenciador.
+        if dados.tipo == "gcp" and con.execute("SELECT 1 FROM fontes WHERE tipo = 'gcp' AND estado <> 'desativada' LIMIT 1").fetchone():
+            raise HTTPException(status_code=409, detail="Este cliente já tem uma assinatura do Google Cloud conectada.")
         con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)",
                     (sessao["cliente_id"], nome_do_segredo, selado, sessao["usuario_id"]))
         nova = con.execute(
@@ -1242,7 +1251,7 @@ def simular_playbook(dados: DefinicaoEntrada, request: Request, sessao=Depends(s
         por_alvo[fato["alvo"] or "sem endereço"] += 1
         passos = []
         for bloco in blocos.plano(definicao["blocos"], fato):
-            recusa = acoes.recusa_prevista(bloco["acao"], bloco.get("parametros", {}), fato["alvo"]) if bloco["tipo"] == "acao" else None
+            recusa = acoes.recusa_prevista(bloco["acao"], bloco.get("parametros", {}), fato["alvo"], fato.get("usuario")) if bloco["tipo"] == "acao" else None
             recusas += 1 if recusa else 0
             passos.append({"tipo": bloco["tipo"], "acao": bloco.get("acao"), "recusa": recusa})
         exemplos.append({"quando": fato["ocorrido_em"], "titulo": fato["titulo"], "alvo": fato["alvo"], "passos": passos})

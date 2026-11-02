@@ -219,24 +219,21 @@
       <p id="destino-syslog" class="texto-secao"></p>
 
       <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Nuvem</h2>
-        <button id="nova-nuvem" type="button" class="botao-primario">Conectar uma conta</button>
+        <h2 class="titulo-secao">Nuvem e avisos</h2>
+        <button id="nova-nuvem" type="button" class="botao-primario">Conectar um serviço</button>
       </div>
-      <p class="texto-secao">A credencial é guardada cifrada e nunca volta para a tela. Este coletor ainda não foi testado com uma conta real.</p>
+      <p class="texto-secao">A credencial é guardada cifrada e nunca volta para a tela. Estes conectores ainda não foram testados com contas reais.</p>
       <form id="form-nuvem" class="formulario-regra" hidden novalidate autocomplete="off">
         <div class="linha-campos">
-          <label>Serviço <select id="nuvem-tipo">
-            <option value="github">GitHub</option>
-            <option value="office365">Microsoft 365</option>
-          </select></label>
+          <label>Serviço <select id="nuvem-tipo"></select></label>
           <label>Nome <input id="nuvem-nome" type="text" maxlength="120"></label>
         </div>
-        <label id="nuvem-campo-organizacao">Organização no GitHub <input id="nuvem-organizacao" type="text" maxlength="39" spellcheck="false"></label>
-        <div id="nuvem-campos-microsoft" class="linha-campos" hidden>
-          <label>Locatário (tenant ID) <input id="nuvem-locatario" type="text" maxlength="36" spellcheck="false"></label>
-          <label>Aplicativo (client ID) <input id="nuvem-aplicativo" type="text" maxlength="36" spellcheck="false"></label>
-        </div>
-        <label><span id="nuvem-rotulo-segredo">Token de acesso</span> <input id="nuvem-segredo" type="password" maxlength="4096" autocomplete="new-password"></label>
+        <p id="nuvem-nota" class="texto-secao" hidden></p>
+        <div id="nuvem-campos" class="linha-campos"></div>
+        <label id="nuvem-campo-segredo"><span id="nuvem-rotulo-segredo"></span>
+          <textarea id="nuvem-segredo-longo" rows="4" spellcheck="false" hidden></textarea>
+          <input id="nuvem-segredo" type="password" maxlength="4096" autocomplete="new-password">
+        </label>
         <p id="nuvem-erro" class="erro" role="alert" hidden></p>
         <div class="acoes-regra">
           <button id="nuvem-cancelar" type="button" class="botao-discreto">Cancelar</button>

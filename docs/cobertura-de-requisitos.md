@@ -6,8 +6,8 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 
 | Tema | Requisito | Docs | Estado no Roar |
 |---|---|---|---|
-| Coleta | Syslog e protocolos | 4 | Do Wazuh, sem tela. Syslog com TLS a verificar |
-| | Fontes nativas por fabricante | 5 | Do Wazuh, sem tela |
+| Coleta | Syslog e protocolos | 4 | Pronto na tela, por cliente. O syslog do Wazuh não tem TLS |
+| | Fontes nativas por fabricante | 5 | Na tela: GitHub, Microsoft 365, Graph, AWS, Azure e Google Cloud, ainda sem conta real. Webhook e API genérica prontos |
 | | Parser customizado | 4 | Do Wazuh, sem tela |
 | | Cache no coletor | 4 | Do Wazuh, não medido |
 | | Fluxo de rede | 4 | Falta |

@@ -33,7 +33,18 @@ NOME_DE_CABECALHO = re.compile(r"[A-Za-z0-9-]{1,64}")
 CABECALHOS_PROIBIDOS = ("host", "connection", "transfer-encoding", "content-length", "upgrade", "proxy-authorization")
 PASTA_GERENCIADORES = Path("/opt/panthera-roar/gerenciadores")
 PROTOCOLOS = ("tcp", "udp")
-TIPOS_DE_NUVEM = ("github", "office365")
+TIPOS_DE_AVISO = ("slack", "pagerduty", "virustotal", "maltiverse")
+TIPOS_DE_NUVEM = ("github", "office365", "msgraph", "aws", "azure", "gcp", *TIPOS_DE_AVISO)
+NIVEL_PADRAO_DO_AVISO = 10
+PASTA_DE_CREDENCIAIS = "/var/ossec/etc/roar-credenciais"
+CREDENCIAIS_DA_AWS = "/root/.aws/credentials"
+BUCKET_DA_AWS = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+CHAVE_DE_ACESSO_DA_AWS = re.compile(r"[A-Z0-9]{16,128}")
+DOMINIO_DO_AZURE = re.compile(r"[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,5}")
+PROJETO_DO_GOOGLE = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+ASSINATURA_DO_GOOGLE = re.compile(r"[A-Za-z][A-Za-z0-9._~+%-]{2,254}")
+TOKEN_SIMPLES = re.compile(r"[A-Za-z0-9._+=/-]{8,512}")
+RECURSOS_DO_GRAPH = (("security", "alerts_v2"), ("security", "incidents"), ("auditLogs", "signIns"), ("auditLogs", "directoryAudits"))
 ORGANIZACAO_DO_GITHUB = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
 IDENTIFICADOR_MICROSOFT = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 ASSINATURAS_DO_OFFICE365 = ("Audit.AzureActiveDirectory", "Audit.Exchange", "Audit.General", "Audit.SharePoint", "DLP.All")
@@ -66,36 +77,126 @@ def validar_syslog(protocolo, origens):
     return sorted(set(redes))
 
 
+def _campo(campos, nome, padrao, mensagem, minusculo=False):
+    valor = str(campos.get(nome, "")).strip()
+    if not padrao.fullmatch(valor):
+        raise FonteInvalida(mensagem)
+    return valor.lower() if minusculo else valor
+
+
+def _guid(campos, nome, rotulo):
+    return _campo(campos, nome, IDENTIFICADOR_MICROSOFT, f"O identificador do {rotulo} precisa ter o formato de um GUID.", minusculo=True)
+
+
 def validar_nuvem(tipo, campos):
     """Devolve só os campos conhecidos, já conferidos. Nenhum texto livre chega ao XML sem escape."""
     if tipo == "github":
-        organizacao = str(campos.get("organizacao", "")).strip()
-        if not ORGANIZACAO_DO_GITHUB.fullmatch(organizacao):
-            raise FonteInvalida("Informe o nome da organização no GitHub.")
-        return {"organizacao": organizacao}
-    if tipo == "office365":
-        normalizados = {}
-        for campo, rotulo in (("locatario", "locatário (tenant)"), ("aplicativo", "aplicativo (client)")):
-            valor = str(campos.get(campo, "")).strip()
-            if not IDENTIFICADOR_MICROSOFT.fullmatch(valor):
-                raise FonteInvalida(f"O identificador do {rotulo} precisa ter o formato de um GUID.")
-            normalizados[campo] = valor.lower()
-        return normalizados
+        return {"organizacao": _campo(campos, "organizacao", ORGANIZACAO_DO_GITHUB, "Informe o nome da organização no GitHub.")}
+    if tipo in ("office365", "msgraph"):
+        return {"locatario": _guid(campos, "locatario", "locatário (tenant)"), "aplicativo": _guid(campos, "aplicativo", "aplicativo (client)")}
+    if tipo == "aws":
+        return {"bucket": _campo(campos, "bucket", BUCKET_DA_AWS, "Informe o nome do bucket com os registros do CloudTrail."),
+                "chave_de_acesso": _campo(campos, "chave_de_acesso", CHAVE_DE_ACESSO_DA_AWS, "A chave de acesso da AWS tem só letras maiúsculas e números.")}
+    if tipo == "azure":
+        return {"dominio": _campo(campos, "dominio", DOMINIO_DO_AZURE, "Informe o domínio do locatário, como empresa.onmicrosoft.com."),
+                "aplicativo": _guid(campos, "aplicativo", "aplicativo (client)"), "workspace": _guid(campos, "workspace", "workspace")}
+    if tipo == "gcp":
+        return {"projeto": _campo(campos, "projeto", PROJETO_DO_GOOGLE, "Informe o identificador do projeto no Google Cloud."),
+                "assinatura": _campo(campos, "assinatura", ASSINATURA_DO_GOOGLE, "Informe o nome da assinatura do Pub/Sub.")}
+    if tipo in TIPOS_DE_AVISO:
+        try:
+            nivel = int(campos.get("nivel", NIVEL_PADRAO_DO_AVISO))
+        except (TypeError, ValueError):
+            raise FonteInvalida("O nível vai de 0 a 16.")
+        if not 0 <= nivel <= 16:
+            raise FonteInvalida("O nível vai de 0 a 16.")
+        return {"nivel": nivel}
     raise FonteInvalida("Tipo de fonte desconhecido.")
 
 
+def validar_segredo(tipo, segredo):
+    """O que dá para conferir sem chamar o serviço. Uma URL de aviso errada mandaria alertas para outro lugar."""
+    if tipo == "gcp":
+        try:
+            dados = json.loads(segredo)
+        except ValueError:
+            raise FonteInvalida("A credencial do Google Cloud é o arquivo JSON da conta de serviço.")
+        if not isinstance(dados, dict) or dados.get("type") != "service_account":
+            raise FonteInvalida("A credencial do Google Cloud precisa ser de uma conta de serviço.")
+    elif tipo == "slack":
+        if not segredo.startswith("https://hooks.slack.com/") and os.getenv("ROAR_DESTINO_INTERNO") != "1":
+            raise FonteInvalida("O endereço do Slack começa com https://hooks.slack.com/.")
+    elif tipo in ("pagerduty", "virustotal", "maltiverse") and not TOKEN_SIMPLES.fullmatch(segredo):
+        raise FonteInvalida("A chave tem caracteres inesperados.")
+    # Estes viram linhas de um arquivo: uma quebra de linha criaria outra configuração.
+    if tipo in ("aws", "azure") and ("\n" in segredo or "\r" in segredo):
+        raise FonteInvalida("O segredo não pode ter quebra de linha.")
+
+
 def _bloco_de_nuvem(fonte):
-    config, segredo = fonte["config"], escape(fonte["segredo_aberto"])
-    if fonte["tipo"] == "github":
+    config, tipo, identificador = fonte["config"], fonte["tipo"], fonte.get("id", 0)
+    segredo = escape(fonte["segredo_aberto"])
+    if tipo == "github":
         return (f"  <github>\n    <enabled>yes</enabled>\n    <interval>1m</interval>\n    <time_delay>1m</time_delay>\n"
                 f"    <only_future_events>yes</only_future_events>\n    <api_auth>\n      <org_name>{escape(config['organizacao'])}</org_name>\n"
                 f"      <api_token>{segredo}</api_token>\n    </api_auth>\n    <api_parameters>\n      <event_type>all</event_type>\n"
                 f"    </api_parameters>\n  </github>\n")
-    assinaturas = "".join(f"      <subscription>{a}</subscription>\n" for a in ASSINATURAS_DO_OFFICE365)
-    return (f"  <office365>\n    <enabled>yes</enabled>\n    <interval>1m</interval>\n    <only_future_events>yes</only_future_events>\n"
-            f"    <api_auth>\n      <tenant_id>{escape(config['locatario'])}</tenant_id>\n      <client_id>{escape(config['aplicativo'])}</client_id>\n"
-            f"      <client_secret>{segredo}</client_secret>\n      <api_type>commercial</api_type>\n    </api_auth>\n"
-            f"    <subscriptions>\n{assinaturas}    </subscriptions>\n  </office365>\n")
+    if tipo == "office365":
+        assinaturas = "".join(f"      <subscription>{a}</subscription>\n" for a in ASSINATURAS_DO_OFFICE365)
+        return (f"  <office365>\n    <enabled>yes</enabled>\n    <interval>1m</interval>\n    <only_future_events>yes</only_future_events>\n"
+                f"    <api_auth>\n      <tenant_id>{escape(config['locatario'])}</tenant_id>\n      <client_id>{escape(config['aplicativo'])}</client_id>\n"
+                f"      <client_secret>{segredo}</client_secret>\n      <api_type>commercial</api_type>\n    </api_auth>\n"
+                f"    <subscriptions>\n{assinaturas}    </subscriptions>\n  </office365>\n")
+    if tipo == "msgraph":
+        recursos = "".join(f"    <resource>\n      <name>{n}</name>\n      <relationship>{r}</relationship>\n    </resource>\n" for n, r in RECURSOS_DO_GRAPH)
+        return (f"  <ms-graph>\n    <enabled>yes</enabled>\n    <only_future_events>yes</only_future_events>\n    <interval>5m</interval>\n"
+                f"    <version>v1.0</version>\n    <api_auth>\n      <client_id>{escape(config['aplicativo'])}</client_id>\n"
+                f"      <tenant_id>{escape(config['locatario'])}</tenant_id>\n      <secret_value>{segredo}</secret_value>\n"
+                f"      <api_type>global</api_type>\n    </api_auth>\n{recursos}  </ms-graph>\n")
+    if tipo == "aws":
+        return (f'  <wodle name="aws-s3">\n    <disabled>no</disabled>\n    <interval>10m</interval>\n    <run_on_start>yes</run_on_start>\n'
+                f'    <skip_on_error>yes</skip_on_error>\n    <bucket type="cloudtrail">\n      <name>{escape(config["bucket"])}</name>\n'
+                f"      <aws_profile>roar-{identificador}</aws_profile>\n    </bucket>\n  </wodle>\n")
+    if tipo == "azure":
+        return (f'  <wodle name="azure-logs">\n    <disabled>no</disabled>\n    <interval>10m</interval>\n    <run_on_start>yes</run_on_start>\n'
+                f"    <log_analytics>\n      <auth_path>{PASTA_DE_CREDENCIAIS}/azure-{identificador}</auth_path>\n"
+                f"      <tenantdomain>{escape(config['dominio'])}</tenantdomain>\n      <request>\n        <tag>azure-activity</tag>\n"
+                f"        <query>AzureActivity</query>\n        <workspace>{escape(config['workspace'])}</workspace>\n"
+                f"        <time_offset>1h</time_offset>\n      </request>\n    </log_analytics>\n  </wodle>\n")
+    if tipo == "gcp":
+        return (f"  <gcp-pubsub>\n    <enabled>yes</enabled>\n    <pull_on_start>yes</pull_on_start>\n    <interval>5m</interval>\n"
+                f"    <project_id>{escape(config['projeto'])}</project_id>\n    <subscription_name>{escape(config['assinatura'])}</subscription_name>\n"
+                f"    <credentials_file>{PASTA_DE_CREDENCIAIS}/gcp-{identificador}.json</credentials_file>\n  </gcp-pubsub>\n")
+    if tipo == "slack":
+        return (f"  <integration>\n    <name>slack</name>\n    <hook_url>{segredo}</hook_url>\n    <level>{int(config['nivel'])}</level>\n"
+                f"    <alert_format>json</alert_format>\n  </integration>\n")
+    if tipo == "pagerduty":
+        return (f"  <integration>\n    <name>pagerduty</name>\n    <api_key>{segredo}</api_key>\n    <level>{int(config['nivel'])}</level>\n"
+                f"    <alert_format>json</alert_format>\n  </integration>\n")
+    if tipo == "maltiverse":
+        return (f"  <integration>\n    <name>maltiverse</name>\n    <hook_url>https://api.maltiverse.com</hook_url>\n    <api_key>{segredo}</api_key>\n"
+                f"    <level>{int(config['nivel'])}</level>\n    <alert_format>json</alert_format>\n  </integration>\n")
+    # Só eventos de integridade de arquivo: é o hash que sai, nunca o arquivo.
+    return (f"  <integration>\n    <name>virustotal</name>\n    <api_key>{segredo}</api_key>\n    <group>syscheck</group>\n"
+            f"    <alert_format>json</alert_format>\n  </integration>\n")
+
+
+def arquivos_de_credenciais(fontes):
+    """Alguns módulos só leem a credencial de um arquivo: caminho no gerenciador e conteúdo."""
+    arquivos, perfis = {}, []
+    for fonte in sorted(fontes, key=lambda f: f.get("id", 0)):
+        identificador = fonte.get("id", 0)
+        if fonte["tipo"] == "azure":
+            arquivos[f"{PASTA_DE_CREDENCIAIS}/azure-{identificador}"] = (
+                f"application_id = {fonte['config']['aplicativo']}\napplication_key = {fonte['segredo_aberto']}\n")
+        elif fonte["tipo"] == "gcp":
+            arquivos[f"{PASTA_DE_CREDENCIAIS}/gcp-{identificador}.json"] = fonte["segredo_aberto"]
+        elif fonte["tipo"] == "aws":
+            perfis.append(f"[roar-{identificador}]\naws_access_key_id = {fonte['config']['chave_de_acesso']}\n"
+                          f"aws_secret_access_key = {fonte['segredo_aberto']}\n")
+    if perfis:
+        arquivos[CREDENCIAIS_DA_AWS] = "\n".join(perfis)
+    return arquivos
 
 
 def fragmento_de_configuracao(fontes):
@@ -150,11 +251,12 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     marca = pasta / "fontes.aplicadas"
     _abrir_segredos(banco, cliente, em_uso)
     fragmento = fragmento_de_configuracao(em_uso)
-    resumo = hashlib.sha256(fragmento.encode()).hexdigest()
+    arquivos = arquivos_de_credenciais(em_uso)
+    resumo = hashlib.sha256((fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento).encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
     if resumo == anterior and not pendentes:
         return 0
-    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(gerenciador_id, fragmento)
+    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(gerenciador_id, fragmento, arquivos)
     if ok:
         marca.write_text(resumo)
     with banco.con.transaction():

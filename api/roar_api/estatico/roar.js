@@ -1464,7 +1464,10 @@ const SAUDE_DA_FONTE = {
   recebendo: "● Recebendo", parada: "▲ Parada", nunca_recebeu: "○ Nada recebido ainda", desconhecida: "? Não foi possível conferir",
 };
 const ESTADOS_DE_FONTE = { pendente: "Aplicando...", recusada: "Recusada", ativa: "Ativa" };
-const TIPOS_DE_FONTE = { syslog: "Syslog", github: "GitHub", office365: "Microsoft 365", webhook: "Webhook", api: "API" };
+const TIPOS_DE_FONTE = {
+  syslog: "Syslog", webhook: "Webhook", api: "API", github: "GitHub", office365: "Microsoft 365", msgraph: "Microsoft Graph", aws: "AWS CloudTrail",
+  azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", slack: "Aviso no Slack", pagerduty: "Aviso no PagerDuty", maltiverse: "Consulta no Maltiverse", virustotal: "Consulta no VirusTotal",
+};
 
 async function carregarFontes() {
   const r = await pedir("/api/fontes");
@@ -1482,7 +1485,8 @@ async function carregarFontes() {
         await carregarFontes();
       }));
       const detalhe = f.tipo === "syslog" ? `${f.config.protocolo.toUpperCase()}: ${f.config.origens.join(", ")}`
-        : f.config.organizacao ?? f.config.locatario ?? f.config.endereco ?? (f.tipo === "webhook" ? "Token guardado" : "-");
+        : f.config.organizacao ?? f.config.locatario ?? f.config.endereco ?? f.config.bucket ?? f.config.dominio ?? f.config.projeto
+          ?? (f.config.nivel !== undefined ? `A partir do nível ${f.config.nivel}` : f.tipo === "webhook" ? "Token guardado" : "-");
       return [el("td", null, f.nome), el("td", null, TIPOS_DE_FONTE[f.tipo] ?? f.tipo), el("td", "mono ip", detalhe),
         el("td", null, f.mensagem ?? ESTADOS_DE_FONTE[f.estado] ?? f.estado), el("td", null, SAUDE_DA_FONTE[f.saude] ?? "-"),
         el("td", null, quando(f.ultimo_dado)), acoes];
@@ -1518,12 +1522,49 @@ async function mostrarInstalacao() {
   area.hidden = false;
 }
 
+const CAMPOS_MICROSOFT = [{ id: "locatario", rotulo: "Locatário (tenant ID)" }, { id: "aplicativo", rotulo: "Aplicativo (client ID)" }];
+const CAMPO_NIVEL = { id: "nivel", rotulo: "Avisar a partir do nível", valor: "10" };
+const CONECTORES = {
+  github: { rotulo: "GitHub", segredo: "Token de acesso", campos: [{ id: "organizacao", rotulo: "Organização" }] },
+  office365: { rotulo: "Microsoft 365", segredo: "Segredo do aplicativo", campos: CAMPOS_MICROSOFT },
+  msgraph: { rotulo: "Microsoft Graph", segredo: "Segredo do aplicativo", campos: CAMPOS_MICROSOFT },
+  aws: { rotulo: "AWS CloudTrail", segredo: "Chave secreta", campos: [{ id: "bucket", rotulo: "Bucket dos registros" }, { id: "chave_de_acesso", rotulo: "Chave de acesso" }] },
+  azure: { rotulo: "Azure Log Analytics", segredo: "Segredo do aplicativo",
+    campos: [{ id: "dominio", rotulo: "Domínio do locatário" }, { id: "aplicativo", rotulo: "Aplicativo (client ID)" }, { id: "workspace", rotulo: "Workspace" }] },
+  gcp: { rotulo: "Google Cloud Pub/Sub", segredo: "Arquivo JSON da conta de serviço", longo: true,
+    campos: [{ id: "projeto", rotulo: "Projeto" }, { id: "assinatura", rotulo: "Assinatura" }] },
+  slack: { rotulo: "Aviso no Slack", segredo: "Endereço do webhook do Slack", campos: [CAMPO_NIVEL],
+    nota: "Os alertas a partir deste nível saem do ambiente para o Slack, com os dados que trazem." },
+  pagerduty: { rotulo: "Aviso no PagerDuty", segredo: "Chave da integração", campos: [CAMPO_NIVEL],
+    nota: "Os alertas a partir deste nível saem do ambiente para o PagerDuty, com os dados que trazem." },
+  maltiverse: { rotulo: "Consulta no Maltiverse", segredo: "Chave da API", campos: [CAMPO_NIVEL],
+    nota: "Endereços e hashes dos alertas são enviados para consulta em um serviço externo." },
+  virustotal: { rotulo: "Consulta no VirusTotal", segredo: "Chave da API", campos: [],
+    nota: "O hash de cada arquivo alterado é enviado ao VirusTotal, nunca o arquivo. Na chave gratuita valem os termos e o limite deles." },
+};
+
 function ajustarFormularioDeNuvem() {
-  const microsoft = $("nuvem-tipo").value === "office365";
-  $("nuvem-campo-organizacao").hidden = microsoft;
-  $("nuvem-campos-microsoft").hidden = !microsoft;
-  $("nuvem-rotulo-segredo").textContent = microsoft ? "Segredo do aplicativo" : "Token de acesso";
+  const conector = CONECTORES[$("nuvem-tipo").value];
+  $("nuvem-rotulo-segredo").textContent = conector.segredo;
+  $("nuvem-nota").textContent = conector.nota ?? "";
+  $("nuvem-nota").hidden = !conector.nota;
+  $("nuvem-segredo-longo").hidden = !conector.longo;
+  $("nuvem-segredo").hidden = Boolean(conector.longo);
+  $("nuvem-campos").replaceChildren(...conector.campos.map((c) => {
+    const entrada = el("input");
+    entrada.type = "text";
+    entrada.spellcheck = false;
+    entrada.dataset.campo = c.id;
+    entrada.value = c.valor ?? "";
+    return campoDoEditor(c.rotulo, entrada);
+  }));
 }
+
+$("nuvem-tipo").replaceChildren(...Object.entries(CONECTORES).map(([tipo, c]) => {
+  const opcao = el("option", null, c.rotulo);
+  opcao.value = tipo;
+  return opcao;
+}));
 
 $("nova-nuvem").addEventListener("click", () => {
   $("form-nuvem").hidden = false;
@@ -1540,19 +1581,18 @@ $("form-nuvem").addEventListener("submit", async (evento) => {
   const erro = $("nuvem-erro");
   erro.hidden = true;
   const nome = $("nuvem-nome").value.trim();
-  if (!nome || !$("nuvem-segredo").value) {
+  const tipo = $("nuvem-tipo").value;
+  const segredo = CONECTORES[tipo].longo ? $("nuvem-segredo-longo").value.trim() : $("nuvem-segredo").value;
+  if (!nome || !segredo) {
     erro.textContent = "Preencha o nome e a credencial.";
     erro.hidden = false;
     return;
   }
-  const tipo = $("nuvem-tipo").value;
-  const campos = tipo === "office365"
-    ? { locatario: $("nuvem-locatario").value, aplicativo: $("nuvem-aplicativo").value }
-    : { organizacao: $("nuvem-organizacao").value };
+  const campos = Object.fromEntries([...document.querySelectorAll("#nuvem-campos input")].map((i) => [i.dataset.campo, i.value]));
   const r = await pedir("/api/fontes/nuvem", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nome, tipo, campos, segredo: $("nuvem-segredo").value }),
+    body: JSON.stringify({ nome, tipo, campos, segredo }),
   });
   if (!r.ok) {
     erro.textContent = await detalheDoErro(r, "Confira os campos.");
@@ -1562,6 +1602,7 @@ $("form-nuvem").addEventListener("submit", async (evento) => {
   // A credencial não fica nem no formulário depois de enviada.
   $("form-nuvem").reset();
   $("form-nuvem").hidden = true;
+  ajustarFormularioDeNuvem();
   await carregarFontes();
 });
 
@@ -1671,7 +1712,7 @@ $("form-fonte").addEventListener("submit", async (evento) => {
 
 // ------------------------------------------------------------------ automação
 
-const NOMES_DE_ACAO = { bloquear_ip: "Bloquear o endereço", webhook: "Avisar um endereço web", registrar: "Registrar uma nota" };
+const NOMES_DE_ACAO = { bloquear_ip: "Bloquear o endereço", desativar_conta: "Desativar a conta", webhook: "Avisar um endereço web", registrar: "Registrar uma nota" };
 const ESTADOS_DE_EXECUCAO = {
   nova: "Iniciando", executando: "Executando", aguardando_aprovacao: "Aguardando decisão",
   concluida: "Concluída", falhou: "Falhou", recusada: "Recusada",
@@ -1688,6 +1729,7 @@ const CONDICOES = [
 const SE_EXTERNO = { campo: "alvo_externo", op: "igual", valor: true };
 const NOVOS_BLOCOS = {
   bloquear_ip: () => ({ tipo: "acao", acao: "bloquear_ip", parametros: { duracao_minutos: 60, protegidos: [] } }),
+  desativar_conta: () => ({ tipo: "acao", acao: "desativar_conta", parametros: { duracao_minutos: 60, protegidas: [] } }),
   webhook: () => ({ tipo: "acao", acao: "webhook", parametros: { url: "" } }),
   registrar: () => ({ tipo: "acao", acao: "registrar", parametros: { texto: "" } }),
   aprovacao: () => ({ tipo: "aprovacao" }),
@@ -1695,7 +1737,7 @@ const NOVOS_BLOCOS = {
   paralelo: () => ({ tipo: "paralelo", ramos: [[], []] }),
 };
 const ROTULOS_DE_BLOCO = {
-  bloquear_ip: "Bloquear o endereço no ativo", webhook: "Avisar um endereço web", registrar: "Registrar uma nota",
+  bloquear_ip: "Bloquear o endereço no ativo", desativar_conta: "Desativar a conta no ativo", webhook: "Avisar um endereço web", registrar: "Registrar uma nota",
   aprovacao: "Pedir aprovação", se: "Se... senão", paralelo: "Fazer ao mesmo tempo",
 };
 const MODELOS = [
@@ -1760,6 +1802,7 @@ function descreverResultado(x) {
   for (const p of Array.isArray(x.resultado) ? x.resultado : []) {
     if (p.erro) partes.push(`${NOMES_DE_ACAO[p.acao] ?? p.acao}: ${p.erro}`);
     else if (p.acao === "bloquear_ip") partes.push(x.bloqueio_confirmado ? "Bloqueio confirmado pelo ativo" : "Bloqueio enviado, sem confirmação do ativo ainda");
+    else if (p.acao === "desativar_conta") partes.push(`Desativação da conta ${p.resultado?.enviado ?? ""} enviada ao ativo, sem confirmação`);
     else if (p.acao) partes.push(`${NOMES_DE_ACAO[p.acao] ?? p.acao}: feito`);
     else if (p.aprovacao) partes.push({ aprovada: "Aprovada", recusada: "Recusada", expirada: "Ninguém decidiu a tempo" }[p.aprovacao] ?? p.aprovacao);
   }
@@ -1874,7 +1917,19 @@ function corpoDoBloco(bloco) {
     area.addEventListener("input", () => { bloco.parametros.protegidos = area.value.split("\n").map((l) => l.trim()).filter(Boolean); });
     corpo.append(campoDoEditor("Desbloquear sozinho depois de", selecao([["60", "1 hora"], ["1440", "1 dia"], ["10080", "7 dias"]],
       String(bloco.parametros.duracao_minutos ?? 60), (v) => { bloco.parametros.duracao_minutos = Number(v); })),
+    campoDoEditor("Como bloquear", selecao([["firewall", "No firewall do ativo"], ["rota", "Com uma rota nula"], ["hosts", "No arquivo de hosts (só Linux)"]],
+      bloco.parametros.metodo ?? "firewall", (v) => { bloco.parametros.metodo = v; })),
     campoDoEditor("Nunca bloquear, um por linha", area));
+  } else if (bloco.acao === "desativar_conta") {
+    const area = el("textarea");
+    area.rows = 2;
+    area.spellcheck = false;
+    area.value = (bloco.parametros.protegidas ?? []).join("\n");
+    area.addEventListener("input", () => { bloco.parametros.protegidas = area.value.split("\n").map((l) => l.trim()).filter(Boolean); });
+    corpo.append(el("p", "texto-secao", "Precisa de um bloco de aprovação antes. Por enquanto só em ativos Linux, e nunca em contas como root."),
+      campoDoEditor("Reativar sozinha depois de", selecao([["60", "1 hora"], ["1440", "1 dia"], ["10080", "7 dias"]],
+        String(bloco.parametros.duracao_minutos ?? 60), (v) => { bloco.parametros.duracao_minutos = Number(v); })),
+      campoDoEditor("Nunca desativar, uma conta por linha", area));
   } else if (bloco.acao === "webhook") {
     corpo.append(campoDoEditor("Endereço web completo, começando por https", entrada(bloco.parametros.url, (v) => { bloco.parametros.url = v.trim(); }, { type: "url" })));
   } else if (bloco.acao === "registrar") {
