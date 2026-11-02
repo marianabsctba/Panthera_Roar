@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import cofre
 from .vulnerabilidades import Achado, Resultado, agendar_vencidas, concluir_varredura, falhar_varredura
 
 log = logging.getLogger("roar.varredura")
@@ -28,7 +30,10 @@ IMAGENS = {
 }
 PASTA = Path(os.getenv("ROAR_VARREDURA_PASTA", "/opt/panthera-roar/varredura"))
 PASTA_DOS_SENSORES = Path(os.getenv("ROAR_SENSORES_PASTA", "/opt/panthera-roar/sensores"))
-TEMPO_LIMITE = 3600
+TEMPO_LIMITE = 3600 * 6
+SEGUNDOS_ENTRE_CONSULTAS = int(os.getenv("ROAR_GREENBONE_CONSULTA", "60"))
+SOCKET_DO_GREENBONE = os.getenv("ROAR_GREENBONE_SOCKET", "/var/lib/docker/volumes/roar-greenbone_gvmd_socket_vol/_data/gvmd.sock")
+MODELO_INTRUSIVO = "Roar: intrusivo"
 SEGUNDOS_ENTRE_CICLOS = 30
 SEVERIDADE_NUCLEI = {"critical": "critica", "high": "alta", "medium": "media", "low": "baixa", "info": "informativa", "unknown": "informativa"}
 SEVERIDADE_ZAP = {"3": "alta", "2": "media", "1": "baixa", "0": "informativa"}
@@ -152,6 +157,150 @@ def ler_zeek(pasta):
     return list(achados.values())
 
 
+def _relatorio_interno(raiz):
+    """O relatório vem dentro de outro relatório."""
+    externo = raiz.find("report")
+    interno = externo.find("report") if externo is not None else None
+    return interno if interno is not None else externo
+
+
+def ler_greenbone(raiz):
+    """Devolve (achados, hosts que responderam, hosts em que a credencial entrou)."""
+    relatorio = _relatorio_interno(raiz)
+    respondendo, autenticados, nomes = [], set(), {}
+    for h in relatorio.findall("host"):
+        ip = h.findtext("ip")
+        if not ip:
+            continue
+        respondendo.append(ip)
+        for detalhe in h.findall("detail"):
+            nome = detalhe.findtext("name") or ""
+            if nome in ("Auth-SSH-Success", "Auth-SMB-Success", "Auth-SNMP-Success"):
+                autenticados.add(ip)
+            elif nome == "hostname":
+                nomes[ip] = detalhe.findtext("value")
+    achados = []
+    for r in relatorio.findall("results/result"):
+        nvt = r.find("nvt")
+        if nvt is None:
+            continue
+        host = (r.findtext("host") or "").strip()
+        solucao = nvt.find("solution")
+        achados.append(Achado(
+            host=host,
+            regra=str(nvt.get("oid")),
+            titulo=str(r.findtext("name") or nvt.findtext("name")),
+            cvss=float(r.findtext("severity") or 0),
+            cves=[x.get("id") for x in nvt.findall("refs/ref") if x.get("type") == "cve" and x.get("id")],
+            porta=str(r.findtext("port") or ""),
+            evidencia=(r.findtext("description") or "").strip(),
+            solucao=(solucao.text or "").strip() if solucao is not None else "",
+            nome_do_host=nomes.get(host),
+        ))
+    return achados, respondendo, autenticados
+
+
+class _Greenbone:
+    """Fala com o scanner pelo socket: a tela própria dele nem fica exposta."""
+
+    def __init__(self):
+        from gvm.connections import UnixSocketConnection
+        from gvm.protocols.gmp import Gmp
+        from gvm.transforms import EtreeCheckCommandTransform
+
+        from .ciclo import ler_env
+
+        if not Path(SOCKET_DO_GREENBONE).exists():
+            raise FerramentaFalhou("O scanner de rede ainda não está ligado neste servidor.")
+        self._senha = ler_env(os.getenv("ROAR_ENV", "/opt/panthera-roar/.env")).get("GREENBONE_SENHA")
+        if not self._senha:
+            raise FerramentaFalhou("O scanner de rede ainda não está ligado neste servidor.")
+        self._gmp = Gmp(UnixSocketConnection(path=SOCKET_DO_GREENBONE, timeout=600), transform=EtreeCheckCommandTransform())
+
+    def __enter__(self):
+        g = self._gmp.__enter__()
+        g.authenticate("admin", self._senha)
+        return g
+
+    def __exit__(self, *erro):
+        return self._gmp.__exit__(*erro)
+
+
+def _por_nome(itens, tag, nome):
+    return next(i.get("id") for i in itens.findall(tag) if i.findtext("name") == nome)
+
+
+def _modelo_do_greenbone(g, intrusiva):
+    base = _por_nome(g.get_scan_configs(), "config", "Full and fast")
+    if not intrusiva:
+        return base
+    # "Full and fast" não tenta explorar. Modo intrusivo é uma cópia com os testes seguros desligados.
+    for c in g.get_scan_configs().findall("config"):
+        if c.findtext("name") == MODELO_INTRUSIVO:
+            return c.get("id")
+    novo = g.clone_scan_config(base).get("id")
+    g.modify_scan_config_set_name(novo, MODELO_INTRUSIVO)
+    g.modify_scan_config_set_scanner_preference(novo, "safe_checks", "no")
+    return novo
+
+
+def rodar_greenbone(alvos, intrusiva, todas_portas, credencial, tempo=TEMPO_LIMITE):
+    marca = f"roar-{secrets.token_hex(6)}"
+    criados = {}
+    try:
+        with _Greenbone() as g:
+            lista = _por_nome(g.get_port_lists(), "port_list", "All TCP and Nmap top 100 UDP" if todas_portas else "All IANA assigned TCP")
+            extras = {}
+            if credencial:
+                tipo = credencial["tipo"]
+                if tipo == "snmp":
+                    criados["credencial"] = g.create_credential(name=marca, credential_type="snmp", community=credencial["senha"], auth_algorithm="sha1").get("id")
+                    extras["snmp_credential_id"] = criados["credencial"]
+                else:
+                    criados["credencial"] = g.create_credential(name=marca, credential_type="up", login=credencial["usuario"], password=credencial["senha"]).get("id")
+                    if tipo == "ssh":
+                        extras.update(ssh_credential_id=criados["credencial"], ssh_credential_port=22)
+                    else:
+                        extras["smb_credential_id"] = criados["credencial"]
+            criados["alvo"] = g.create_target(name=marca, hosts=list(alvos), port_list_id=lista, **extras).get("id")
+            criados["tarefa"] = g.create_task(name=marca, config_id=_modelo_do_greenbone(g, intrusiva), target_id=criados["alvo"], scanner_id=_por_nome(g.get_scanners(), "scanner", "OpenVAS Default")).get("id")
+            relatorio = g.start_task(criados["tarefa"]).findtext("report_id")
+        limite = time.monotonic() + tempo
+        while True:
+            time.sleep(SEGUNDOS_ENTRE_CONSULTAS)
+            with _Greenbone() as g:
+                estado = g.get_task(criados["tarefa"]).find("task").findtext("status")
+                if estado == "Done":
+                    raiz = g.get_report(relatorio, filter_string="apply_overrides=0 levels=hml rows=-1 first=1 min_qod=70", details=True, ignore_pagination=True)
+                    break
+                if estado in ("Stopped", "Interrupted") or time.monotonic() > limite:
+                    if estado not in ("Stopped", "Interrupted"):
+                        g.stop_task(criados["tarefa"])
+                    # Varredura pela metade não prova nada: não entra, para não fechar achado por engano.
+                    raise FerramentaFalhou("A varredura de rede foi interrompida ou passou do tempo limite.")
+        achados, respondendo, autenticados = ler_greenbone(raiz)
+        if not respondendo:
+            raise FerramentaFalhou("Nenhum dos endereços respondeu à varredura.")
+        return Resultado("rede", respondendo, achados, autenticada=bool(credencial) and set(respondendo) <= autenticados, intrusiva=intrusiva, todas_portas=todas_portas)
+    except FerramentaFalhou:
+        raise
+    except Exception as erro:
+        log.error("greenbone: %s", type(erro).__name__)
+        raise FerramentaFalhou("O scanner de rede não conseguiu fazer a varredura.")
+    finally:
+        # A senha do cliente não fica guardada no scanner depois de varrer.
+        try:
+            with _Greenbone() as g:
+                if "tarefa" in criados:
+                    g.delete_task(criados["tarefa"], ultimate=True)
+                if "alvo" in criados:
+                    g.delete_target(criados["alvo"], ultimate=True)
+                if "credencial" in criados:
+                    g.delete_credential(criados["credencial"], ultimate=True)
+        except Exception:
+            log.error("não foi possível limpar a varredura %s do scanner", marca)
+
+
 # ------------------------------------------------------------------ execução
 
 def _rede():
@@ -223,7 +372,7 @@ def rodar_trivy(imagem):
     return ler_trivy(r.stdout, imagem)
 
 
-def varrer(ferramenta, alvos, intrusiva, todas_portas):
+def varrer(ferramenta, alvos, intrusiva, todas_portas, credencial=None):
     """Devolve o Resultado. Quem não respondeu fica de fora, e por isso não tem nada fechado por engano."""
     if ferramenta == "web":
         achados, respondendo = [], []
@@ -237,7 +386,9 @@ def varrer(ferramenta, alvos, intrusiva, todas_portas):
         for imagem in alvos:
             achados += rodar_trivy(imagem)
         return Resultado("conteiner", list(alvos), achados, autenticada=True)
-    raise FerramentaFalhou({"rede": "O scanner de rede ainda não está ligado neste servidor.", "nuvem": "A análise de nuvem ainda não está ligada neste servidor."}.get(ferramenta, "Tipo de varredura desconhecido."))
+    if ferramenta == "rede":
+        return rodar_greenbone(alvos, intrusiva, todas_portas, credencial)
+    raise FerramentaFalhou({"nuvem": "A análise de nuvem ainda não está ligada neste servidor."}.get(ferramenta, "Tipo de varredura desconhecido."))
 
 
 def _reservar(banco, cliente):
@@ -249,16 +400,29 @@ def _reservar(banco, cliente):
                FROM vuln_alvos a, vuln_modelos m
                WHERE v.id = (SELECT id FROM vuln_varreduras WHERE estado = 'pendente' AND cliente_id = %s ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
                  AND a.id = v.alvo_id AND m.id = v.modelo_id
-               RETURNING v.id, a.hosts, m.ferramenta, m.intrusiva, m.todas_portas""", (cliente,)).fetchone()
+               RETURNING v.id, a.hosts, m.ferramenta, m.intrusiva, m.todas_portas, a.credencial_tipo, a.credencial_usuario, a.credencial_segredo""", (cliente,)).fetchone()
+
+
+def _credencial_do_alvo(banco, cliente, tipo, usuario, segredo):
+    """A senha só é aberta na hora de varrer, e só neste serviço."""
+    if not segredo:
+        return None
+    with banco.con.transaction():
+        banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+        selado = banco.con.execute("SELECT selado FROM segredos WHERE nome = %s", (segredo,)).fetchone()
+    if not selado:
+        raise FerramentaFalhou("A credencial deste alvo não foi encontrada: cadastre o alvo de novo.")
+    return {"tipo": tipo, "usuario": usuario, "senha": cofre.abrir(cofre.ler_privada(), cliente, segredo, bytes(selado[0]))}
 
 
 def processar_cliente(banco, cliente, varrer_com=varrer):
     agendar_vencidas(banco, cliente)
     feitas = 0
     while (pedido := _reservar(banco, cliente)) is not None:
-        varredura, alvos, ferramenta, intrusiva, todas_portas = pedido
+        varredura, alvos, ferramenta, intrusiva, todas_portas, tipo, usuario, segredo = pedido
         try:
-            concluir_varredura(banco, cliente, varredura, varrer_com(ferramenta, alvos, intrusiva, todas_portas))
+            credencial = _credencial_do_alvo(banco, cliente, tipo, usuario, segredo)
+            concluir_varredura(banco, cliente, varredura, varrer_com(ferramenta, alvos, intrusiva, todas_portas, credencial))
         except FerramentaFalhou as erro:
             falhar_varredura(banco, cliente, varredura, str(erro))
         except Exception:
@@ -288,6 +452,12 @@ def recuperar_interrompidas(banco, clientes):
             banco.con.execute("UPDATE vuln_varreduras SET estado = 'falhou', terminada_em = now(), mensagem = 'O serviço de varredura foi reiniciado no meio.' WHERE estado = 'em_andamento'")
 
 
+def _clientes(banco):
+    """Todos, e não só quem tem gerenciador: quem instala só vulnerabilidades não tem."""
+    with banco.con.transaction():
+        return [c for (c,) in banco.con.execute("SELECT id FROM clientes ORDER BY id").fetchall()]
+
+
 def main():
     from .ciclo import conexoes
 
@@ -298,10 +468,9 @@ def main():
     _, banco, _ = conexoes()
     if not shutil.which("docker"):
         log.warning("docker não encontrado: as varreduras vão falhar com aviso na tela")
-    clientes = sorted({c for _, c in banco.gerenciadores()})
-    recuperar_interrompidas(banco, clientes)
+    recuperar_interrompidas(banco, _clientes(banco))
     while True:
-        for cliente in sorted({c for _, c in banco.gerenciadores()}):
+        for cliente in _clientes(banco):
             try:
                 processar_cliente(banco, cliente)
                 sensor = PASTA_DOS_SENSORES / str(cliente)

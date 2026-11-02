@@ -2,4 +2,5 @@ psycopg[binary]>=3.2,<3.3
 requests
 pysigma>=1,<2
 pyyaml
-cryptography>=43,<47
+cryptography>=50,<53
+python-gvm>=26,<27

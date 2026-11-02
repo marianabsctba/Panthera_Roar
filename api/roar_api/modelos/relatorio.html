@@ -36,8 +36,8 @@
   .sumario ol { margin: 0; padding: 0; list-style: none; }
   .sumario li { margin-bottom: 1.8mm; }
   .sumario li.sub { margin-left: 6mm; color: #555; font-size: 8.8pt; }
-  .sumario a { display: flex; color: inherit; text-decoration: none; }
-  .sumario a::after { content: target-counter(attr(href), page); margin-left: auto; padding-left: 3mm; }
+  .sumario a { display: block; color: inherit; text-decoration: none; }
+  .sumario a::after { content: leader(dotted) target-counter(attr(href), page); }
   .numeros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2.5mm; margin: 3mm 0; }
   .numero { padding: 3mm; background: #f7f7f7; border-left: 3px solid #ff1fa8; }
   .numero b { display: block; font-size: 15pt; line-height: 1.2; }

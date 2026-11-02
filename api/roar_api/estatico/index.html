@@ -46,7 +46,7 @@
 
     <p id="aviso-integridade" class="erro aviso-integridade" role="alert" hidden></p>
 
-    <section class="resumo" aria-label="Resumo">
+    <section class="resumo" aria-label="Resumo" data-modulo="siem">
       <div class="numero"><b id="n-criticos">0</b><span>riscos críticos</span></div>
       <div class="numero"><b id="n-altos">0</b><span>riscos altos</span></div>
       <div class="numero"><b id="n-grupos">0</b><span>grupos de alertas</span></div>
@@ -54,20 +54,21 @@
     </section>
 
     <nav class="navegacao" aria-label="Seções">
-      <button type="button" data-vista="panorama" aria-current="page">Panorama</button>
-      <button type="button" data-vista="fila">Fila</button>
-      <button type="button" data-vista="eventos">Eventos</button>
-      <button type="button" data-vista="logs">Logs brutos</button>
-      <button type="button" data-vista="ataques">Ataque e defesa</button>
-      <button type="button" data-vista="vulnerabilidades">Vulnerabilidades</button>
-      <button type="button" data-vista="fontes">Fontes de dados</button>
-      <button type="button" data-vista="ativos">Ativos</button>
-      <button type="button" data-vista="arquivos">Integridade</button>
-      <button type="button" data-vista="prova">Prova e evidência</button>
-      <button type="button" data-vista="normas">Normas</button>
-      <button type="button" data-vista="regras">Regras</button>
-      <button type="button" data-vista="relatorios">Relatórios</button>
-      <button type="button" data-vista="automacao">Automação</button>
+      <button type="button" data-vista="panorama" data-modulo="siem" aria-current="page">Panorama</button>
+      <button type="button" data-vista="fila" data-modulo="siem">Fila</button>
+      <button type="button" data-vista="eventos" data-modulo="siem">Eventos</button>
+      <button type="button" data-vista="logs" data-modulo="siem">Logs brutos</button>
+      <button type="button" data-vista="ataques" data-modulo="siem">Ataque e defesa</button>
+      <button type="button" data-vista="vulnerabilidades" data-modulo="vulnerabilidades">Vulnerabilidades</button>
+      <button type="button" data-vista="fontes" data-modulo="siem">Fontes de dados</button>
+      <button type="button" data-vista="ativos" data-modulo="siem">Ativos</button>
+      <button type="button" data-vista="arquivos" data-modulo="siem">Integridade</button>
+      <button type="button" data-vista="inteligencia" data-modulo="siem">Inteligência</button>
+      <button type="button" data-vista="prova" data-modulo="siem">Prova e evidência</button>
+      <button type="button" data-vista="normas" data-modulo="siem">Normas</button>
+      <button type="button" data-vista="regras" data-modulo="siem">Regras</button>
+      <button type="button" data-vista="relatorios" data-modulo="siem">Relatórios</button>
+      <button type="button" data-vista="automacao" data-modulo="siem">Automação</button>
       <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
       <button type="button" data-vista="auditoria" data-permissao="ver_auditoria">Auditoria</button>
       <button type="button" data-vista="ajuda">Ajuda</button>
@@ -96,6 +97,37 @@
       </div>
       <div id="tabela-auditoria" class="tabela-rolagem"></div>
       <button id="mais-auditoria" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
+
+    <section id="vista-inteligencia" class="pagina" aria-label="Inteligência" hidden>
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Fontes de inteligência</h2>
+        <button id="nova-fonte-intel" type="button" class="botao-primario" data-permissao="gerir_fontes">Nova fonte</button>
+      </div>
+      <p class="texto-secao">Opcional. Os indicadores vêm para o Roar e são comparados com os eventos, inclusive os antigos. Nada volta para a fonte, e nada é bloqueado sozinho.</p>
+      <form id="form-intel" class="formulario-regra" hidden novalidate autocomplete="off">
+        <div class="linha-campos">
+          <label>Nome <input id="intel-nome" type="text" maxlength="120"></label>
+          <label>Tipo <select id="intel-tipo"><option value="misp">MISP</option><option value="taxii">TAXII 2.1</option></select></label>
+          <label>Buscar a cada (minutos) <input id="intel-minutos" type="number" min="5" max="10080" value="60"></label>
+        </div>
+        <label>Endereço completo (no TAXII, a raiz da API) <input id="intel-endereco" type="text" spellcheck="false"></label>
+        <label id="intel-rotulo-colecao" hidden>Identificador da coleção <input id="intel-colecao" type="text" spellcheck="false"></label>
+        <label>Credencial (no MISP, a chave de acesso; no TAXII, o valor do cabeçalho Authorization) <input id="intel-credencial" type="password" autocomplete="new-password"></label>
+        <p class="texto-secao">A credencial fica cifrada e não volta para a tela. Crie uma conta só com leitura.</p>
+        <p id="intel-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="intel-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Criar</button>
+        </div>
+      </form>
+      <div id="tabela-intel-fontes" class="tabela-rolagem"></div>
+      <h2 class="titulo-secao">Eventos que bateram com um indicador</h2>
+      <form id="form-intel-busca" class="filtros" role="search">
+        <input id="intel-busca" type="search" spellcheck="false" placeholder="Indicador, regra ou ativo" aria-label="Buscar ocorrência">
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-intel-ocorrencias" class="tabela-rolagem"></div>
     </section>
 
     <section id="vista-prova" class="pagina" aria-label="Prova e evidência" hidden>
@@ -204,6 +236,12 @@
           <figcaption>Principais origens de alertas</figcaption>
           <div id="grafico-origens"></div>
         </figure>
+        <figure class="grafico grafico-largo">
+          <figcaption>Países de origem dos alertas</figcaption>
+          <div id="mapa-paises" class="mapa"></div>
+          <p id="mapa-nota" class="texto-secao"></p>
+          <details><summary>Ver dados</summary><div id="tabela-paises" class="tabela-rolagem"></div></details>
+        </figure>
       </div>
     </section>
 
@@ -219,6 +257,7 @@
     </div>
 
     <section id="vista-eventos" class="pagina" aria-label="Eventos" hidden>
+      <div id="filtro-pais-eventos" class="filtros-ativos" hidden></div>
       <form id="form-eventos" class="filtros" role="search">
         <input id="busca-eventos" type="search" placeholder="Usuário, IP, ativo, regra ou descrição" aria-label="Buscar eventos">
         <select id="severidade-eventos" aria-label="Severidade">
@@ -263,12 +302,13 @@
             <dt>usuario~mar</dt><dd>contém</dd>
             <dt>nivel&gt;=10</dt><dd>maior ou igual; também &gt;, &lt; e &lt;=</dd>
             <dt>a=1 E (b=2 OU NAO c=3)</dt><dd>E, OU, NAO e parênteses, ou AND, OR, NOT</dd>
+            <dt>pais=Brazil</dt><dd>país provável da origem, com o nome em inglês; também cidade</dd>
             <dt>| contar por usuario</dt><dd>quantos logs por valor; ou stats count by, top</dd>
             <dt>| campos ativo, origem</dt><dd>quais colunas mostrar; ou fields</dd>
             <dt>| ordenar -quando</dt><dd>ordem, com - para decrescente; ou sort</dd>
             <dt>| limite 10</dt><dd>quantos resultados; ou head</dd>
           </dl>
-          <p>Campos com nome simples: ativo, origem, destino, usuario, fonte, tipo, programa, protocolo, log, quando, regra e nivel. Qualquer outro campo vale pelo nome técnico, como data.win.system.eventID.</p>
+          <p>Campos com nome simples: ativo, origem, destino, usuario, fonte, tipo, programa, protocolo, log, quando, regra, nivel, pais e cidade. Qualquer outro campo vale pelo nome técnico, como data.win.system.eventID.</p>
         </div>
       </details>
       <p id="erro-consulta" class="erro" role="alert" hidden></p>

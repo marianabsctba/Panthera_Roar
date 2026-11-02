@@ -12,7 +12,7 @@ Requer Linux com Docker, systemd, Git e Python 3.12, rodando como root ou com `s
 sudo bash infra/subir.sh --email pessoa@exemplo.test --dominio siem.exemplo.test
 ```
 
-Sem `--dominio`, usa `https://localhost` com certificado próprio. O acesso inicial fica em `/opt/panthera-roar/primeiro-acesso.txt`, com uma senha temporária. Rodar o mesmo comando de novo atualiza. `--com-greenbone` liga o scanner de rede, que é opcional e pesado.
+Escolha o que instalar com `--perfil`: `completo` (padrão), `siem` ou `vulnerabilidades`, que não precisa de Wazuh, indexador nem Temporal. Sem `--dominio`, usa `https://localhost` com certificado próprio. O acesso inicial fica em `/opt/panthera-roar/primeiro-acesso.txt`, com uma senha temporária. Rodar o mesmo comando de novo atualiza. `--com-greenbone` liga o scanner de rede, que é opcional e pesado.
 
 Backup diário e cifrado em `/opt/panthera-roar/backups`. Guarde `/opt/panthera-roar/backup.chave` fora do servidor, e confira de tempos em tempos:
 

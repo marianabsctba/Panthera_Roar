@@ -42,8 +42,8 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import evidencia, mfa, permissoes, relatorios  # noqa: E402
-from roar_ingestao import cofre, fim  # noqa: E402
+from roar_api import evidencia, mfa, modulos, permissoes, relatorios  # noqa: E402
+from roar_ingestao import cofre, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
@@ -135,6 +135,7 @@ async def ciclo_de_vida(app):
     app.state.banco.close()
 
 
+MODULOS = modulos.do_ambiente()
 app = FastAPI(title="Panthera Roar", lifespan=ciclo_de_vida, docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -144,6 +145,10 @@ async def cabecalhos(request: Request, chamada):
     origem = request.headers.get("origin")
     if request.method not in ("GET", "HEAD") and origem and origem.split("://")[-1] != request.headers.get("host"):
         return Response(status_code=403)
+    if not modulos.rota_liberada(request.url.path, MODULOS):
+        resposta = Response(status_code=404)
+        resposta.headers.update(SEGURANCA)
+        return resposta
     resposta = await chamada(request)
     resposta.headers.update(SEGURANCA)
     # Dado de alerta nunca fica guardado; a tela sempre confere se há versão nova.
@@ -193,7 +198,7 @@ def do_cliente(request: Request, sessao):
     """Transação sob o RLS do cliente da sessão. A definição morre com a transação."""
     with request.app.state.banco.connection() as con:
         with con.transaction():
-            con.execute("SELECT set_config('roar.cliente', %s, true)", (str(sessao["cliente_id"]),))
+            con.execute("SELECT set_config('roar.cliente', %s, true), set_config('roar.origem', %s, true)", (str(sessao["cliente_id"]), _origem(request) or ""))
             yield con
 
 
@@ -287,7 +292,7 @@ def eu(request: Request, sessao=Depends(sessao_atual)):
     return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"],
             "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ())),
             "mfa_pendente": sessao["mfa_pendente"], "mfa_ativo": sessao["mfa_ativo"], "mfa_obrigatorio": sessao["mfa_obrigatorio"],
-            "mfa_codigos_restantes": restantes}
+            "mfa_codigos_restantes": restantes, "modulos": sorted(MODULOS)}
 
 
 class CodigoDeMfa(BaseModel):
@@ -618,7 +623,12 @@ def panorama(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
             """SELECT coalesce(nome, chave) AS entidade, tipo,
                       risco * power(0.5, greatest(extract(epoch FROM now() - risco_em), 0) / 86400) AS risco
                FROM entidades WHERE risco > 0 AND risco_em IS NOT NULL ORDER BY 3 DESC LIMIT 8""").fetchall()
-    return {"por_dia": por_dia, "sinais": sinais, "origens": origens,
+        paises = con.execute(
+            f"""SELECT pais, count(*) AS total, count(*) FILTER (WHERE severidade IN ('alta', 'critica')) AS graves
+                FROM eventos WHERE pais IS NOT NULL AND nivel >= %s AND ocorrido_em >= {desde}
+                GROUP BY 1 ORDER BY total DESC, pais LIMIT 250""",
+            (NIVEL_MINIMO_NA_FILA, dias)).fetchall()
+    return {"por_dia": por_dia, "sinais": sinais, "origens": origens, "paises": paises,
             "riscos": [r for r in riscos if r["risco"] >= 1]}
 
 
@@ -628,7 +638,7 @@ def _sem_curinga(texto):
 
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
-            dias: int = 30, antes_de: int = 0):
+            dias: int = 30, antes_de: int = 0, pais: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -642,13 +652,16 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if severidade in ("baixa", "media", "alta", "critica"):
         condicoes.append("severidade = %s")
         parametros.append(severidade)
+    if pais:
+        condicoes.append("pais = %s")
+        parametros.append(pais[:100])
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             f"""SELECT id, ocorrido_em, severidade, nivel, regra_id, regra_descricao, agente_nome AS ativo,
-                       host(ip_origem) AS ip_origem, usuario
+                       host(ip_origem) AS ip_origem, usuario, pais
                 FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
             (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
     return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}
@@ -1334,6 +1347,79 @@ def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 
         raise HTTPException(status_code=503, detail="Não foi possível medir o volume agora.")
     resposta["ocupado_bytes"] = _ocupado_no_indice(request.app.state.indexer, f"{logs},{alertas}")
     return resposta
+
+
+class NovaFonteDeInteligencia(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    tipo: str = Field(pattern="^(misp|taxii)$")
+    endereco: str = Field(min_length=8, max_length=500)
+    colecao: str | None = Field(default=None, max_length=200, pattern=r"^[A-Za-z0-9._~-]*$")
+    credencial: str | None = Field(default=None, max_length=4096)
+    a_cada_minutos: int = Field(default=60, ge=5, le=10080)
+
+
+@app.get("/api/inteligencia")
+def inteligencia(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = ""):
+    with do_cliente(request, sessao) as con:
+        fontes = con.execute("""SELECT f.id, f.nome, f.tipo, f.endereco, f.colecao, f.segredo IS NOT NULL AS com_credencial, f.ativa, f.a_cada_minutos, f.proxima_em, f.ultima_em, f.ultimo_erro,
+                                       (SELECT count(*) FROM intel_indicadores i WHERE i.fonte_id = f.id) AS indicadores
+                                FROM intel_fontes f WHERE f.ativa ORDER BY f.nome""").fetchall()
+        condicao, valores = "", []
+        busca = busca.strip()[:200]
+        if busca:
+            condicao = "WHERE i.valor ILIKE %s OR e.regra_descricao ILIKE %s OR e.agente_nome ILIKE %s"
+            termo = f"%{_sem_curinga(busca)}%"
+            valores = [termo, termo, termo]
+        ocorrencias = con.execute(f"""SELECT o.evento_id, o.ocorrido_em, o.encontrada_em, o.no_passado, i.tipo, i.valor, i.descricao, f.nome AS fonte, e.regra_descricao, e.severidade, e.agente_nome AS ativo
+                                      FROM intel_ocorrencias o JOIN intel_indicadores i ON i.id = o.indicador_id JOIN intel_fontes f ON f.id = i.fonte_id JOIN eventos e ON e.id = o.evento_id
+                                      {condicao} ORDER BY o.ocorrido_em DESC LIMIT 200""", valores).fetchall()
+    return {"fontes": fontes, "ocorrencias": ocorrencias}
+
+
+@app.post("/api/inteligencia/fontes", status_code=201)
+def criar_fonte_de_inteligencia(dados: NovaFonteDeInteligencia, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Cada organização liga a sua, ou nenhuma. A credencial fica no cofre e não volta para a tela."""
+    endereco = dados.endereco.strip()
+    if not endereco.startswith("https://") and os.getenv("ROAR_DESTINO_INTERNO") != "1":
+        raise HTTPException(status_code=422, detail="Use um endereço https: a credencial da fonte não pode viajar aberta.")
+    try:
+        rede_externa.resolver(endereco)
+    except rede_externa.DestinoRecusado as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    if dados.tipo == "taxii" and not dados.colecao:
+        raise HTTPException(status_code=422, detail="Informe a coleção da fonte TAXII.")
+    nome = dados.nome.strip()
+    try:
+        with do_cliente(request, sessao) as con:
+            segredo = None
+            if dados.credencial:
+                segredo = f"inteligencia-{secrets.token_hex(8)}"
+                con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)",
+                            (sessao["cliente_id"], segredo, cofre.selar(cofre.ler_publica(), sessao["cliente_id"], segredo, dados.credencial), sessao["usuario_id"]))
+            linha = con.execute("""INSERT INTO intel_fontes (cliente_id, nome, tipo, endereco, colecao, segredo, a_cada_minutos, criado_por) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                (sessao["cliente_id"], nome, dados.tipo, endereco, dados.colecao or None, segredo, dados.a_cada_minutos, sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte_de_inteligencia', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{nome[:120]} {endereco[:300]}"))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe uma fonte com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.delete("/api/inteligencia/fontes/{identificador}", status_code=204)
+def desativar_fonte_de_inteligencia(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Para de buscar. As ocorrências continuam: o que já foi visto faz parte da investigação."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE intel_fontes SET ativa = false WHERE id = %s AND ativa RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_fonte_de_inteligencia', %s)", (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.post("/api/inteligencia/fontes/{identificador}/sincronizar", status_code=202)
+def sincronizar_fonte_de_inteligencia(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE intel_fontes SET proxima_em = now() WHERE id = %s AND ativa RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
 
 
 @app.get("/api/cves")

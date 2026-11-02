@@ -21,6 +21,7 @@ APELIDOS = {
     "usuario": "data.srcuser", "usuário": "data.srcuser", "usuario_destino": "data.dstuser", "usuário_destino": "data.dstuser",
     "fonte": "location", "tipo": "decoder.name", "programa": "predecoder.program_name", "protocolo": "data.protocol",
     "log": "full_log", "texto": "full_log", "quando": "timestamp", "regra": "rule.id", "nivel": "rule.level", "nível": "rule.level",
+    "pais": "GeoLocation.country_name", "país": "GeoLocation.country_name", "cidade": "GeoLocation.city_name",
 }
 PALAVRAS_E = {"e", "and"}
 PALAVRAS_OU = {"ou", "or"}

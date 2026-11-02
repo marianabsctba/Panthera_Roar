@@ -136,6 +136,13 @@ def main():
             admin.execute("DELETE FROM ativos WHERE gerenciador_id = %s", (g,))
             registrar("exclusão de ativo fica na trilha", len(linhas(a, "excluir_ativo")) == 1)
 
+            print("\n== Origem", flush=True)
+            sem_origem = admin.execute("SELECT acao, count(*) FROM auditoria WHERE cliente_id = %s AND usuario_id IS NOT NULL AND origem IS NULL GROUP BY 1", (a,)).fetchall()
+            registrar("toda ação de uma pessoa tem origem", not sem_origem, str(sem_origem))
+            registrar("a mudança de perfil tem origem", all(l[2] for l in linhas(a, "alterar_usuario")), str(linhas(a, "alterar_usuario")))
+            registrar("ação de sistema continua sem origem", linhas(a, "excluir_ativo")[0][2] is None)
+            registrar("a API não forja a origem por outra sessão", admin.execute("SELECT current_setting('roar.origem', true)").fetchone()[0] in (None, ""))
+
             print("\n== Consulta", flush=True)
             d = auditora_http.get("/api/auditoria", params={"acao": "logon"}).json()
             registrar("filtra por ação", d["linhas"] and {l["acao"] for l in d["linhas"]} == {"logon"})

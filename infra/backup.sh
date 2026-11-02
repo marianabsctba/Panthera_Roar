@@ -20,12 +20,15 @@ fi
 TRABALHO="$(mktemp -d)"
 trap 'rm -rf "$TRABALHO"' EXIT
 docker exec roar-banco pg_dump -U roar_admin -Fc roar >"$TRABALHO/roar.dump"
-docker exec roar-postgresql pg_dump -U temporal -Fc temporal >"$TRABALHO/temporal.dump"
+# O perfil só de vulnerabilidades não tem automação.
+if docker ps --format '{{.Names}}' | grep -qx roar-postgresql; then
+  docker exec roar-postgresql pg_dump -U temporal -Fc temporal >"$TRABALHO/temporal.dump"
+fi
 
 # Inscrição dos agentes e configuração de cada gerenciador: sem isso, todo agente precisaria ser reinscrito.
 mkdir -p "$TRABALHO/volumes"
 for volume in $(docker volume ls -q --filter name=roar-ger- | grep -E '_(etc|api_configuration|sslcerts|rules|decoders)$|_ossec_etc$|_wazuh_etc$' || true); do
-  docker run --rm -v "$volume:/dados:ro" -v "$TRABALHO/volumes:/saida" --network none alpine:3.20 tar czf "/saida/$volume.tar.gz" -C /dados . 2>/dev/null \
+  docker run --rm -v "$volume:/dados:ro" -v "$TRABALHO/volumes:/saida" --network none alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc tar czf "/saida/$volume.tar.gz" -C /dados . 2>/dev/null \
     || echo "Volume $volume não entrou no backup." >&2
 done
 

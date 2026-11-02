@@ -151,6 +151,8 @@ async function abrirPainel() {
   estado.permissoes = new Set(eu.permissoes);
   // Esconder é só conforto: quem decide é a API, em cada rota.
   document.querySelectorAll("[data-permissao]").forEach((e) => { e.hidden = !pode(e.dataset.permissao); });
+  estado.modulos = new Set(eu.modulos);
+  document.querySelectorAll("[data-modulo]").forEach((e) => { e.hidden = !estado.modulos.has(e.dataset.modulo); });
   $("entrada").hidden = true;
   $("painel").hidden = false;
   if (eu.trocar_senha) {
@@ -159,6 +161,11 @@ async function abrirPainel() {
   }
   if (eu.mfa_obrigatorio && !eu.mfa_ativo) {
     abrirMfa();
+    return;
+  }
+  if (!estado.modulos.has("siem")) {
+    trocarVista("vulnerabilidades");
+    await atualizarAvisos();
     return;
   }
   await Promise.all([carregarFila(), carregarPanorama(), carregarVolume().catch(() => {}), avisarSeHouverViolacao(), atualizarAvisos()]);
@@ -478,8 +485,98 @@ async function carregarPanorama() {
     "Ninguém com risco no momento.");
   desenharBarras("grafico-sinais", p.sinais.map((x) => ({ rotulo: tituloDoSinal(x.tipo), valor: x.total, medida: "Sinais" })),
     "Nenhum sinal no período.");
+  desenharMapa(p.paises);
   desenharBarras("grafico-origens", p.origens.map((x) => ({ rotulo: x.origem, valor: x.total, medida: "Eventos" })),
     "Nenhuma origem no período.");
+}
+
+// ------------------------------------------------------------------ mapa
+
+// Contornos do Natural Earth, em domínio público. O país vem em inglês, como o indexador escreve.
+let desenhoDoMapa = null;
+const PROMESSA_DO_MAPA = fetch("/estatico/mapa-paises.json").then((r) => r.json()).then((d) => { desenhoDoMapa = d; }).catch(() => {});
+const NOMES_DIFERENTES = {
+  "Hong Kong": "HK", Macao: "MO", Myanmar: "MM", "DR Congo": "CD", "Congo Republic": "CG", "Ivory Coast": "CI", "Bosnia and Herzegovina": "BA", "Trinidad and Tobago": "TT",
+  Palestine: "PS", "The Netherlands": "NL", "Saint Kitts and Nevis": "KN", "St Kitts and Nevis": "KN", "Saint Vincent and the Grenadines": "VC", "St Vincent and Grenadines": "VC", "São Tomé and Príncipe": "ST",
+  "Antigua and Barbuda": "AG", "Vatican City": "VA", Turkey: "TR", "North Macedonia": "MK", Czech: "CZ", "Czech Republic": "CZ", "U.S. Virgin Islands": "VI", "British Virgin Islands": "VG", Swaziland: "SZ",
+};
+
+function codigosDoMapa() {
+  return desenhoDoMapa ? [...new Set([...desenhoDoMapa.paises, ...desenhoDoMapa.pontos].map((p) => p.c))] : [];
+}
+
+function codigoDoPais(nome) {
+  if (NOMES_DIFERENTES[nome]) return NOMES_DIFERENTES[nome];
+  const ingles = new Intl.DisplayNames(["en"], { type: "region" });
+  return codigosDoMapa().find((c) => ingles.of(c) === nome) ?? null;
+}
+
+function nomeDoPais(nome) {
+  const codigo = codigoDoPais(nome);
+  return codigo ? new Intl.DisplayNames(["pt-BR"], { type: "region" }).of(codigo) : nome;
+}
+
+function filtrarEventosPorPais(pais) {
+  estado.paisDosEventos = pais;
+  estado.eventos = [];
+  trocarVista("eventos");
+  carregarEventos();
+}
+
+async function desenharMapa(paises) {
+  await PROMESSA_DO_MAPA;
+  const destino = $("mapa-paises");
+  const nota = $("mapa-nota");
+  if (!desenhoDoMapa) {
+    destino.replaceChildren();
+    nota.textContent = "Não foi possível carregar o mapa. Os números estão em Ver dados.";
+  } else {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const porCodigo = new Map(paises.map((p) => [codigoDoPais(p.pais), p]).filter(([c]) => c));
+    const maior = Math.max(1, ...paises.map((p) => p.total));
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", `0 0 ${desenhoDoMapa.largura} ${desenhoDoMapa.altura}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Mapa-múndi com os países de origem dos alertas. Os números estão na tabela abaixo.");
+    const pintar = (forma, codigo) => {
+      const dado = porCodigo.get(codigo);
+      if (!dado) {
+        forma.setAttribute("class", "mapa-pais");
+        return;
+      }
+      forma.setAttribute("class", "mapa-pais mapa-com-dado");
+      // Raiz quadrada: um país com muitos alertas não apaga todos os outros.
+      forma.style.fillOpacity = String(0.3 + 0.7 * Math.sqrt(dado.total / maior));
+      const titulo = document.createElementNS(svgNs, "title");
+      titulo.textContent = `${nomeDoPais(dado.pais)}: ${dado.total.toLocaleString("pt-BR")} alertas`;
+      forma.append(titulo);
+      forma.addEventListener("click", () => filtrarEventosPorPais(dado.pais));
+    };
+    desenhoDoMapa.paises.forEach(({ c, d }) => {
+      const caminho = document.createElementNS(svgNs, "path");
+      caminho.setAttribute("d", d);
+      pintar(caminho, c);
+      svg.append(caminho);
+    });
+    desenhoDoMapa.pontos.filter(({ c }) => porCodigo.has(c)).forEach(({ c, x, y }) => {
+      const ponto = document.createElementNS(svgNs, "circle");
+      ponto.setAttribute("cx", x);
+      ponto.setAttribute("cy", y);
+      ponto.setAttribute("r", 4);
+      pintar(ponto, c);
+      svg.append(ponto);
+    });
+    destino.replaceChildren(svg);
+    nota.textContent = paises.length
+      ? "Quanto mais forte a cor, mais alertas. Clique em um país para ver os eventos. É o país provável do endereço de origem, que pode ter sido forjado ou passar por VPN."
+      : "Nenhum alerta com endereço externo no período.";
+  }
+  const linhas = paises.map((p) => {
+    const nome = el("td");
+    nome.append(botaoDeTabela(nomeDoPais(p.pais), "botao-discreto", () => filtrarEventosPorPais(p.pais)));
+    return [nome, el("td", null, p.total.toLocaleString("pt-BR")), el("td", null, p.graves.toLocaleString("pt-BR"))];
+  });
+  $("tabela-paises").replaceChildren(linhas.length ? montarTabela([["País"], ["Alertas"], ["Altos e críticos"]], linhas) : el("p", "texto-secao", "Sem dados no período."));
 }
 
 // ------------------------------------------------------------------ bruto
@@ -540,6 +637,14 @@ async function carregarEventos(continuar = false) {
     severidade: $("severidade-eventos").value,
     dias: $("dias-eventos").value,
   });
+  if (estado.paisDosEventos) consulta.set("pais", estado.paisDosEventos);
+  $("filtro-pais-eventos").hidden = !estado.paisDosEventos;
+  if (estado.paisDosEventos) {
+    $("filtro-pais-eventos").replaceChildren(botaoDeTabela(`País: ${nomeDoPais(estado.paisDosEventos)} (tirar)`, "botao-discreto", () => {
+      estado.paisDosEventos = null;
+      carregarEventos();
+    }));
+  }
   if (continuar && estado.eventos.length) consulta.set("antes_de", estado.eventos.at(-1).id);
   const r = await pedir(`/api/eventos?${consulta}`);
   const dados = await r.json();
@@ -2097,6 +2202,53 @@ async function carregarVolume() {
 
 $("volume-dias").addEventListener("change", () => carregarVolume());
 
+// ------------------------------------------------------------------ inteligência
+
+async function carregarInteligencia() {
+  const r = await pedir(`/api/inteligencia?${new URLSearchParams({ busca: $("intel-busca").value })}`);
+  if (!r.ok) return;
+  const { fontes, ocorrencias } = await r.json();
+  $("tabela-intel-fontes").replaceChildren(fontes.length
+    ? montarTabela([["Fonte"], ["Tipo"], ["Indicadores"], ["Última busca"], ["Situação"], [""]], fontes.map((f) => {
+      const acoes = el("td");
+      if (pode("gerir_fontes")) {
+        acoes.append(botaoDeTabela("Buscar agora", "botao-discreto", async () => {
+          await pedir(`/api/inteligencia/fontes/${f.id}/sincronizar`, { method: "POST" });
+          await carregarInteligencia();
+        }), " ", botaoDeTabela("Desativar", "botao-discreto", async () => {
+          await pedir(`/api/inteligencia/fontes/${f.id}`, { method: "DELETE" });
+          await carregarInteligencia();
+        }));
+      }
+      return [el("td", null, f.nome), el("td", null, f.tipo.toUpperCase()), el("td", null, Number(f.indicadores).toLocaleString("pt-BR")), el("td", null, quando(f.ultima_em)),
+        el("td", null, f.ultimo_erro ?? (f.ultima_em ? "Funcionando" : "Aguardando a primeira busca")), acoes];
+    }))
+    : el("p", "texto-secao", "Nenhuma fonte ligada. O Roar funciona normalmente sem nenhuma."));
+  $("tabela-intel-ocorrencias").replaceChildren(ocorrencias.length
+    ? montarTabela([["Quando"], ["Indicador"], ["Fonte"], ["Evento"], ["Ativo"], ["Como foi achado"]], ocorrencias.map((o) => [el("td", null, quando(o.ocorrido_em)), el("td", "mono", o.valor), el("td", null, o.fonte),
+      el("td", null, o.regra_descricao ?? "-"), el("td", null, o.ativo ?? "-"), el("td", null, o.no_passado ? "Olhando para trás" : "Na chegada")]))
+    : el("p", "texto-secao", "Nenhum evento bateu com um indicador."));
+}
+
+$("nova-fonte-intel").addEventListener("click", () => { $("form-intel").hidden = false; $("intel-erro").hidden = true; $("intel-nome").focus(); });
+$("intel-cancelar").addEventListener("click", () => { $("form-intel").reset(); $("form-intel").hidden = true; });
+$("intel-tipo").addEventListener("change", () => { $("intel-rotulo-colecao").hidden = $("intel-tipo").value !== "taxii"; });
+$("form-intel-busca").addEventListener("submit", (ev) => { ev.preventDefault(); carregarInteligencia(); });
+$("form-intel").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await postarJson("/api/inteligencia/fontes", { nome: $("intel-nome").value.trim(), tipo: $("intel-tipo").value, endereco: $("intel-endereco").value.trim(),
+    colecao: $("intel-colecao").value.trim() || null, credencial: $("intel-credencial").value || null, a_cada_minutos: Number($("intel-minutos").value) });
+  $("intel-credencial").value = "";
+  if (!r.ok) {
+    $("intel-erro").textContent = await detalheDoErro(r, "Confira o nome e o endereço.");
+    $("intel-erro").hidden = false;
+    return;
+  }
+  $("form-intel").reset();
+  $("form-intel").hidden = true;
+  await carregarInteligencia();
+});
+
 // ------------------------------------------------------------------ auditoria e avisos
 
 const NOMES_DA_TRILHA = {
@@ -2104,6 +2256,7 @@ const NOMES_DA_TRILHA = {
   entrar_com_codigo_de_recuperacao: "Entrou com código de recuperação", criar_usuario: "Criou usuário", alterar_usuario: "Alterou perfil ou situação de usuário", redefinir_senha: "Gerou senha temporária",
   trocar_senha: "Trocou a própria senha", ligar_mfa: "Ligou o autenticador", desligar_mfa: "Desligou o autenticador", remover_mfa_de_usuario: "Removeu o autenticador de outra pessoa",
   definir_mfa_obrigatorio: "Mudou a exigência do autenticador", gerar_codigos_de_recuperacao: "Gerou novos códigos de recuperação", incluir_ativo: "Ativo incluído", excluir_ativo: "Ativo excluído",
+  indicador_encontrado: "Evento bateu com um indicador de ameaça", criar_fonte_de_inteligencia: "Criou fonte de inteligência", desativar_fonte_de_inteligencia: "Desativou fonte de inteligência",
   buscar_logs: "Buscou nos logs", ver_bruto: "Viu alerta bruto", gerar_relatorio: "Gerou relatório", gerar_evidencia: "Gerou pacote de evidência", exportar_auditoria: "Exportou a trilha",
   criar_fonte: "Criou fonte de dados", desativar_fonte: "Desativou fonte de dados", criar_regra: "Criou regra", editar_regra: "Editou regra", desativar_regra: "Desativou regra",
   importar_regras: "Importou regras", exportar_regras: "Exportou regras", criar_playbook: "Criou playbook", alterar_playbook: "Alterou playbook",
@@ -2800,6 +2953,8 @@ const CONDICOES = [
   { id: "severidade", rotulo: "Severidade a partir de", campo: "severidade", op: "minimo", tipo: "severidade", padrao: "alta" },
   { id: "na_rede", rotulo: "Endereço dentro da rede", campo: "alvo", op: "na_rede", tipo: "texto", padrao: "" },
   { id: "fora_da_rede", rotulo: "Endereço fora da rede", campo: "alvo", op: "fora_da_rede", tipo: "texto", padrao: "" },
+  { id: "pais_e", rotulo: "País de origem é", campo: "pais", op: "e", tipo: "pais", padrao: "Brazil" },
+  { id: "pais_nao_e", rotulo: "País de origem não é", campo: "pais", op: "nao_e", tipo: "pais", padrao: "Brazil" },
 ];
 const SE_EXTERNO = { campo: "alvo_externo", op: "igual", valor: true };
 const NOVOS_BLOCOS = {
@@ -2979,6 +3134,13 @@ function editorDeCondicao(c, aoRemover) {
     desenharEditor();
   }));
   if (m.tipo === "numero") linha.append(entrada(c.valor, (v) => { c.valor = Number(v); }, { type: "number", min: 0, max: 16, ariaLabel: "Nível" }));
+  if (m.tipo === "pais") {
+    const ingles = new Intl.DisplayNames(["en"], { type: "region" });
+    const portugues = new Intl.DisplayNames(["pt-BR"], { type: "region" });
+    const paises = codigosDoMapa().map((codigo) => [ingles.of(codigo), portugues.of(codigo)]).sort((a, b) => a[1].localeCompare(b[1], "pt-BR"));
+    if (!paises.some(([v]) => v === c.valor)) paises.unshift([c.valor, c.valor]);
+    linha.append(selecao(paises, c.valor, (v) => { c.valor = v; }));
+  }
   if (m.tipo === "texto") linha.append(entrada(c.valor, (v) => { c.valor = v.trim(); }, { placeholder: "10.0.0.0/8", ariaLabel: "Rede" }));
   if (m.tipo === "severidade") linha.append(selecao([["alta", "Alta"], ["critica", "Crítica"]], c.valor, (v) => { c.valor = v; }));
   if (aoRemover) linha.append(botaoDeTabela("Remover", "botao-discreto", aoRemover));
@@ -3253,7 +3415,9 @@ function textoDoBloco(bloco) {
 
 function desenharIndiceDaAjuda() {
   const busca = semAcento($("busca-ajuda").value.trim());
-  const combina = (a) => semAcento(`${a.titulo} ${a.blocos.map(textoDoBloco).join(" ")}`).includes(busca);
+  // Artigo de módulo que não está instalado só confundiria.
+  const instalado = (a) => !a.vista || !document.querySelector(`.navegacao [data-vista="${a.vista}"]`)?.dataset.modulo || estado.modulos.has(document.querySelector(`.navegacao [data-vista="${a.vista}"]`).dataset.modulo);
+  const combina = (a) => instalado(a) && semAcento(`${a.titulo} ${a.blocos.map(textoDoBloco).join(" ")}`).includes(busca);
   const grupos = AJUDA.map((g) => ({ ...g, artigos: g.artigos.filter(combina) })).filter((g) => g.artigos.length);
   $("indice-ajuda").replaceChildren(...grupos.flatMap((g) => [el("h3", null, g.grupo), ...g.artigos.map((a) => {
     const b = botaoDeTabela(a.titulo, "ajuda-link", () => abrirArtigo(a.id));
@@ -3303,13 +3467,14 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda", "prova", "auditoria"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda", "prova", "auditoria", "inteligencia"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
   // O "?" abre o artigo da tela de onde a pessoa veio.
   if (vista !== "ajuda") vistaAtual = vista;
   if (vista === "ajuda") abrirArtigo(artigoAberto);
   if (vista === "prova") carregarProva();
+  if (vista === "inteligencia") carregarInteligencia();
   if (vista === "auditoria") { carregarAuditoria(); atualizarAvisos(); }
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();

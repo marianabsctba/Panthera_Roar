@@ -426,6 +426,10 @@ th.numero-celula { text-align: right; }
 .volume { margin-bottom: 16px; }
 .volume details { margin-top: 8px; }
 #volume-numeros { margin-bottom: 8px; }
+.mapa svg { display: block; width: 100%; height: auto; }
+.mapa-pais { fill: var(--painel-2); stroke: var(--borda); stroke-width: .4; }
+.mapa-com-dado { fill: var(--rosa); cursor: pointer; }
+.mapa-com-dado:hover { stroke: var(--texto); stroke-width: 1; }
 .com-avisos { border-color: var(--rosa); color: var(--texto); }
 .com-avisos b { color: var(--rosa-claro); }
 .qr-mfa { justify-self: start; width: fit-content; padding: 8px; background: #fff; border-radius: 10px; line-height: 0; }

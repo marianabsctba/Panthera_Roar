@@ -58,6 +58,7 @@ ROTAS = {
     ("POST", "/api/vuln/achados/{identificador}/estado"): "gerir_vulnerabilidades", ("POST", "/api/vuln/achados/{identificador}/confirmar"): "gerir_vulnerabilidades", ("GET", "/api/vuln/ativos"): "ver", ("PUT", "/api/vuln/ativos/{identificador}"): "gerir_vulnerabilidades",
     ("GET", "/api/vuln/modelos"): "ver", ("POST", "/api/vuln/modelos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/alvos"): "ver", ("POST", "/api/vuln/alvos"): "gerir_vulnerabilidades",
     ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",
+    ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",

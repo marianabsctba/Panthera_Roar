@@ -9,5 +9,5 @@ pyyaml
 jinja2>=3.1,<4
 pyotp>=2.9,<3
 segno>=1.6,<2
-weasyprint>=62,<69
-cryptography>=43,<47
+weasyprint>=70,<72
+cryptography>=50,<53

@@ -25,7 +25,14 @@ URL="https://$DOMINIO"
 curl_borda() { curl -sk --resolve "$DOMINIO:443:127.0.0.1" "$@"; }
 
 echo "== Serviços"
-for nome in api ingestao fontes varredura cves selo ueba disparo; do
+PERFIL="$(cat "$DESTINO/perfil" 2>/dev/null || echo completo)"
+case "$PERFIL" in
+  vulnerabilidades) SERVICOS="api varredura cves" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia" ;;
+esac
+echo "Perfil: $PERFIL"
+for nome in $SERVICOS; do
   prova "roar-$nome no ar" systemctl is-active --quiet "roar-$nome"
   prova "roar-$nome volta sozinho depois de reiniciar a máquina" systemctl is-enabled --quiet "roar-$nome"
 done
@@ -67,6 +74,7 @@ curl_borda -o /dev/null -X POST -H 'Content-Type: application/json' -H 'X-Forwar
 sleep 1
 prova "cabeçalho forjado não engana o registro de origem" bash -c "! journalctl -u roar-api --since '-30 sec' | grep -F '$EMAIL_FALSO' | grep -q 203.0.113.99"
 prova "a tentativa ficou no log" bash -c "journalctl -u roar-api --since '-30 sec' | grep -qF '$EMAIL_FALSO'"
+prova "as ações recentes da trilha têm origem" bash -c "[ \"\$(docker exec roar-banco psql -At -U roar_admin -d roar -c \"SELECT count(*) FROM auditoria WHERE usuario_id IS NOT NULL AND origem IS NULL AND em > (SELECT coalesce(max(aplicada_em), now()) FROM migracoes WHERE nome = '032_origem_na_trilha.sql')\")\" = 0 ]"
 
 if [ "$QUEDA" = 1 ]; then
   echo "== Queda"

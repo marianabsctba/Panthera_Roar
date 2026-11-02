@@ -21,7 +21,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass "file:$CHAVE" -in "$ARQUI
 echo "Abriu, e os resumos conferem."
 
 if [ "$MODO" = "--verificar" ]; then
-  docker run -d --name "$TESTE" --network none -e POSTGRES_PASSWORD=descartavel -e POSTGRES_USER=roar_admin -e POSTGRES_DB=roar postgres:16 >/dev/null
+  docker run -d --name "$TESTE" --network none -e POSTGRES_PASSWORD=descartavel -e POSTGRES_USER=roar_admin -e POSTGRES_DB=roar postgres:16@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a >/dev/null
   until docker exec "$TESTE" pg_isready -q -U roar_admin -d roar 2>/dev/null; do sleep 1; done
   sleep 2
   for papel in roar_ingestao roar_api roar_ueba roar_soar; do
@@ -38,18 +38,20 @@ if [ "$MODO" = "--verificar" ]; then
   exit 0
 fi
 
-SERVICOS="api ingestao fontes varredura cves selo ueba disparo"
+SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia"
 for nome in $SERVICOS; do systemctl stop "roar-$nome" 2>/dev/null || true; done
 systemctl stop 'roar-worker@*' 2>/dev/null || true
 tar xzf "$TRABALHO/arquivos.tar.gz" -C "$DESTINO"
 docker exec roar-banco psql -q -U roar_admin -d postgres -c "DROP DATABASE IF EXISTS roar WITH (FORCE)" -c "CREATE DATABASE roar"
 docker exec -i roar-banco pg_restore -U roar_admin -d roar <"$TRABALHO/roar.dump"
-docker exec roar-postgresql psql -q -U temporal -d postgres -c "DROP DATABASE IF EXISTS temporal WITH (FORCE)" -c "CREATE DATABASE temporal"
-docker exec -i roar-postgresql pg_restore -U temporal -d temporal <"$TRABALHO/temporal.dump"
+if [ -f "$TRABALHO/temporal.dump" ]; then
+  docker exec roar-postgresql psql -q -U temporal -d postgres -c "DROP DATABASE IF EXISTS temporal WITH (FORCE)" -c "CREATE DATABASE temporal"
+  docker exec -i roar-postgresql pg_restore -U temporal -d temporal <"$TRABALHO/temporal.dump"
+fi
 for arquivo in "$TRABALHO"/volumes/*.tar.gz; do
   [ -e "$arquivo" ] || continue
   volume="$(basename "$arquivo" .tar.gz)"
-  docker run --rm -v "$volume:/dados" -v "$TRABALHO/volumes:/entrada:ro" --network none alpine:3.20 sh -c "tar xzf '/entrada/$volume.tar.gz' -C /dados"
+  docker run --rm -v "$volume:/dados" -v "$TRABALHO/volumes:/entrada:ro" --network none alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -c "tar xzf '/entrada/$volume.tar.gz' -C /dados"
 done
 for nome in $SERVICOS; do systemctl start "roar-$nome" 2>/dev/null || true; done
 for cliente in $(docker exec roar-banco psql -At -U roar_admin -d roar -c "SELECT DISTINCT cliente_id FROM gerenciadores"); do

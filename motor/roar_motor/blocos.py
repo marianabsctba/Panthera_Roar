@@ -28,6 +28,7 @@ CAMPOS = {
     "nivel": ("minimo", "maximo"),
     "severidade": ("minimo",),
     "alvo": ("na_rede", "fora_da_rede"),
+    "pais": ("e", "nao_e"),
 }
 
 
@@ -56,6 +57,12 @@ def condicao_verdadeira(condicao, fato):
         return nivel >= valor if op == "minimo" else nivel <= valor
     if campo == "severidade":
         return ORDEM_DE_SEVERIDADE.get(fato.get("severidade"), 0) >= ORDEM_DE_SEVERIDADE[valor]
+    if campo == "pais":
+        # Endereço interno ou desconhecido não tem país: não é "fora do Brasil", é sem informação.
+        pais = fato.get("pais")
+        if not pais:
+            return False
+        return pais == valor if op == "e" else pais != valor
     if campo == "alvo":
         try:
             dentro = ipaddress.ip_address(fato.get("alvo")) in ipaddress.ip_network(valor, strict=False)
@@ -113,6 +120,8 @@ def _validar_condicao(condicao):
         raise DefinicaoInvalida("A condição de endereço externo aceita só sim ou não.")
     if campo == "nivel" and (isinstance(valor, bool) or not isinstance(valor, int) or not 0 <= valor <= 16):
         raise DefinicaoInvalida("O nível vai de 0 a 16.")
+    if campo == "pais" and (not isinstance(valor, str) or not valor.strip() or len(valor) > 100):
+        raise DefinicaoInvalida("Escolha o país da condição.")
     if campo == "severidade" and valor not in ORDEM_DE_SEVERIDADE:
         raise DefinicaoInvalida("A severidade precisa ser alta ou crítica.")
     if campo == "alvo":

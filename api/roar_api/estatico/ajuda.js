@@ -41,6 +41,9 @@ export const AJUDA = [
     { id: "panorama", vista: "panorama", titulo: "Panorama", blocos: [
       "A visão geral do período escolhido: alertas por dia e por severidade, as pessoas com maior risco agora, os sinais de comportamento e as principais origens de alertas.",
       "Use os botões de 7, 30 ou 90 dias. Em Ver dados, os números do gráfico aparecem em tabela.",
+      { h: "Países" },
+      "O mapa mostra de onde vieram os alertas com endereço externo. Clique em um país para ver os eventos dele. Em Logs brutos, use pais=Brazil, com o nome em inglês. Em Automação, um playbook pode agir conforme o país.",
+      { aviso: "É o país provável do endereço, pela base GeoLite2. Endereço pode ser forjado, ou passar por VPN e proxy: não bloqueie só por isso." },
       { h: "Volume recebido" },
       "Mostra quantos eventos por segundo (EPS) chegam agora, a média e o minuto mais cheio do período, quanto isso dá por dia e quanto já ocupa em disco. Em De onde vem o volume, veja quais ativos e tipos de log mais mandam, para decidir o que filtrar.",
       { aviso: "O pico é medido por minuto, e o tamanho por dia é estimado. Para dimensionar servidores, olhe o pico, não a média, e deixe folga." },
@@ -77,6 +80,16 @@ export const AJUDA = [
     { id: "ataques", vista: "ataques", titulo: "Ataque e defesa", blocos: [
       "A matriz de técnicas de ataque, com o que foi observado nos seus alertas. Marque Só o que foi observado para ficar apenas com isso.",
       "Técnica sem alerta não prova que não houve ataque. Pode ser só falta de fonte ou de regra para enxergá-la.",
+    ] },
+    { id: "inteligencia", vista: "inteligencia", titulo: "Inteligência", blocos: [
+      "Ligue uma fonte MISP ou TAXII da sua organização, se tiver. É opcional, e o Roar funciona sem nenhuma.",
+      { passos: [
+        "Crie no MISP ou no TAXII uma conta só com leitura.",
+        "Clique em Nova fonte e informe o endereço e a credencial, que fica cifrada.",
+        "A primeira busca acontece em até um minuto. Depois, no intervalo escolhido.",
+      ] },
+      "Os indicadores ficam guardados aqui. Cada evento novo é comparado com eles, e cada indicador novo é procurado nos eventos dos últimos 90 dias: é assim que aparece um ataque que passou despercebido. Um aviso surge no alto da tela.",
+      { aviso: "Nada volta para a fonte, e nada é bloqueado sozinho. Indicador pode estar desatualizado ou errado: confira antes de agir." },
     ] },
     { id: "prova", vista: "prova", titulo: "Prova e evidência", blocos: [
       "A cada 15 minutos, os logs e os alertas da janela são selados: viram um resumo criptográfico, ligado ao selo anterior e assinado. Os selos ficam guardados separados dos eventos.",

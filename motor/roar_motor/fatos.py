@@ -7,7 +7,7 @@ def _de_evento(e):
 
 def eventos_depois_de(con, ultimo, limite):
     linhas = con.execute(
-        """SELECT id, regra_id, regra_descricao, nivel, severidade, host(ip_origem) AS alvo, usuario, agente_id, gerenciador_id, ocorrido_em
+        """SELECT id, regra_id, regra_descricao, nivel, severidade, host(ip_origem) AS alvo, usuario, agente_id, gerenciador_id, ocorrido_em, pais
            FROM eventos WHERE id > %s ORDER BY id LIMIT %s""",
         (ultimo, limite),
     ).fetchall()
@@ -16,7 +16,7 @@ def eventos_depois_de(con, ultimo, limite):
 
 def eventos_da_regra(con, regra_id, dias, limite):
     linhas = con.execute(
-        """SELECT id, regra_id, regra_descricao, nivel, severidade, host(ip_origem) AS alvo, usuario, agente_id, gerenciador_id, ocorrido_em
+        """SELECT id, regra_id, regra_descricao, nivel, severidade, host(ip_origem) AS alvo, usuario, agente_id, gerenciador_id, ocorrido_em, pais
            FROM eventos WHERE regra_id = %s AND ocorrido_em > now() - make_interval(days => %s)
            ORDER BY ocorrido_em LIMIT %s""",
         (regra_id, dias, limite),

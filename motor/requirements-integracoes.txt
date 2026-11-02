@@ -1,5 +1,14 @@
 psycopg[binary]>=3.2,<3.3
 tzdata
-shuffle-sdk==0.0.41
 uncurl
-cryptography>=43,<47
+cryptography>=50,<53
+# O que o SDK de integrações pede, em versões sem falhas conhecidas. Ele fixa versões antigas, então entra sem dependências (ver infra/subir.sh).
+flask>=3.1.3
+liquidpy
+MarkupSafe
+PyJWT>=2.15
+python-dateutil
+requests>=2.33
+shufflepy
+urllib3>=2.6
+waitress

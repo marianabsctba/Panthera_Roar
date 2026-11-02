@@ -6,6 +6,7 @@ set -euo pipefail
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 DESTINO="${ROAR_DESTINO:-/opt/panthera-roar}"
 DOMINIO="${1:-localhost}"
+PERFIL="${2:-$(cat "$DESTINO/perfil" 2>/dev/null || echo completo)}"
 APP="$DESTINO/app"
 PY="$DESTINO/venv/bin/python"
 
@@ -42,7 +43,9 @@ escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UE
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
 [ -f "$DESTINO/cofre/privada" ] || PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.cofre gerar
 chmod 755 "$DESTINO/cofre"; chmod 600 "$DESTINO/cofre/privada"; chmod 644 "$DESTINO/cofre/publica"
-install -m 644 "$DESTINO/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem" "$DESTINO/ca-indexer.pem"
+if [ "$PERFIL" != vulnerabilidades ]; then
+  install -m 644 "$DESTINO/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem" "$DESTINO/ca-indexer.pem"
+fi
 if [ ! -f "$DESTINO/selo/privada" ]; then
   ROAR_SELO_PASTA="$DESTINO/selo" PYTHONPATH="$APP/ingestao" "$PY" -c "from roar_ingestao.selo import carregar_chave; carregar_chave()"
 fi
@@ -76,6 +79,7 @@ Environment=ROAR_INDEXER_CA=$DESTINO/ca-indexer.pem
 Environment=PYTHONPATH=$APP/ingestao:$APP/motor:$APP/api
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=ROAR_ENDERECO_PUBLICO=$DOMINIO
+Environment=ROAR_PERFIL=$PERFIL
 $extras
 ExecStart=$comando
 Restart=always
@@ -92,6 +96,7 @@ unidade api roar-api api.env api "$PY -m uvicorn roar_api.app:app --host 127.0.0
 unidade ingestao root .env ingestao "$PY -u -m roar_ingestao.ciclo"
 unidade fontes root .env ingestao "$PY -u -m roar_ingestao.fontes"
 unidade varredura root .env ingestao "$PY -u -m roar_ingestao.varredura"
+unidade inteligencia root .env ingestao "$PY -u -m roar_ingestao.inteligencia"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
@@ -124,15 +129,22 @@ UNIDADE
 mkdir -p "$APP/infra"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
-SERVICOS="api ingestao fontes varredura cves selo ueba disparo"
+case "$PERFIL" in
+  vulnerabilidades) SERVICOS="api varredura cves"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia"; DESLIGAR="varredura" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia"; DESLIGAR="" ;;
+esac
 systemctl daemon-reload
+for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done
 for nome in $SERVICOS; do
   systemctl enable --quiet "roar-$nome"
   systemctl restart "roar-$nome"
 done
-for cliente in $(docker exec roar-banco psql -At -U roar_admin -d roar -c "SELECT DISTINCT cliente_id FROM gerenciadores"); do
-  systemctl enable --quiet "roar-worker@$cliente"
-  systemctl restart "roar-worker@$cliente"
-done
+if [ "$PERFIL" != vulnerabilidades ]; then
+  for cliente in $(docker exec roar-banco psql -At -U roar_admin -d roar -c "SELECT DISTINCT cliente_id FROM gerenciadores"); do
+    systemctl enable --quiet "roar-worker@$cliente"
+    systemctl restart "roar-worker@$cliente"
+  done
+fi
 systemctl enable --quiet --now roar-backup.timer
 echo "Serviços ligados: $SERVICOS"

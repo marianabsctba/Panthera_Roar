@@ -454,7 +454,12 @@ def primeiro_acesso(organizacao, email):
             return None
         cliente = banco.execute("SELECT id FROM clientes ORDER BY criado_em LIMIT 1").fetchone()
     if cliente is None:
-        criar(organizacao)
+        # Sem SIEM não há gerenciador para criar: basta a organização.
+        if (DESTINO / "perfil").is_file() and (DESTINO / "perfil").read_text().strip() == "vulnerabilidades":
+            with banco_admin(env) as banco:
+                banco.execute("INSERT INTO clientes (nome) VALUES (%s)", (organizacao,))
+        else:
+            criar(organizacao)
     senha = secrets.token_urlsafe(18)
     with banco_admin(env) as banco:
         cliente = banco.execute("SELECT id FROM clientes ORDER BY criado_em LIMIT 1").fetchone()[0]
