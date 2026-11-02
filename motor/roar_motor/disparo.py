@@ -59,6 +59,18 @@ def _eventos_novos(con, cliente):
     return novos
 
 
+def _indicadores_novos(con):
+    """Achado no passado não dispara: responder agora a um evento de meses atrás só atingiria quem usa aquele endereço hoje."""
+    ultima = con.execute("SELECT ultima_ocorrencia FROM soar_cursor").fetchone()["ultima_ocorrencia"]
+    if ultima is None:
+        ultima = con.execute(
+            """SELECT coalesce(max(id), 0) AS m FROM intel_ocorrencias WHERE encontrada_em <
+               (SELECT min(criado_em) FROM playbooks WHERE definicao #>> '{quando,tipo}' = 'indicador')""").fetchone()["m"]
+    novos = fatos.indicadores_depois_de(con, ultima, EVENTOS_POR_CICLO)
+    con.execute("UPDATE soar_cursor SET ultima_ocorrencia = %s", (novos[-1]["ocorrencia"] if novos else ultima,))
+    return [o for o in novos if not o["no_passado"]]
+
+
 def avaliar(con, cliente):
     """Cria as execuções do que casou. Devolve quantas criou."""
     playbooks = con.execute("SELECT * FROM playbooks WHERE ativo ORDER BY id").fetchall()
@@ -67,6 +79,8 @@ def avaliar(con, cliente):
         return 0
     if any(p["definicao"]["quando"]["tipo"] == "risco" for p in playbooks):
         lista += fatos.riscos_abertos(con)
+    if any(p["definicao"]["quando"]["tipo"] == "indicador" for p in playbooks):
+        lista += _indicadores_novos(con)
     criadas = 0
     for fato in lista:
         for playbook in playbooks:

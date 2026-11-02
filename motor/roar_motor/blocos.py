@@ -185,8 +185,11 @@ def validar(definicao, validar_acao=lambda acao, parametros: None):
         regra = quando.get("regra_id")
         if set(quando) != {"tipo", "regra_id"} or not isinstance(regra, str) or not regra.isascii() or not regra.isdigit() or len(regra) > 8:
             raise DefinicaoInvalida("Informe o número da regra.")
+    elif quando.get("tipo") == "indicador":
+        if set(quando) != {"tipo"}:
+            raise DefinicaoInvalida("Este gatilho não tem opções.")
     else:
-        raise DefinicaoInvalida("O gatilho precisa ser um risco ou um alerta de regra.")
+        raise DefinicaoInvalida("O gatilho precisa ser um risco, um alerta de regra ou um indicador de ameaça.")
     condicoes = definicao.get("se", [])
     if not isinstance(condicoes, list) or len(condicoes) > 10:
         raise DefinicaoInvalida("No máximo 10 condições.")

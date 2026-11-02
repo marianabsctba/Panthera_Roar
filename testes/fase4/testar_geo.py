@@ -52,6 +52,7 @@ def main():
     registrar("pais vira o campo certo", "GeoLocation.country_name" in json.dumps(pedido.filtro), json.dumps(pedido.filtro)[:120])
     registrar("país com acento também", "GeoLocation.country_name" in json.dumps(consulta.analisar("país=Brazil").filtro))
     registrar("cidade também", "GeoLocation.city_name" in json.dumps(consulta.analisar("cidade=Curitiba").filtro))
+    registrar("estado também", "GeoLocation.region_name" in json.dumps(consulta.analisar("estado=Parana").filtro))
     registrar("contar por país", consulta.analisar("| contar por pais").contar_por == "GeoLocation.country_name")
 
     admin = psycopg.connect(f"postgresql://roar_admin:{ENV['BANCO_SENHA']}@127.0.0.1:5433/roar", autocommit=True)
@@ -67,10 +68,12 @@ def main():
         gerenciadores.append(g)
         return c, g, email, senha
 
-    def evento(c, g, pais, severidade="alta", nivel=10):
+    def evento(c, g, pais, severidade="alta", nivel=10, cidade=None, regiao=None, lat=-25.5):
         bruto = {"rule": {"id": "5712"}}
         if pais:
             bruto["GeoLocation"] = {"country_name": pais, "location": {"lat": 1, "lon": 1}}
+        if cidade:
+            bruto["GeoLocation"].update(city_name=cidade, region_name=regiao, location={"lat": lat, "lon": -49.3})
         admin.execute("""INSERT INTO eventos (cliente_id, origem, origem_id, ocorrido_em, nivel, severidade, regra_id, regra_descricao, gerenciador_id, agente_id, bruto)
                          VALUES (%s, 'wazuh', %s, %s, %s, %s, '5712', 'Teste', %s, '001', %s)""",
                       (c, uuid.uuid4().hex, datetime.now(timezone.utc), nivel, severidade, g, Jsonb(bruto)))
@@ -101,6 +104,32 @@ def main():
             outra.post("/api/entrar", json={"email": email_b, "senha": senha_b})
             registrar("cada cliente vê só os dele", [p["pais"] for p in outra.get("/api/panorama").json()["paises"]] == ["China"])
 
+            print("\n== Cidades", flush=True)
+            for _ in range(3):
+                evento(ca, ga, "Brazil", "alta", 10, "Curitiba", "Parana")
+            evento(ca, ga, "Brazil", "media", 8, "Recife", "Pernambuco")
+            evento(ca, ga, "Brazil", "baixa", 1, "Manaus", "Amazonas")
+            evento(ca, ga, "Argentina", "alta", 10, "Rosario", "Santa Fe")
+            evento(ca, ga, "Brazil", "alta", 10, "Forjada", "Texto", lat="abc")
+            evento(cb, gb, "Brazil", "alta", 10, "Natal", "Rio Grande do Norte")
+            resposta = http.get("/api/panorama")
+            registrar("posição que não é número não derruba o panorama", resposta.status_code == 200)
+            cidades = resposta.json()["cidades"]
+            nomes = [c["cidade"] for c in cidades]
+            registrar("conta por cidade, da maior para a menor", nomes[0] == "Curitiba" and cidades[0]["total"] == 3 and cidades[0]["graves"] == 3, str(cidades)[:200])
+            registrar("traz estado, país e posição", cidades[0]["regiao"] == "Parana" and cidades[0]["pais"] == "Brazil" and abs(cidades[0]["lat"] + 25.5) < 1e-6 and abs(cidades[0]["lon"] + 49.3) < 1e-6, str(cidades[0]))
+            registrar("posição que não é número vem vazia", next(c for c in cidades if c["cidade"] == "Forjada")["lat"] is None)
+            registrar("cidades do mundo, não só do Brasil", "Rosario" in nomes)
+            registrar("diz quantos alertas não têm cidade", resposta.json()["sem_cidade"] == 7, str(resposta.json()["sem_cidade"]))
+            registrar("abaixo do nível da fila fica de fora", "Manaus" not in nomes)
+            registrar("não mostra cidade de outro cliente", "Natal" not in nomes)
+            e = http.get("/api/eventos", params={"pais": "Brazil", "cidade": "Curitiba"}).json()["eventos"]
+            registrar("filtra por cidade", len(e) == 3 and all(x["cidade"] == "Curitiba" and x["regiao"] == "Parana" for x in e), str(len(e)))
+            registrar("cidade de outro cliente não filtra", http.get("/api/eventos", params={"cidade": "Natal"}).json()["eventos"] == [])
+            registrar("injeção no filtro de cidade não quebra", http.get("/api/eventos", params={"cidade": "'; DROP TABLE eventos; --"}).json()["eventos"] == [])
+            registrar("a automação não lê a cidade", not admin.execute("SELECT has_column_privilege('roar_soar', 'eventos', 'cidade', 'SELECT') OR has_column_privilege('roar_soar', 'eventos', 'regiao', 'SELECT')").fetchone()[0])
+            admin.execute("DELETE FROM eventos WHERE cidade IS NOT NULL AND cliente_id = ANY(%s)", (clientes,))
+
             print("\n== Eventos", flush=True)
             e = http.get("/api/eventos", params={"pais": "Russia"}).json()["eventos"]
             registrar("filtra por país", len(e) == 5 and all(x["pais"] == "Russia" for x in e), str(len(e)))
@@ -117,6 +146,14 @@ def main():
         registrar("o mapa tem os países", len(codigos) > 200 and {"BR", "US", "RU", "CN", "SG", "HK"} <= codigos, str(len(codigos)))
         registrar("nome diferente aponta para país que existe no mapa", all(c in codigos for c in ("HK", "MO", "MM", "CD", "CG", "CI", "BA", "TT", "PS", "NL")))
         registrar("a tela desenha o mapa sem montar HTML", "createElementNS" in js and "desenharMapa" in js)
+        # A posição do ponto só faz sentido se usar a mesma projeção do desenho: Andorra está no próprio arquivo do mapa.
+        andorra = next(p for p in mapa["pontos"] if p["c"] == "AD")
+        f, l = 42.5 * 3.141592653589793 / 180, 1.52 * 3.141592653589793 / 180
+        f2, f4 = f * f, f ** 4
+        x = mapa["largura"] / 2 + mapa["escala"] * l * (0.8707 - 0.131979 * f2 + f4 * (-0.013791 + f4 * (0.003971 * f2 - 0.001529 * f4)))
+        y = (mapa["yNorte"] - f * (1.007226 + f2 * (0.015085 + f4 * (-0.044475 + 0.028874 * f2 - 0.005916 * f4)))) * mapa["escala"]
+        registrar("a conta do ponto cai no lugar do desenho", abs(x - andorra["x"]) < 1 and abs(y - andorra["y"]) < 1, f"{x:.1f},{y:.1f} {andorra}")
+        registrar("a tela usa a mesma conta", "0.131979" in js and "0.028874" in js)
     finally:
         admin.execute("DELETE FROM eventos WHERE cliente_id = ANY(%s)", (clientes,))
         admin.execute("DELETE FROM auditoria WHERE cliente_id = ANY(%s)", (clientes,))

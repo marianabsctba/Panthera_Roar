@@ -427,6 +427,11 @@ th.numero-celula { text-align: right; }
 .volume details { margin-top: 8px; }
 #volume-numeros { margin-bottom: 8px; }
 .mapa svg { display: block; width: 100%; height: auto; }
+.mapa path, .mapa circle { vector-effect: non-scaling-stroke; }
+.mapa-cidade { fill: var(--rosa); fill-opacity: .85; stroke: var(--texto); stroke-width: 1; cursor: pointer; }
+.mapa-cidade:hover { fill-opacity: 1; stroke-width: 2; }
+.escolha-mapa { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.escolha-mapa button[aria-pressed="true"] { border-color: var(--rosa); color: var(--rosa); }
 .mapa-pais { fill: var(--painel-2); stroke: var(--borda); stroke-width: .4; }
 .mapa-com-dado { fill: var(--rosa); cursor: pointer; }
 .mapa-com-dado:hover { stroke: var(--texto); stroke-width: 1; }

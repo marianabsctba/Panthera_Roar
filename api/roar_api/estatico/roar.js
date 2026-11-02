@@ -485,7 +485,7 @@ async function carregarPanorama() {
     "Ninguém com risco no momento.");
   desenharBarras("grafico-sinais", p.sinais.map((x) => ({ rotulo: tituloDoSinal(x.tipo), valor: x.total, medida: "Sinais" })),
     "Nenhum sinal no período.");
-  desenharMapa(p.paises);
+  desenharMapa(p.paises, p.cidades, p.sem_cidade);
   desenharBarras("grafico-origens", p.origens.map((x) => ({ rotulo: x.origem, valor: x.total, medida: "Eventos" })),
     "Nenhuma origem no período.");
 }
@@ -516,14 +516,71 @@ function nomeDoPais(nome) {
   return codigo ? new Intl.DisplayNames(["pt-BR"], { type: "region" }).of(codigo) : nome;
 }
 
-function filtrarEventosPorPais(pais) {
+function filtrarEventosPorPais(pais, cidade = null) {
   estado.paisDosEventos = pais;
+  estado.cidadeDosEventos = cidade;
   estado.eventos = [];
   trocarVista("eventos");
   carregarEventos();
 }
 
-async function desenharMapa(paises) {
+// A base traz o estado em inglês e sem acento.
+const UF_DO_ESTADO = {
+  Acre: "AC", Alagoas: "AL", Amapa: "AP", Amazonas: "AM", Bahia: "BA", Ceara: "CE", "Federal District": "DF", "Espirito Santo": "ES", Goias: "GO",
+  Maranhao: "MA", "Mato Grosso": "MT", "Mato Grosso do Sul": "MS", "Minas Gerais": "MG", Para: "PA", Paraiba: "PB", Parana: "PR", Pernambuco: "PE",
+  Piaui: "PI", "Rio de Janeiro": "RJ", "Rio Grande do Norte": "RN", "Rio Grande do Sul": "RS", Rondonia: "RO", Roraima: "RR", "Santa Catarina": "SC",
+  "Sao Paulo": "SP", Sergipe: "SE", Tocantins: "TO",
+};
+
+function nomeDaCidade({ cidade, regiao, pais }) {
+  if (!regiao) return cidade;
+  // Fora do Brasil a base dá o nome inteiro; aqui a sigla é o que todo mundo reconhece.
+  return `${cidade}, ${pais === "Brazil" ? UF_DO_ESTADO[regiao] ?? regiao : regiao}`;
+}
+
+function desenharCidades(cidades, semCidade) {
+  const linhas = cidades.map((c) => {
+    const nome = el("td");
+    nome.append(botaoDeTabela(nomeDaCidade(c), "botao-discreto", () => filtrarEventosPorPais(c.pais, c.cidade)));
+    return [nome, el("td", null, nomeDoPais(c.pais)), el("td", "numero-celula", c.total.toLocaleString("pt-BR")), el("td", "numero-celula", c.graves.toLocaleString("pt-BR"))];
+  });
+  const aviso = el("p", "texto-secao", `${semCidade ? `${Number(semCidade).toLocaleString("pt-BR")} alertas têm só o país, sem cidade identificada. ` : ""}A cidade é provável: costuma acertar em empresas e universidades, mas em operadora pode apontar para a sede. Não use para localizar uma pessoa.`);
+  $("tabela-cidades").replaceChildren(...(linhas.length ? [montarTabela([["Cidade"], ["País"], ["Alertas", "numero-celula"], ["Altos e críticos", "numero-celula"]], linhas)] : []), aviso);
+}
+
+// A mesma projeção do desenho do mapa (Natural Earth): com ela, o ponto cai no lugar certo do país.
+function projetar(lat, lon) {
+  const f = lat * Math.PI / 180;
+  const l = lon * Math.PI / 180;
+  const f2 = f * f;
+  const f4 = f2 * f2;
+  const x = l * (0.8707 - 0.131979 * f2 + f4 * (-0.013791 + f4 * (0.003971 * f2 - 0.001529 * f4)));
+  const y = f * (1.007226 + f2 * (0.015085 + f4 * (-0.044475 + 0.028874 * f2 - 0.005916 * f4)));
+  return [desenhoDoMapa.largura / 2 + x * desenhoDoMapa.escala, (desenhoDoMapa.yNorte - y) * desenhoDoMapa.escala];
+}
+
+// Sul, norte, oeste, leste. Na visão do mundo, as cidades de um país caem umas sobre as outras.
+const REGIOES_DO_MAPA = [["Mundo", null], ["Brasil", [-34, 6, -75, -34]], ["América do Norte", [14, 60, -130, -60]], ["América do Sul", [-56, 13, -82, -34]],
+  ["Europa", [35, 62, -11, 35]], ["África", [-35, 37, -18, 52]], ["Ásia", [-10, 55, 60, 148]]];
+
+function caixaDaRegiao(limites) {
+  const { largura, altura } = desenhoDoMapa;
+  if (!limites) return [0, 0, largura, altura];
+  const [sul, norte, oeste, leste] = limites;
+  const cantos = [projetar(sul, oeste), projetar(sul, leste), projetar(norte, oeste), projetar(norte, leste)];
+  const xs = cantos.map((c) => c[0]);
+  const ys = cantos.map((c) => c[1]);
+  let w = Math.max(...xs) - Math.min(...xs);
+  let h = Math.max(...ys) - Math.min(...ys);
+  const cx = Math.min(...xs) + w / 2;
+  const cy = Math.min(...ys) + h / 2;
+  // Mantém a proporção do mapa, para a região não sair espremida.
+  if (w / h < largura / altura) w = h * largura / altura;
+  else h = w * altura / largura;
+  return [cx - w / 2, cy - h / 2, w, h];
+}
+
+async function desenharMapa(paises, cidades = [], semCidade = 0) {
   await PROMESSA_DO_MAPA;
   const destino = $("mapa-paises");
   const nota = $("mapa-nota");
@@ -546,7 +603,7 @@ async function desenharMapa(paises) {
       }
       forma.setAttribute("class", "mapa-pais mapa-com-dado");
       // Raiz quadrada: um país com muitos alertas não apaga todos os outros.
-      forma.style.fillOpacity = String(0.3 + 0.7 * Math.sqrt(dado.total / maior));
+      forma.style.fillOpacity = String(0.15 + 0.45 * Math.sqrt(dado.total / maior));
       const titulo = document.createElementNS(svgNs, "title");
       titulo.textContent = `${nomeDoPais(dado.pais)}: ${dado.total.toLocaleString("pt-BR")} alertas`;
       forma.append(titulo);
@@ -566,11 +623,44 @@ async function desenharMapa(paises) {
       pintar(ponto, c);
       svg.append(ponto);
     });
+    const maiorCidade = Math.max(1, ...cidades.map((c) => c.total));
+    // As grandes primeiro: assim as pequenas ficam por cima e continuam clicáveis.
+    const pontos = [...cidades].filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lon) && Math.abs(c.lat) <= 90 && Math.abs(c.lon) <= 180)
+      .sort((a, b) => b.total - a.total).map((c) => {
+        const [x, y] = projetar(c.lat, c.lon);
+        const ponto = document.createElementNS(svgNs, "circle");
+        ponto.setAttribute("cx", x);
+        ponto.setAttribute("cy", y);
+        ponto.setAttribute("class", "mapa-cidade");
+        const titulo = document.createElementNS(svgNs, "title");
+        titulo.textContent = `${nomeDaCidade(c)}: ${c.total.toLocaleString("pt-BR")} alertas`;
+        ponto.append(titulo);
+        ponto.addEventListener("click", () => filtrarEventosPorPais(c.pais, c.cidade));
+        svg.append(ponto);
+        return { ponto, raio: 2.5 + 7.5 * Math.sqrt(c.total / maiorCidade) };
+      });
+    const aproximar = (nome, limites) => {
+      estado.regiaoDoMapa = nome;
+      const caixa = caixaDaRegiao(limites);
+      svg.setAttribute("viewBox", caixa.join(" "));
+      // O ponto mantém o tamanho na tela, em qualquer aproximação.
+      pontos.forEach(({ ponto, raio }) => ponto.setAttribute("r", raio * caixa[2] / desenhoDoMapa.largura));
+      $("mapa-regioes").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === nome)));
+    };
+    $("mapa-regioes").replaceChildren(...REGIOES_DO_MAPA.map(([nome, limites]) => {
+      const b = el("button", "botao-discreto", nome);
+      b.type = "button";
+      b.addEventListener("click", () => aproximar(nome, limites));
+      return b;
+    }));
+    const atual = REGIOES_DO_MAPA.find(([nome]) => nome === estado.regiaoDoMapa) ?? REGIOES_DO_MAPA[0];
+    aproximar(...atual);
     destino.replaceChildren(svg);
     nota.textContent = paises.length
-      ? "Quanto mais forte a cor, mais alertas. Clique em um país para ver os eventos. É o país provável do endereço de origem, que pode ter sido forjado ou passar por VPN."
+      ? "Quanto mais forte a cor do país, mais alertas. Cada ponto é uma cidade: quanto maior, mais alertas. Clique para ver os eventos. É o país provável do endereço de origem, que pode ter sido forjado ou passar por VPN."
       : "Nenhum alerta com endereço externo no período.";
   }
+  desenharCidades(cidades, semCidade);
   const linhas = paises.map((p) => {
     const nome = el("td");
     nome.append(botaoDeTabela(nomeDoPais(p.pais), "botao-discreto", () => filtrarEventosPorPais(p.pais)));
@@ -626,7 +716,7 @@ function celula(conteudo, classe) {
 function linhaDeEvento(e) {
   return [el("td", null, quando(e.ocorrido_em)), celula(selo(e.severidade)),
     el("td", null, e.regra_descricao ?? e.regra_id), el("td", null, e.ativo ?? "-"),
-    el("td", "mono", e.usuario ?? "-"), el("td", "mono ip", e.ip_origem ?? "-"), celula(botaoBruto(e.id))];
+    el("td", "mono", e.usuario ?? "-"), el("td", "mono ip", e.cidade ? `${e.ip_origem} (${nomeDaCidade(e)})` : e.ip_origem ?? "-"), celula(botaoBruto(e.id))];
 }
 
 const COLUNAS_EVENTOS = [["Quando"], ["Severidade"], ["Evento"], ["Ativo"], ["Usuário"], ["Origem"], [""]];
@@ -638,10 +728,12 @@ async function carregarEventos(continuar = false) {
     dias: $("dias-eventos").value,
   });
   if (estado.paisDosEventos) consulta.set("pais", estado.paisDosEventos);
+  if (estado.cidadeDosEventos) consulta.set("cidade", estado.cidadeDosEventos);
   $("filtro-pais-eventos").hidden = !estado.paisDosEventos;
   if (estado.paisDosEventos) {
-    $("filtro-pais-eventos").replaceChildren(botaoDeTabela(`País: ${nomeDoPais(estado.paisDosEventos)} (tirar)`, "botao-discreto", () => {
+    $("filtro-pais-eventos").replaceChildren(botaoDeTabela(`${estado.cidadeDosEventos ? `Cidade: ${estado.cidadeDosEventos}` : `País: ${nomeDoPais(estado.paisDosEventos)}`} (tirar)`, "botao-discreto", () => {
       estado.paisDosEventos = null;
+      estado.cidadeDosEventos = null;
       carregarEventos();
     }));
   }
@@ -1139,7 +1231,56 @@ async function carregarFim() {
     return [el("td", null, a.nome ?? a.agente_id), el("td", null, a.sistema ?? "-"), el("td", null, quando(a.fim_fim ?? a.fim_inicio)),
       el("td", "numero-celula", Number(a.arquivos).toLocaleString("pt-BR")), acoes];
   })) : el("p", "vazio", "Nenhum ativo inscrito ainda."));
+  carregarYara();
 }
+
+const ESTADOS_DA_YARA = { pendente: "Aplicando...", ativa: "Ativa", recusada: "Recusada" };
+
+async function carregarYara() {
+  const r = await pedir("/api/yara");
+  const { regras, servidores, achados, comando } = await r.json();
+  $("tabela-yara").replaceChildren(regras.length ? montarTabela([["Nome"], ["Regras"], ["Estado"], [""]], regras.map((x) => {
+    const acao = el("td");
+    if (pode("gerir_fontes")) {
+      acao.append(botaoDeTabela("Tirar", "botao-discreto", async () => {
+        await pedir(`/api/yara/regras/${x.id}/desativar`, { method: "POST" });
+        carregarYara();
+      }));
+    }
+    return [el("td", null, x.nome), el("td", "mono", x.identificadores.join(", ")), el("td", null, x.mensagem ?? ESTADOS_DA_YARA[x.estado] ?? x.estado), acao];
+  })) : el("p", "vazio", "Nenhuma regra YARA ainda."));
+  $("yara-instalar").hidden = !regras.length;
+  $("yara-comando").textContent = comando;
+  const situacao = (s) => {
+    if (s.erro_em && (!s.pronto_em || s.erro_em > s.pronto_em)) return `Com problema desde ${quando(s.erro_em)}`;
+    return s.pronto_em ? `Pronto desde ${quando(s.pronto_em)}` : "Ainda não confirmou";
+  };
+  $("tabela-yara-servidores").replaceChildren(regras.length && servidores.length ? montarTabela([["Servidor"], ["Sistema"], ["Busca de malware"]], servidores.map((s) => [
+    el("td", null, s.nome ?? s.agente_id), el("td", null, s.sistema ?? "-"), el("td", null, situacao(s))])) : "");
+  $("tabela-yara-achados").replaceChildren(achados.length ? montarTabela([["Quando"], ["Servidor"], ["Regra"], ["Arquivo"], [""]], achados.map((a) => [
+    el("td", null, quando(a.ocorrido_em)), el("td", null, a.ativo ?? "-"), el("td", "mono", a.regra ?? "-"), el("td", "mono", a.arquivo ?? "-"), celula(botaoBruto(a.id))])) : "");
+}
+
+$("nova-yara").addEventListener("click", () => {
+  $("form-yara").hidden = false;
+  $("yara-nome").focus();
+});
+$("yara-cancelar").addEventListener("click", () => { $("form-yara").hidden = true; });
+$("form-yara").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const erro = $("yara-erro");
+  erro.hidden = true;
+  const r = await postarJson("/api/yara/regras", { nome: $("yara-nome").value, fonte: $("yara-fonte").value });
+  if (!r.ok) {
+    const corpo = await r.json().catch(() => ({}));
+    erro.textContent = typeof corpo.detail === "string" ? corpo.detail : "Dê um nome e cole o texto da regra.";
+    erro.hidden = false;
+    return;
+  }
+  $("form-yara").reset();
+  $("form-yara").hidden = true;
+  carregarYara();
+});
 
 async function carregarBase() {
   const a = estado.ativoDoFim;
@@ -2260,6 +2401,7 @@ const NOMES_DA_TRILHA = {
   buscar_logs: "Buscou nos logs", ver_bruto: "Viu alerta bruto", gerar_relatorio: "Gerou relatório", gerar_evidencia: "Gerou pacote de evidência", exportar_auditoria: "Exportou a trilha",
   criar_fonte: "Criou fonte de dados", desativar_fonte: "Desativou fonte de dados", criar_regra: "Criou regra", editar_regra: "Editou regra", desativar_regra: "Desativou regra",
   importar_regras: "Importou regras", exportar_regras: "Exportou regras", criar_playbook: "Criou playbook", alterar_playbook: "Alterou playbook",
+  criar_regra_yara: "Criou regra YARA", desativar_regra_yara: "Tirou regra YARA",
   ver_instalacao_de_agente: "Viu o comando de instalação de agente", criar_caminho_fim: "Incluiu caminho na integridade", desativar_caminho_fim: "Tirou caminho da integridade", pedir_varredura_fim: "Pediu varredura de integridade",
 };
 const nomeDaAcao = (acao) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");
@@ -3001,7 +3143,7 @@ function descreverAcoes(texto) {
 
 function descreverGatilho(definicao) {
   const { quando: q, se } = definicao;
-  const base = q.tipo === "risco"
+  const base = q.tipo === "indicador" ? "Evento bateu com indicador de ameaça" : q.tipo === "risco"
     ? `Risco a partir de ${(SEVERIDADE[q.severidade]?.texto ?? q.severidade).toLowerCase()}`
     : `Alerta da regra ${q.regra_id}`;
   const partes = (se ?? []).map(descreverCondicao);
@@ -3221,11 +3363,11 @@ function desenharEditor() {
   const { definicao } = estado.editor;
   const { quando: q } = definicao;
   const secaoQuando = el("div", "linha-campos");
-  secaoQuando.append(campoDoEditor("Acontecer", selecao([["evento", "Alerta de uma regra"], ["risco", "Risco de uma pessoa ou ativo"]], q.tipo, (tipo) => {
-    definicao.quando = tipo === "risco" ? { tipo, severidade: "alta" } : { tipo, regra_id: "" };
+  secaoQuando.append(campoDoEditor("Acontecer", selecao([["evento", "Alerta de uma regra"], ["risco", "Risco de uma pessoa ou ativo"], ["indicador", "Evento bateu com indicador de ameaça"]], q.tipo, (tipo) => {
+    definicao.quando = tipo === "risco" ? { tipo, severidade: "alta" } : tipo === "indicador" ? { tipo } : { tipo, regra_id: "" };
     desenharEditor();
   })));
-  secaoQuando.append(q.tipo === "risco"
+  if (q.tipo !== "indicador") secaoQuando.append(q.tipo === "risco"
     ? campoDoEditor("Severidade a partir de", selecao([["alta", "Alta"], ["critica", "Crítica"]], q.severidade, (v) => { q.severidade = v; }))
     : campoDoEditor("Número da regra", entrada(q.regra_id, (v) => { q.regra_id = v.trim(); }, { inputMode: "numeric", maxLength: 8, placeholder: "5712" })));
   const condicoes = el("div");

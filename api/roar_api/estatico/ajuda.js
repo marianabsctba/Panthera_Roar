@@ -43,6 +43,8 @@ export const AJUDA = [
       "Use os botões de 7, 30 ou 90 dias. Em Ver dados, os números do gráfico aparecem em tabela.",
       { h: "Países" },
       "O mapa mostra de onde vieram os alertas com endereço externo. Clique em um país para ver os eventos dele. Em Logs brutos, use pais=Brazil, com o nome em inglês. Em Automação, um playbook pode agir conforme o país.",
+      "Cada ponto no mapa é uma cidade: quanto maior, mais alertas. Use os botões acima dele para aproximar, como Brasil ou Europa, e clique em um ponto para ver os eventos dela. Em Logs brutos, use cidade=Curitiba ou estado=Parana, sem acento no estado.",
+      { aviso: "A cidade é ainda menos certa que o país. Costuma acertar em empresas e universidades, mas em operadora pode apontar para a sede, ou nem identificar. Não use para localizar uma pessoa." },
       { aviso: "É o país provável do endereço, pela base GeoLite2. Endereço pode ser forjado, ou passar por VPN e proxy: não bloqueie só por isso." },
       { h: "Volume recebido" },
       "Mostra quantos eventos por segundo (EPS) chegam agora, a média e o minuto mais cheio do período, quanto isso dá por dia e quanto já ocupa em disco. Em De onde vem o volume, veja quais ativos e tipos de log mais mandam, para decidir o que filtrar.",
@@ -134,6 +136,10 @@ export const AJUDA = [
       "Avisa quando um arquivo importante é criado, alterado ou apagado. Pastas como /etc e System32 já vêm monitoradas. Acrescente as suas em O que monitorar: a mudança chega aos ativos em alguns minutos.",
       "Abra um ativo para ver o estado atual dos arquivos, e peça uma varredura quando precisar.",
       { aviso: "\"Com quem alterou\" precisa do serviço de auditoria no ativo: auditd no Linux ou auditoria habilitada no Windows." },
+      { h: "Busca de malware" },
+      "Cole suas regras YARA em Busca de malware. Cada arquivo novo ou alterado nas pastas monitoradas é varrido no próprio servidor, e o que bater vira alerta alto, que pode disparar um playbook.",
+      "Depois da primeira regra ativa, rode uma vez em cada servidor Linux o comando que aparece na tela. O servidor passa para Pronto quando confirma. Regras novas chegam sozinhas, em alguns minutos.",
+      { aviso: "Só olha arquivos novos ou alterados: o que já estava no disco não é varrido. Arquivos acima de 256 MB não são lidos e geram um aviso. Windows ainda não é coberto." },
     ] },
   ] },
   { grupo: "Detectar e responder", artigos: [
@@ -154,6 +160,7 @@ export const AJUDA = [
     ] },
     { id: "automacao", vista: "automacao", titulo: "Automação", blocos: [
       "Um playbook diz o que fazer quando um alerta acontece. É montado em blocos, sem programar.",
+      "Ele pode disparar por um alerta de regra, pelo risco de uma pessoa ou ativo, ou quando um evento bate com um indicador de ameaça das suas fontes de inteligência. Achado em evento antigo aparece em Inteligência, mas não dispara resposta. Como a lista vem de fora, comece esse gatilho com um bloco de aprovação.",
       { h: "O que um playbook pode fazer" },
       { lista: [
         "Bloquear um endereço em um ativo, por tempo limitado. Só vale para endereço externo.",

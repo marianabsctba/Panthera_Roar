@@ -237,10 +237,11 @@
           <div id="grafico-origens"></div>
         </figure>
         <figure class="grafico grafico-largo">
-          <figcaption>Países de origem dos alertas</figcaption>
+          <figcaption>Países e cidades de origem dos alertas</figcaption>
+          <div id="mapa-regioes" class="escolha-mapa" role="group" aria-label="Aproximar o mapa"></div>
           <div id="mapa-paises" class="mapa"></div>
           <p id="mapa-nota" class="texto-secao"></p>
-          <details><summary>Ver dados</summary><div id="tabela-paises" class="tabela-rolagem"></div></details>
+          <details><summary>Ver dados</summary><div id="tabela-paises" class="tabela-rolagem"></div><div id="tabela-cidades" class="tabela-rolagem"></div></details>
         </figure>
       </div>
     </section>
@@ -607,6 +608,31 @@
         </div>
       </form>
       <div id="tabela-caminhos" class="tabela-rolagem"></div>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Busca de malware</h2>
+        <button id="nova-yara" type="button" class="botao-primario" data-permissao="gerir_fontes">Adicionar regra YARA</button>
+      </div>
+      <p class="texto-secao">Cada arquivo novo ou alterado nas pastas monitoradas é varrido no próprio servidor, com as suas regras. Quem bate vira alerta.</p>
+      <form id="form-yara" class="formulario-regra" hidden novalidate>
+        <div class="linha-campos">
+          <label>Nome <input id="yara-nome" type="text" maxlength="120" placeholder="Campanha de ransomware"></label>
+        </div>
+        <label>Regra YARA <textarea id="yara-fonte" rows="10" spellcheck="false" class="mono" placeholder="rule exemplo { strings: $a = &quot;texto suspeito&quot; condition: $a }"></textarea></label>
+        <p id="yara-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="yara-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Salvar</button>
+        </div>
+      </form>
+      <div id="tabela-yara" class="tabela-rolagem"></div>
+      <div id="yara-instalar" hidden>
+        <h3>Preparar um servidor Linux</h3>
+        <p class="texto-secao">Rode uma vez em cada servidor Debian ou Ubuntu, depois que a primeira regra estiver ativa. Em outro Linux, instale yara e jq pelo gerenciador de pacotes e rode as duas últimas partes. Windows ainda não é coberto.</p>
+        <pre id="yara-comando" class="bruto" tabindex="0"></pre>
+      </div>
+      <div id="tabela-yara-servidores" class="tabela-rolagem"></div>
+      <div id="tabela-yara-achados" class="tabela-rolagem"></div>
 
       <h2 class="titulo-secao">Ativos</h2>
       <div id="tabela-fim-ativos" class="tabela-rolagem"></div>

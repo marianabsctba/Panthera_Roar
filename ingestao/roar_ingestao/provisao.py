@@ -311,6 +311,32 @@ def aplicar_agent_conf(gerenciador_id, conteudo, grupo="default"):
     return True, {"status": "OK", "saida": ""}
 
 
+def aplicar_yara(gerenciador_id, regras, script, decodificadores, deteccoes, nome_das_deteccoes, grupo="default"):
+    """Decodificador e detecção ficam mesmo sem regras: sozinhos não fazem nada. Sem regras, a pasta dos agentes esvazia."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    compartilhada = f"/var/ossec/etc/shared/{grupo}"
+    copia = pasta / "yara.tmp"
+
+    def copiar(conteudo, caminho):
+        copia.write_text(conteudo, encoding="utf-8")
+        _compose(pasta, gerenciador_id, "cp", str(copia), f"gerenciador:{caminho}")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "wazuh:wazuh", caminho)
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
+
+    if not regras:
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", f"{compartilhada}/roar_yara.yar", f"{compartilhada}/roar_yara.sh")
+        return True, {"status": "OK", "saida": ""}
+    copiar(decodificadores, "/var/ossec/etc/decoders/roar_yara.xml")
+    ok, detalhe = aplicar_regras(gerenciador_id, nome_das_deteccoes, deteccoes, reiniciar=False)
+    if ok:
+        copiar(regras, f"{compartilhada}/roar_yara.yar")
+        copiar(script, f"{compartilhada}/roar_yara.sh")
+    else:
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", "/var/ossec/etc/decoders/roar_yara.xml")
+    copia.unlink(missing_ok=True)
+    return ok, detalhe
+
+
 def enviar_eventos(gerenciador_id, eventos):
     """Entrega ao analisador do gerenciador, que aplica as mesmas regras de qualquer outro log."""
     return _api_do_gerenciador(gerenciador_id, "POST", "/events", json={"events": eventos})
@@ -420,7 +446,7 @@ def remover(gerenciador_id, apagar_dados=True):
             banco.execute("DELETE FROM aprovacoes WHERE execucao_id IN (SELECT id FROM execucoes WHERE gerenciador_id = %s)",
                           (gerenciador_id,))
             for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias", "entrada_webhook", "fontes",
-                           "inscricao_de_agentes", "execucoes"):
+                           "inscricao_de_agentes", "execucoes", "fim_base", "fim_varreduras", "fim_caminhos"):
                 banco.execute(f"DELETE FROM {tabela} WHERE gerenciador_id = %s", (gerenciador_id,))
             banco.execute("DELETE FROM checkpoints WHERE fonte = %s", (gerenciador_id,))
             banco.execute("DELETE FROM gerenciadores WHERE id = %s", (gerenciador_id,))

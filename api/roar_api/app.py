@@ -47,7 +47,7 @@ from roar_ingestao import cofre, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
-from roar_ingestao import sigma, xml_proprio  # noqa: E402
+from roar_ingestao import sigma, xml_proprio, yara_regras  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
@@ -628,7 +628,19 @@ def panorama(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
                 FROM eventos WHERE pais IS NOT NULL AND nivel >= %s AND ocorrido_em >= {desde}
                 GROUP BY 1 ORDER BY total DESC, pais LIMIT 250""",
             (NIVEL_MINIMO_NA_FILA, dias)).fetchall()
-    return {"por_dia": por_dia, "sinais": sinais, "origens": origens, "paises": paises,
+        # A posição vem do alerta, que pode ter sido escrito por quem atacou: só número entra na conta.
+        cidades = con.execute(
+            f"""SELECT cidade, regiao, pais, count(*) AS total, count(*) FILTER (WHERE severidade IN ('alta', 'critica')) AS graves,
+                       avg(CASE WHEN jsonb_typeof(bruto #> '{{GeoLocation,location,lat}}') = 'number' THEN (bruto #>> '{{GeoLocation,location,lat}}')::float END) AS lat,
+                       avg(CASE WHEN jsonb_typeof(bruto #> '{{GeoLocation,location,lon}}') = 'number' THEN (bruto #>> '{{GeoLocation,location,lon}}')::float END) AS lon
+                FROM eventos WHERE pais IS NOT NULL AND cidade IS NOT NULL AND nivel >= %s AND ocorrido_em >= {desde}
+                GROUP BY 1, 2, 3 ORDER BY total DESC, cidade LIMIT 300""",
+            (NIVEL_MINIMO_NA_FILA, dias)).fetchall()
+        # Muitos endereços de operadora só dizem o país: sem este número, o mapa pareceria cobrir tudo.
+        sem_cidade = con.execute(
+            f"SELECT count(*) AS n FROM eventos WHERE pais IS NOT NULL AND cidade IS NULL AND nivel >= %s AND ocorrido_em >= {desde}",
+            (NIVEL_MINIMO_NA_FILA, dias)).fetchone()["n"]
+    return {"por_dia": por_dia, "sinais": sinais, "origens": origens, "paises": paises, "cidades": cidades, "sem_cidade": sem_cidade,
             "riscos": [r for r in riscos if r["risco"] >= 1]}
 
 
@@ -638,7 +650,7 @@ def _sem_curinga(texto):
 
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
-            dias: int = 30, antes_de: int = 0, pais: str = ""):
+            dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -655,13 +667,16 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if pais:
         condicoes.append("pais = %s")
         parametros.append(pais[:100])
+    if cidade:
+        condicoes.append("cidade = %s")
+        parametros.append(cidade[:100])
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             f"""SELECT id, ocorrido_em, severidade, nivel, regra_id, regra_descricao, agente_nome AS ativo,
-                       host(ip_origem) AS ip_origem, usuario, pais
+                       host(ip_origem) AS ip_origem, usuario, pais, cidade, regiao
                 FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
             (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
     return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}
@@ -1546,6 +1561,63 @@ def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(e
     return {"estado": "pendente"}
 
 
+class RegraYara(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    fonte: str = Field(max_length=300000)
+
+
+@app.get("/api/yara")
+def visao_de_yara(request: Request, sessao=Depends(exige(permissoes.VER))):
+    """O servidor só aparece como pronto depois de avisar: o gerenciador não tem como saber se o script foi instalado."""
+    with do_cliente(request, sessao) as con:
+        regras = con.execute(
+            "SELECT id, nome, identificadores, estado, mensagem, criado_em FROM yara_regras WHERE estado <> 'desativada' ORDER BY nome").fetchall()
+        servidores = con.execute(
+            """SELECT a.agente_id, a.nome, a.sistema, a.estado,
+                      (SELECT max(e.ocorrido_em) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id AND e.regra_id = %s) AS pronto_em,
+                      (SELECT max(e.ocorrido_em) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id AND e.regra_id = %s) AS erro_em
+               FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (yara_regras.REGRA_PRONTO, yara_regras.REGRA_ERRO)).fetchall()
+        achados = con.execute(
+            """SELECT id, ocorrido_em, agente_nome AS ativo, bruto #>> '{data,yara_regra}' AS regra, bruto #>> '{data,yara_arquivo}' AS arquivo FROM eventos
+               WHERE regra_id = %s AND ocorrido_em >= now() - interval '30 days' ORDER BY ocorrido_em DESC LIMIT 100""", (yara_regras.REGRA_ACHADO,)).fetchall()
+    return {"regras": regras, "servidores": servidores, "achados": achados, "comando": yara_regras.COMANDO_DE_INSTALACAO}
+
+
+@app.post("/api/yara/regras", status_code=201)
+def criar_regra_yara(dados: RegraYara, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    nome = dados.nome.strip()
+    try:
+        with do_cliente(request, sessao) as con:
+            gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+            if not gerenciador:
+                raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+            outras = [l["fonte"] for l in con.execute("SELECT fonte FROM yara_regras WHERE estado IN ('pendente', 'ativa')").fetchall()]
+            try:
+                identificadores = yara_regras.validar(dados.fonte, outras)
+            except yara_regras.RegraInvalida as erro:
+                raise HTTPException(status_code=422, detail=str(erro))
+            novo = con.execute(
+                """INSERT INTO yara_regras (cliente_id, gerenciador_id, nome, fonte, identificadores, criado_por)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (sessao["cliente_id"], gerenciador["id"], nome, dados.fonte, identificadores, sessao["usuario_id"])).fetchone()["id"]
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_regra_yara', %s)",
+                        (sessao["cliente_id"], sessao["usuario_id"], nome))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe uma regra com este nome.")
+    return {"id": novo, "estado": "pendente", "identificadores": identificadores}
+
+
+@app.post("/api/yara/regras/{identificador}/desativar", status_code=204)
+def desativar_regra_yara(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("UPDATE yara_regras SET estado = 'desativada' WHERE id = %s AND estado <> 'desativada' RETURNING nome", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_regra_yara', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], linha["nome"]))
+
+
 @app.get("/api/regras")
 def regras(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", dias: int = 30,
            so_disparadas: bool = False, deslocamento: int = 0):
@@ -2249,6 +2321,8 @@ def simular_playbook(dados: DefinicaoEntrada, request: Request, sessao=Depends(e
     with do_cliente(request, sessao) as con:
         if quando["tipo"] == "evento":
             lista = fatos.eventos_da_regra(con, quando["regra_id"], DIAS_DE_SIMULACAO, LIMITE_DE_SIMULACAO)
+        elif quando["tipo"] == "indicador":
+            lista = fatos.indicadores_recentes(con, DIAS_DE_SIMULACAO, LIMITE_DE_SIMULACAO)
         else:
             lista = fatos.riscos_recentes(con, DIAS_DE_SIMULACAO)[:LIMITE_DE_SIMULACAO]
     intervalo = timedelta(minutes=dados.intervalo_minutos)

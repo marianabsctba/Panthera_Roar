@@ -235,7 +235,7 @@ def _abrir_segredos(banco, cliente, fontes):
 
 def aplicar_fontes(banco, gerenciador_id, cliente):
     """Só reinicia o gerenciador se a configuração mudou. Reprovou: volta ao anterior e avisa na tela."""
-    from . import provisao
+    from . import provisao, yara_regras
 
     def com_cliente(sql, *args):
         banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
@@ -250,7 +250,7 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     pasta = PASTA_GERENCIADORES / gerenciador_id
     marca = pasta / "fontes.aplicadas"
     _abrir_segredos(banco, cliente, em_uso)
-    fragmento = fragmento_de_configuracao(em_uso)
+    fragmento = fragmento_de_configuracao(em_uso) + yara_regras.fragmento_de_configuracao(banco, gerenciador_id, cliente)
     arquivos = arquivos_de_credenciais(em_uso)
     resumo = hashlib.sha256((fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento).encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
@@ -385,7 +385,7 @@ def buscar_apis(banco, gerenciador_id, cliente):
 
 
 def ciclo(banco):
-    from . import fim
+    from . import fim, yara_regras
     from .regras import aplicar_regras_proprias
 
     for gerenciador_id, cliente in banco.gerenciadores():
@@ -397,6 +397,8 @@ def ciclo(banco):
             fim.aplicar_caminhos(banco, gerenciador_id, cliente)
             fim.enviar_varreduras(banco, gerenciador_id, cliente)
             fim.atualizar_base(banco, gerenciador_id, cliente)
+            # Antes das fontes: a resposta que entra na configuração cita a detecção instalada aqui.
+            yara_regras.aplicar_regras(banco, gerenciador_id, cliente)
             aplicar_fontes(banco, gerenciador_id, cliente)
             # No mesmo ciclo curto: regra criada ou editada na tela não pode esperar a sincronização de hora em hora.
             aplicar_regras_proprias(banco, gerenciador_id, cliente)

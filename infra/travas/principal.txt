@@ -2,8 +2,8 @@
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.16.0
-argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
+argon2-cffi==25.1.0
 bcrypt==5.0.0
 brotli==1.2.1
 certifi==2026.10.23
@@ -12,8 +12,8 @@ charset-normalizer==3.5.2
 click==8.5.0
 cryptography==50.0.2
 cssselect2==0.10.1
-diskcache==5.6.3
 diskcache-stubs==5.6.3.6.20240818
+diskcache==5.6.3
 fastapi==0.162.0
 fonttools==4.68.0
 h11==0.16.0
@@ -34,9 +34,9 @@ packaging==26.3
 paramiko==5.1.0
 pillow==13.0.0
 protobuf==7.36.2
-psycopg==3.2.13
 psycopg-binary==3.2.13
 psycopg-pool==3.3.3
+psycopg==3.2.13
 pycparser==3.12
 pydantic==2.14.2
 pydantic_core==2.50.2
@@ -63,4 +63,5 @@ urllib3==2.8.0
 uvicorn==0.54.0
 weasyprint==70.0
 webencodings==0.6.1
+yara-python==4.5.4
 zopfli==0.4.3
