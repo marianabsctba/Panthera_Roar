@@ -59,7 +59,7 @@ def novo_cliente(nome):
                   (ger, cliente, random.randint(40000, 60000)))
     senha = secrets.token_urlsafe(18)
     email = f"analista-{sufixo}@exemplo.test"
-    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, %s, %s)",
+    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, %s, %s, 'administrador')",
                   (cliente, email, f"Analista {nome}", PasswordHasher().hash(senha)))
     agora = datetime.now(timezone.utc)
     entidade = ADMIN.execute(

@@ -77,7 +77,7 @@ def main():
     arquivo = Path("/opt/panthera-roar/demonstracao.txt")
     senha = arquivo.read_text().splitlines()[1] if arquivo.exists() else secrets.token_urlsafe(16)
     email = "demonstracao@exemplo.test"
-    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
+    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista', %s, 'administrador')",
                   (cliente, email, PasswordHasher().hash(senha)))
 
     n = [0]

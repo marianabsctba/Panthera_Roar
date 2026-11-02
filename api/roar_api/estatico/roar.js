@@ -43,6 +43,8 @@ const SINAIS = {
   },
 };
 
+const NOMES_DE_PERFIL = { administrador: "Administração", engenharia: "Engenharia de detecção", analista_n2: "Analista N2", analista_n1: "Analista N1", auditor: "Auditoria" };
+
 const NOMES_DE_NORMAS = { pci_dss: "PCI DSS", gdpr: "GDPR", hipaa: "HIPAA", nist_800_53: "NIST 800-53", tsc: "TSC", gpg13: "GPG13" };
 
 const TATICAS_DE_DEFESA = {
@@ -124,10 +126,29 @@ async function abrirPainel() {
   const eu = await r.json();
   estado.fuso = eu.fuso;
   $("cliente").textContent = eu.cliente;
-  $("usuario").textContent = eu.nome;
+  $("usuario").textContent = `${eu.nome} (${NOMES_DE_PERFIL[eu.perfil] ?? eu.perfil})`;
+  estado.permissoes = new Set(eu.permissoes);
+  // Esconder é só conforto: quem decide é a API, em cada rota.
+  document.querySelectorAll("[data-permissao]").forEach((e) => { e.hidden = !pode(e.dataset.permissao); });
   $("entrada").hidden = true;
   $("painel").hidden = false;
+  if (eu.trocar_senha) {
+    abrirTrocaDeSenha(true);
+    return;
+  }
   await Promise.all([carregarFila(), carregarPanorama()]);
+}
+
+function pode(permissao) {
+  return estado.permissoes?.has(permissao) ?? false;
+}
+
+function abrirTrocaDeSenha(obrigatoria) {
+  $("form-senha").reset();
+  $("senha-erro").hidden = true;
+  $("aviso-senha").hidden = !obrigatoria;
+  $("fechar-senha").hidden = obrigatoria;
+  $("janela-senha").showModal();
 }
 
 async function carregarFila() {
@@ -1142,10 +1163,12 @@ async function abrirRegra(regraId) {
       return b;
     };
     acoes.append(botao(`Baixar ${regra.arquivo}`, "botao-discreto", () => baixar(`/api/regras/arquivos/${encodeURIComponent(regra.arquivo)}`, regra.arquivo)),
-      botao("Usar como base de uma regra nova", "botao-discreto", () => personalizarRegra(xml)));
-    if (ajuste) acoes.append(botao("Restaurar a original", "botao-discreto", () => ajustarRegra(regra.regra_id, "restaurar")));
-    if (!ajuste?.desligada) acoes.append(botao("Desativar", "botao-discreto", () => ajustarRegra(regra.regra_id, "desligar")));
-    acoes.append(botao("Editar", "botao-primario", () => editarRegraDoCatalogo(regra.regra_id, editada ? ajuste.origem : xml)));
+      ...(pode("gerir_regras") ? [botao("Usar como base de uma regra nova", "botao-discreto", () => personalizarRegra(xml))] : []));
+    if (pode("gerir_regras")) {
+      if (ajuste) acoes.append(botao("Restaurar a original", "botao-discreto", () => ajustarRegra(regra.regra_id, "restaurar")));
+      if (!ajuste?.desligada) acoes.append(botao("Desativar", "botao-discreto", () => ajustarRegra(regra.regra_id, "desligar")));
+      acoes.append(botao("Editar", "botao-primario", () => editarRegraDoCatalogo(regra.regra_id, editada ? ajuste.origem : xml)));
+    }
     corpo.push(acoes, el("p", "texto-secao", "O arquivo original nunca é alterado. Sua versão vale no lugar dele, e restaurar volta ao original. Desativada, a regra para de alertar, mas as que dependem dela continuam funcionando."));
   } else {
     corpo.push(el("h3", null, "Regra original"),
@@ -1254,11 +1277,13 @@ async function carregarRegrasProprias() {
   }
   destino.replaceChildren(montarTabela([["Regra"], ["Estado"], ["Formato"], ["Criada em"], ["Observação"], [""]], regras.map((x) => {
     const acao = el("td");
-    const editar = el("button", "botao-discreto botao-tabela", "Abrir e editar");
-    editar.type = "button";
-    editar.addEventListener("click", () => editarRegraPropria(x));
-    acao.append(editar, " ");
-    if (x.estado === "ativa" || x.estado === "pendente") {
+    if (pode("gerir_regras")) {
+      const editar = el("button", "botao-discreto botao-tabela", "Abrir e editar");
+      editar.type = "button";
+      editar.addEventListener("click", () => editarRegraPropria(x));
+      acao.append(editar, " ");
+    }
+    if (pode("gerir_regras") && (x.estado === "ativa" || x.estado === "pendente")) {
       const b = el("button", "botao-discreto botao-tabela", "Desativar");
       b.type = "button";
       b.addEventListener("click", async () => {
@@ -1458,6 +1483,107 @@ $("copiar-bruto").addEventListener("click", async () => {
   setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
 });
 
+// ------------------------------------------------------------------ usuários
+
+const O_QUE_CADA_UM_FAZ = [
+  ["Ver painéis, fila, eventos, regras e fontes", "ver"], ["Ver log e alerta brutos", "ver_bruto"], ["Decidir aprovações da automação", "aprovar"],
+  ["Criar e mudar regras", "gerir_regras"], ["Criar e mudar playbooks", "gerir_playbooks"], ["Criar e mudar fontes de dados", "gerir_fontes"],
+  ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"],
+];
+const PERMISSOES_POR_PERFIL = {
+  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios"],
+  engenharia: ["ver", "ver_bruto", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente"],
+  analista_n2: ["ver", "ver_bruto", "aprovar"],
+  analista_n1: ["ver", "ver_bruto"],
+  auditor: ["ver"],
+};
+
+function mostrarSenhaTemporaria(texto, senha) {
+  const copiar = botaoDeTabela("Copiar", "botao-discreto", async () => {
+    await navigator.clipboard.writeText(senha);
+    copiar.textContent = "Copiado";
+  });
+  $("senha-temporaria").replaceChildren(el("strong", null, texto), el("pre", "bruto", senha), copiar);
+  $("senha-temporaria").hidden = false;
+}
+
+async function alterarUsuario(u, mudanca) {
+  const r = await postarJson(`/api/usuarios/${u.id}`, { perfil: u.perfil, ativo: u.ativo, ...mudanca }, "PUT");
+  if (!r.ok) {
+    $("usuario-erro").textContent = await detalheDoErro(r, "Não foi possível alterar.");
+    $("usuario-erro").hidden = false;
+    $("form-usuario").hidden = false;
+  }
+  await carregarUsuarios();
+}
+
+async function carregarUsuarios() {
+  const r = await pedir("/api/usuarios");
+  if (!r.ok) return;
+  const { usuarios, eu } = await r.json();
+  $("tabela-usuarios").replaceChildren(montarTabela([["Nome"], ["E-mail"], ["Perfil"], ["Situação"], [""]], usuarios.map((u) => {
+    const perfil = el("td");
+    perfil.append(selecao(Object.entries(NOMES_DE_PERFIL), u.perfil, (v) => alterarUsuario(u, { perfil: v })));
+    const acoes = el("td");
+    acoes.append(botaoDeTabela(u.ativo ? "Desativar" : "Reativar", "botao-discreto", () => alterarUsuario(u, { ativo: !u.ativo })), " ",
+      botaoDeTabela("Nova senha", "botao-discreto", async () => {
+        const n = await pedir(`/api/usuarios/${u.id}/nova-senha`, { method: "POST" });
+        if (n.ok) mostrarSenhaTemporaria(`Senha temporária de ${u.nome}. Ela não aparece de novo.`, (await n.json()).senha_temporaria);
+      }));
+    return [el("td", null, u.id === eu ? `${u.nome} (você)` : u.nome), el("td", "mono", u.email), perfil, el("td", null, u.ativo ? "Ativo" : "Desativado"), acoes];
+  })));
+  $("tabela-perfis").replaceChildren(montarTabela([["Permissão"], ...Object.values(NOMES_DE_PERFIL).map((n) => [n])],
+    O_QUE_CADA_UM_FAZ.map(([texto, chave]) => [el("td", null, texto),
+      ...Object.keys(NOMES_DE_PERFIL).map((p) => el("td", null, PERMISSOES_POR_PERFIL[p].includes(chave) ? "Sim" : "-"))])));
+}
+
+$("usuario-perfil").replaceChildren(...Object.entries(NOMES_DE_PERFIL).map(([v, n]) => {
+  const o = el("option", null, n);
+  o.value = v;
+  return o;
+}));
+$("usuario-perfil").value = "analista_n1";
+$("novo-usuario").addEventListener("click", () => {
+  $("form-usuario").hidden = false;
+  $("senha-temporaria").hidden = true;
+  $("usuario-erro").hidden = true;
+  $("usuario-nome").focus();
+});
+$("usuario-cancelar").addEventListener("click", () => { $("form-usuario").hidden = true; });
+$("form-usuario").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  $("usuario-erro").hidden = true;
+  const r = await postarJson("/api/usuarios", { nome: $("usuario-nome").value.trim(), email: $("usuario-email").value.trim(), perfil: $("usuario-perfil").value });
+  if (!r.ok) {
+    $("usuario-erro").textContent = await detalheDoErro(r, "Confira o nome e o e-mail.");
+    $("usuario-erro").hidden = false;
+    return;
+  }
+  const nome = $("usuario-nome").value.trim();
+  mostrarSenhaTemporaria(`Senha temporária de ${nome}. Ela não aparece de novo, e no primeiro acesso precisa ser trocada.`, (await r.json()).senha_temporaria);
+  $("form-usuario").reset();
+  $("usuario-perfil").value = "analista_n1";
+  $("form-usuario").hidden = true;
+  await carregarUsuarios();
+});
+$("abrir-senha").addEventListener("click", () => abrirTrocaDeSenha(false));
+$("fechar-senha").addEventListener("click", () => $("janela-senha").close());
+// Senha temporária: Esc não pode fechar a janela e deixar a pessoa numa tela sem dados.
+$("janela-senha").addEventListener("cancel", (e) => { if ($("fechar-senha").hidden) e.preventDefault(); });
+$("form-senha").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const obrigatoria = $("fechar-senha").hidden;
+  const r = await postarJson("/api/minha-senha", { atual: $("senha-atual").value, nova: $("senha-nova").value });
+  $("form-senha").reset();
+  if (!r.ok) {
+    $("senha-erro").textContent = await detalheDoErro(r, "A nova senha precisa ter pelo menos 12 caracteres.");
+    $("senha-erro").hidden = false;
+    return;
+  }
+  $("janela-senha").close();
+  if (obrigatoria) await abrirPainel();
+});
+
 // ------------------------------------------------------------------ fontes de dados
 
 const SAUDE_DA_FONTE = {
@@ -1473,17 +1599,19 @@ async function carregarFontes() {
   const r = await pedir("/api/fontes");
   const { fontes, agentes, endereco, porta_syslog: porta } = await r.json();
   $("resumo-agentes").textContent = agentes.total
-    ? `${agentes.total} ativos inscritos, ${agentes.conectados} conectados agora.`
+    ? `${agentes.total === 1 ? "1 ativo inscrito" : `${agentes.total} ativos inscritos`}, ${agentes.conectados === 1 ? "1 conectado" : `${agentes.conectados} conectados`} agora.`
     : "Nenhum ativo inscrito ainda.";
   $("destino-syslog").textContent = porta ? `Aponte os equipamentos para ${endereco}, porta ${porta}.` : "";
   $("tabela-fontes").replaceChildren(fontes.length ? montarTabela(
     [["Nome"], ["Tipo"], ["Detalhe"], ["Estado"], ["Dados"], ["Último dado"], [""]],
     fontes.map((f) => {
       const acoes = el("td");
-      acoes.append(botaoDeTabela("Desativar", "botao-discreto", async () => {
-        await pedir(`/api/fontes/${f.id}/desativar`, { method: "POST" });
-        await carregarFontes();
-      }));
+      if (pode("gerir_fontes")) {
+        acoes.append(botaoDeTabela("Desativar", "botao-discreto", async () => {
+          await pedir(`/api/fontes/${f.id}/desativar`, { method: "POST" });
+          await carregarFontes();
+        }));
+      }
       const detalhe = f.tipo === "syslog" ? `${f.config.protocolo.toUpperCase()}: ${f.config.origens.join(", ")}`
         : f.config.organizacao ?? f.config.locatario ?? f.config.endereco ?? f.config.bucket ?? f.config.dominio ?? f.config.projeto
           ?? (f.config.nivel !== undefined ? `A partir do nível ${f.config.nivel}` : f.tipo === "webhook" ? "Token guardado" : "-");
@@ -1837,8 +1965,12 @@ async function carregarAutomacao() {
     [["Quando"], ["Playbook"], ["O que aconteceu"], ["Alvo"], ["Vai fazer"], ["Decisão"]],
     pendentes.map((a) => {
       const decisao = el("td");
-      decisao.append(botaoDeTabela("Aprovar", "botao-primario", () => decidirAprovacao(a.id, "aprovar")), " ",
-        botaoDeTabela("Recusar", "botao-discreto", () => decidirAprovacao(a.id, "recusar")));
+      if (pode("aprovar")) {
+        decisao.append(botaoDeTabela("Aprovar", "botao-primario", () => decidirAprovacao(a.id, "aprovar")), " ",
+          botaoDeTabela("Recusar", "botao-discreto", () => decidirAprovacao(a.id, "recusar")));
+      } else {
+        decisao.textContent = "Seu perfil não decide";
+      }
       return [el("td", null, quando(a.criada_em)), el("td", null, a.playbook), el("td", null, a.titulo ?? "-"),
         el("td", "mono ip", a.alvo ?? "-"), el("td", null, descreverAcoes(a.descricao)), decisao];
     })) : el("p", "vazio", "Nenhuma decisão pendente."));
@@ -1847,9 +1979,11 @@ async function carregarAutomacao() {
     [["Nome"], ["Quando"], ["Então"], ["Aprovação"], ["Execuções", "numero-celula"], [""]],
     playbooks.map((p) => {
       const acoes = el("td");
-      acoes.append(el("span", "etiqueta", p.ativo ? "Ativo" : "Desativado"),
-        botaoDeTabela("Editar", "botao-discreto", () => abrirEditorDePlaybook(p)), " ",
-        botaoDeTabela(p.ativo ? "Desativar" : "Ativar", "botao-discreto", () => ligarPlaybook(p.id, p.ativo ? "desativar" : "ativar")));
+      acoes.append(el("span", "etiqueta", p.ativo ? "Ativo" : "Desativado"));
+      if (pode("gerir_playbooks")) {
+        acoes.append(botaoDeTabela("Editar", "botao-discreto", () => abrirEditorDePlaybook(p)), " ",
+          botaoDeTabela(p.ativo ? "Desativar" : "Ativar", "botao-discreto", () => ligarPlaybook(p.id, p.ativo ? "desativar" : "ativar")));
+      }
       const comAprovacao = JSON.stringify(p.definicao.blocos).includes('"aprovacao"');
       return [el("td", null, p.nome), el("td", null, descreverGatilho(p.definicao)), el("td", null, contarAcoes(p.definicao.blocos).join(", ") || "-"),
         el("td", null, comAprovacao ? "Pede aprovação" : "Automático"), el("td", "numero-celula", p.execucoes), acoes];
@@ -2161,9 +2295,10 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "normas", "regras", "automacao"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
+  if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
   if (vista === "automacao") carregarAutomacao();
   if (vista === "logs" && !estado.logs.length) carregarLogs();

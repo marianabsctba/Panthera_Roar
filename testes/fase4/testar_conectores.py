@@ -148,7 +148,7 @@ def main():
             lambda: "1.0.0.4" in sh("docker", "exec", nome, "iptables", "-S", "INPUT"), limite=40))
 
         senha, email = secrets.token_urlsafe(18), f"analista-{uuid.uuid4().hex[:8]}@exemplo.test"
-        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
+        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista', %s, 'administrador')",
                           (g["cliente"], email, PasswordHasher().hash(senha)))
         with TestClient(app, base_url="https://testserver") as http:
             http.post("/api/entrar", json={"email": email, "senha": senha})

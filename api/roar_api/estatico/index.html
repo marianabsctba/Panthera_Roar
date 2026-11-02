@@ -28,6 +28,7 @@
       <div class="sessao">
         <span id="cliente" class="cliente"></span>
         <span id="usuario"></span>
+        <button id="abrir-senha" type="button" class="botao-discreto">Trocar senha</button>
         <button id="sair" type="button" class="botao-discreto">Sair</button>
       </div>
     </header>
@@ -51,7 +52,32 @@
       <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
       <button type="button" data-vista="automacao">Automação</button>
+      <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
     </nav>
+
+    <section id="vista-usuarios" class="pagina" aria-label="Usuários" hidden>
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Usuários</h2>
+        <button id="novo-usuario" type="button" class="botao-primario">Novo usuário</button>
+      </div>
+      <p class="texto-secao">Mudar o perfil ou desativar encerra as sessões abertas daquela pessoa na hora.</p>
+      <form id="form-usuario" class="formulario-regra" hidden novalidate autocomplete="off">
+        <div class="linha-campos">
+          <label>Nome <input id="usuario-nome" type="text" maxlength="120"></label>
+          <label>E-mail <input id="usuario-email" type="email" maxlength="254"></label>
+          <label>Perfil <select id="usuario-perfil"></select></label>
+        </div>
+        <p id="usuario-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="usuario-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Criar</button>
+        </div>
+      </form>
+      <div id="senha-temporaria" class="simulacao" hidden></div>
+      <div id="tabela-usuarios" class="tabela-rolagem"></div>
+      <h2 class="titulo-secao">O que cada perfil pode fazer</h2>
+      <div id="tabela-perfis" class="tabela-rolagem"></div>
+    </section>
 
     <section id="vista-automacao" class="pagina" aria-label="Automação" hidden>
       <h2 class="titulo-secao">Aguardando sua decisão</h2>
@@ -60,7 +86,7 @@
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Playbooks</h2>
-        <button id="novo-playbook" type="button" class="botao-primario">Novo playbook</button>
+        <button id="novo-playbook" type="button" class="botao-primario" data-permissao="gerir_playbooks">Novo playbook</button>
       </div>
       <div id="tabela-playbooks" class="tabela-rolagem"></div>
 
@@ -189,14 +215,14 @@
     <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Ativos com agente</h2>
-        <button id="instalar-agente" type="button" class="botao-primario">Instalar em um ativo</button>
+        <button id="instalar-agente" type="button" class="botao-primario" data-permissao="instalar_agente">Instalar em um ativo</button>
       </div>
       <p id="resumo-agentes" class="texto-secao"></p>
       <div id="instalacao-agente" hidden></div>
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Syslog</h2>
-        <button id="nova-fonte" type="button" class="botao-primario">Adicionar equipamento</button>
+        <button id="nova-fonte" type="button" class="botao-primario" data-permissao="gerir_fontes">Adicionar equipamento</button>
       </div>
       <p class="texto-secao">Para firewall, switch e outros equipamentos que não aceitam agente. O syslog não é cifrado: use em rede de confiança.</p>
       <form id="form-fonte" class="formulario-regra" hidden novalidate>
@@ -220,7 +246,7 @@
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Nuvem e avisos</h2>
-        <button id="nova-nuvem" type="button" class="botao-primario">Conectar um serviço</button>
+        <button id="nova-nuvem" type="button" class="botao-primario" data-permissao="gerir_fontes">Conectar um serviço</button>
       </div>
       <p class="texto-secao">A credencial é guardada cifrada e nunca volta para a tela. Estes conectores ainda não foram testados com contas reais.</p>
       <form id="form-nuvem" class="formulario-regra" hidden novalidate autocomplete="off">
@@ -243,7 +269,7 @@
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Webhook</h2>
-        <button id="novo-webhook" type="button" class="botao-primario">Criar um endereço</button>
+        <button id="novo-webhook" type="button" class="botao-primario" data-permissao="gerir_fontes">Criar um endereço</button>
       </div>
       <p class="texto-secao">Para qualquer sistema que saiba enviar JSON. Cada endereço tem um token próprio, que aparece uma única vez.</p>
       <form id="form-webhook" class="formulario-regra" hidden novalidate>
@@ -258,7 +284,7 @@
 
       <div class="titulo-com-acao">
         <h2 class="titulo-secao">Buscar em uma API</h2>
-        <button id="nova-api" type="button" class="botao-primario">Conectar um sistema</button>
+        <button id="nova-api" type="button" class="botao-primario" data-permissao="gerir_fontes">Conectar um sistema</button>
       </div>
       <p class="texto-secao">Para sistemas sem módulo pronto: buscamos o endereço de tempos em tempos e entregamos só o que for novo.</p>
       <form id="form-api" class="formulario-regra" hidden novalidate autocomplete="off">
@@ -312,9 +338,9 @@
         <h2 class="titulo-secao">Regras criadas aqui</h2>
         <div class="acoes-regra">
           <button id="exportar-regras" type="button" class="botao-discreto">Exportar</button>
-          <button id="abrir-importar" type="button" class="botao-discreto">Importar arquivo</button>
+          <button id="abrir-importar" type="button" class="botao-discreto" data-permissao="gerir_regras">Importar arquivo</button>
           <button id="abrir-biblioteca" type="button" class="botao-discreto">Biblioteca</button>
-          <button id="nova-regra" type="button" class="botao-primario">Nova regra</button>
+          <button id="nova-regra" type="button" class="botao-primario" data-permissao="gerir_regras">Nova regra</button>
         </div>
       </div>
       <div id="tabela-proprias" class="tabela-rolagem"></div>
@@ -482,6 +508,20 @@
         <button id="pb-simular" type="button" class="botao-discreto">Simular nos últimos 7 dias</button>
         <button type="submit" class="botao-primario">Salvar playbook</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="janela-senha" class="janela" aria-labelledby="titulo-senha">
+    <div class="janela-topo">
+      <h2 id="titulo-senha">Trocar senha</h2>
+      <button id="fechar-senha" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <p id="aviso-senha" class="texto-secao" hidden>Sua senha é temporária. Crie a sua para continuar.</p>
+    <form id="form-senha" class="formulario-regra" novalidate>
+      <label>Senha atual <input id="senha-atual" type="password" autocomplete="current-password"></label>
+      <label>Nova senha, com pelo menos 12 caracteres <input id="senha-nova" type="password" autocomplete="new-password" minlength="12"></label>
+      <p id="senha-erro" class="erro" role="alert" hidden></p>
+      <div class="acoes-regra"><button type="submit" class="botao-primario">Trocar</button></div>
     </form>
   </dialog>
 

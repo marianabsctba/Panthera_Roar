@@ -86,7 +86,7 @@ async def principal():
         registrar("os três prazos chegam ao agente", all(f"firewall-drop{s} " in recebeu for s in provisao.SEGUNDOS_DE_BLOQUEIO), recebeu.replace("\n", " | "))
 
         senha, email = secrets.token_urlsafe(18), f"analista-{uuid.uuid4().hex[:8]}@exemplo.test"
-        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
+        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista', %s, 'administrador')",
                           (g["cliente"], email, PasswordHasher().hash(senha)))
         ambiente = {**os.environ, "PYTHONPATH": str(RAIZ / "motor")}
         cliente = str(g["cliente"])

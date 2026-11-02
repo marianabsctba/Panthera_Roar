@@ -65,7 +65,7 @@ class Cenario:
         self.admin.execute("INSERT INTO gerenciadores (id, cliente_id, porta_base) VALUES (%s, %s, %s)",
                            (gerenciador, cliente, 40000 + secrets.randbelow(20000)))
         senha, email = secrets.token_urlsafe(18), f"{nome}-{SUFIXO}@exemplo.test"
-        usuario = self.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, %s, %s) RETURNING id",
+        usuario = self.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, %s, %s, 'administrador') RETURNING id",
                                      (cliente, email, f"Analista {nome}", PasswordHasher().hash(senha))).fetchone()[0]
         c = {"id": cliente, "gerenciador": gerenciador, "usuario": usuario, "acesso": {"email": email, "senha": senha}}
         self.clientes.append(c)

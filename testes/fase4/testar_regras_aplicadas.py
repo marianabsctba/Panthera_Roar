@@ -194,11 +194,11 @@ def main():
 
         print("\n== Editar pela tela", flush=True)
         senha, email = secrets.token_urlsafe(18), f"analista-{uuid.uuid4().hex[:8]}@exemplo.test"
-        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
+        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista', %s, 'administrador')",
                           (g["cliente"], email, PasswordHasher().hash(senha)))
         outro = amb.admin.execute("INSERT INTO clientes (nome) VALUES (%s) RETURNING id", (f"outro-{uuid.uuid4().hex[:8]}",)).fetchone()[0]
         senha2, email2 = secrets.token_urlsafe(18), f"outro-{uuid.uuid4().hex[:8]}@exemplo.test"
-        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Outro', %s)",
+        amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Outro', %s, 'administrador')",
                           (outro, email2, PasswordHasher().hash(senha2)))
         editada = ('<group name="teste,"><rule id="100001" level="10"><if_group>syslog</if_group>'
                    "<match>palavra-editada</match><description>Manual de teste</description></rule></group>")

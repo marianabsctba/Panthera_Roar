@@ -14,11 +14,13 @@ import re
 import secrets
 import sys
 import time
+import uuid
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import psycopg
 import requests
 import yaml
 from argon2 import PasswordHasher
@@ -36,6 +38,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
+from roar_api import permissoes  # noqa: E402
 from roar_ingestao import cofre  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
@@ -45,6 +48,7 @@ INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
 ESTATICO = Path(__file__).parent / "estatico"
 COOKIE = "roar_sessao"
 HORAS_DE_SESSAO = 12
+SENHA_MINIMA = 12
 TENTATIVAS = 5
 JANELA_TENTATIVAS = 900
 # Abaixo disso são acontecimentos normais, como login: alimentam o UEBA, mas não pedem atenção.
@@ -154,6 +158,19 @@ def sessao_atual(request: Request):
     return linha
 
 
+def exige(permissao):
+    """Toda rota com dado declara o que pede. O teste de perfis confere cada uma contra a tabela esperada."""
+    def verificar(sessao=Depends(sessao_atual)):
+        # Senha gerada por outra pessoa é temporária: até trocar, ela só serve para trocar.
+        if sessao["trocar_senha"]:
+            raise HTTPException(status_code=403, detail="Troque a senha temporária para continuar.")
+        if not permissoes.pode(sessao["perfil"], permissao):
+            raise HTTPException(status_code=403, detail="Seu perfil não permite esta ação.")
+        return sessao
+    verificar.permissao = permissao
+    return verificar
+
+
 @contextmanager
 def do_cliente(request: Request, sessao):
     """Transação sob o RLS do cliente da sessão. A definição morre com a transação."""
@@ -210,11 +227,102 @@ def sair(request: Request, response: Response):
 
 @app.get("/api/eu")
 def eu(sessao=Depends(sessao_atual)):
-    return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"]}
+    return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"],
+            "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ()))}
+
+
+class TrocaDeSenha(BaseModel):
+    atual: str = Field(max_length=256)
+    nova: str = Field(min_length=SENHA_MINIMA, max_length=256)
+
+
+@app.post("/api/minha-senha", status_code=204)
+def trocar_minha_senha(dados: TrocaDeSenha, request: Request, sessao=Depends(sessao_atual)):
+    """Exige a senha atual: uma sessão esquecida aberta não pode virar posse da conta."""
+    chave = f"senha:{sessao['usuario_id']}"
+    if _bloqueado(chave):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    with request.app.state.banco.connection() as con:
+        guardado = con.execute("SELECT roar_hash_da_senha(%s) AS h", (sessao["usuario_id"],)).fetchone()["h"]
+    try:
+        hasher.verify(guardado, dados.atual)
+    except (VerificationError, InvalidHashError):
+        falhas_de_login[chave].append(time.monotonic())
+        raise HTTPException(status_code=403, detail="A senha atual não confere.")
+    if dados.nova == dados.atual:
+        raise HTTPException(status_code=422, detail="Escolha uma senha diferente da atual.")
+    falhas_de_login.pop(chave, None)
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_trocar_minha_senha(%s, %s, %s)",
+                    (sessao["usuario_id"], hasher.hash(dados.nova), _hash_do_token(request.cookies[COOKIE])))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'trocar_senha', '')",
+                    (sessao["cliente_id"], sessao["usuario_id"]))
+
+
+class UsuarioNovo(BaseModel):
+    email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    nome: str = Field(min_length=1, max_length=120)
+    perfil: str
+
+
+class UsuarioAlterado(BaseModel):
+    perfil: str
+    ativo: bool
+
+
+def _perfil_valido(perfil):
+    if perfil not in permissoes.PERFIS:
+        raise HTTPException(status_code=422, detail="Perfil desconhecido.")
+
+
+@app.get("/api/usuarios")
+def listar_usuarios(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        return {"usuarios": con.execute("SELECT * FROM roar_listar_usuarios()").fetchall(), "eu": str(sessao["usuario_id"])}
+
+
+@app.post("/api/usuarios", status_code=201)
+def criar_usuario(dados: UsuarioNovo, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """A senha temporária aparece só nesta resposta, e no primeiro acesso a pessoa precisa trocar."""
+    _perfil_valido(dados.perfil)
+    temporaria = secrets.token_urlsafe(18)
+    try:
+        with do_cliente(request, sessao) as con:
+            novo = con.execute("SELECT roar_criar_usuario(%s, %s, %s, %s) AS id",
+                               (dados.email.strip(), dados.nome.strip(), hasher.hash(temporaria), dados.perfil)).fetchone()["id"]
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_usuario', %s)",
+                        (sessao["cliente_id"], sessao["usuario_id"], f"{novo} {dados.perfil}"))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Não foi possível usar este e-mail.")
+    return {"id": novo, "senha_temporaria": temporaria}
+
+
+@app.put("/api/usuarios/{identificador}", status_code=204)
+def alterar_usuario(identificador: uuid.UUID, dados: UsuarioAlterado, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    _perfil_valido(dados.perfil)
+    with do_cliente(request, sessao) as con:
+        resultado = con.execute("SELECT roar_alterar_usuario(%s, %s, %s) AS r", (identificador, dados.perfil, dados.ativo)).fetchone()["r"]
+        if resultado == "desconhecido":
+            raise HTTPException(status_code=404)
+        if resultado == "ultimo_administrador":
+            raise HTTPException(status_code=409, detail="Esta é a última pessoa administradora: defina outra antes.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'alterar_usuario', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {dados.perfil} {'ativo' if dados.ativo else 'inativo'}"))
+
+
+@app.post("/api/usuarios/{identificador}/nova-senha")
+def redefinir_senha(identificador: uuid.UUID, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    temporaria = secrets.token_urlsafe(18)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT roar_redefinir_senha(%s, %s) AS ok", (identificador, hasher.hash(temporaria))).fetchone()["ok"]:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'redefinir_senha', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+    return {"senha_temporaria": temporaria}
 
 
 @app.get("/api/fila")
-def fila(request: Request, sessao=Depends(sessao_atual), limite: int = 200):
+def fila(request: Request, sessao=Depends(exige(permissoes.VER)), limite: int = 200):
     limite = max(1, min(limite, 500))
     with do_cliente(request, sessao) as con:
         riscos = con.execute(
@@ -239,7 +347,7 @@ def fila(request: Request, sessao=Depends(sessao_atual), limite: int = 200):
 
 
 @app.get("/api/panorama")
-def panorama(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+def panorama(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
     dias = max(1, min(dias, 90))
     fuso = sessao["fuso"]
     with do_cliente(request, sessao) as con:
@@ -278,7 +386,7 @@ def _sem_curinga(texto):
 
 
 @app.get("/api/eventos")
-def eventos(request: Request, sessao=Depends(sessao_atual), busca: str = "", severidade: str = "",
+def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
             dias: int = 30, antes_de: int = 0):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
@@ -306,7 +414,7 @@ def eventos(request: Request, sessao=Depends(sessao_atual), busca: str = "", sev
 
 
 @app.get("/api/eventos/{identificador}/bruto")
-def evento_bruto(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+def evento_bruto(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
     """O alerta como chegou. Pode ter dado pessoal, então cada acesso fica registrado."""
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
@@ -345,7 +453,7 @@ def _filtros_de_campo(texto):
 
 
 @app.get("/api/logs")
-def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
+def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
     """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
     dias = max(1, min(dias, 90))
     busca = busca.strip()
@@ -420,7 +528,7 @@ def logs(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: 
 
 
 @app.get("/api/ativos")
-def ativos(request: Request, sessao=Depends(sessao_atual)):
+def ativos(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             """SELECT a.agente_id, a.nome, a.ip, a.sistema, a.versao, a.estado, a.grupos, a.ultima_conexao, a.sca_politica,
@@ -432,7 +540,7 @@ def ativos(request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.get("/api/mitre/matriz")
-def matriz_mitre(request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+def matriz_mitre(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
     """A matriz inteira do ATT&CK, com o que foi observado e o que tem regra, somando as subtécnicas."""
     dias = max(1, min(dias, 90))
     with do_cliente(request, sessao) as con:
@@ -460,7 +568,7 @@ def matriz_mitre(request: Request, sessao=Depends(sessao_atual), dias: int = 30)
 
 
 @app.get("/api/mitre/tecnicas/{tecnica}")
-def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
     """As regras que deram match com a técnica, as que cobrem e ainda não dispararam, e as defesas."""
     if not re.fullmatch(r"T\d{4}(\.\d{3})?", tecnica):
         raise HTTPException(status_code=404)
@@ -495,7 +603,7 @@ NORMAS_CONHECIDAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "ni
 
 
 @app.get("/api/normas")
-def normas(request: Request, sessao=Depends(sessao_atual), norma: str = "gdpr", dias: int = 30):
+def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str = "gdpr", dias: int = 30):
     """Alertas por controle da norma, como o Wazuh já os marca em cada regra."""
     if norma not in NORMAS_CONHECIDAS:
         raise HTTPException(status_code=422)
@@ -514,7 +622,7 @@ def normas(request: Request, sessao=Depends(sessao_atual), norma: str = "gdpr", 
 
 
 @app.get("/api/arquivos")
-def arquivos(request: Request, sessao=Depends(sessao_atual), dias: int = 30, busca: str = ""):
+def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, busca: str = ""):
     """Mudanças em arquivos monitorados."""
     dias = max(1, min(dias, 90))
     condicao, parametros = "", [dias]
@@ -534,7 +642,7 @@ def arquivos(request: Request, sessao=Depends(sessao_atual), dias: int = 30, bus
 
 
 @app.get("/api/regras")
-def regras(request: Request, sessao=Depends(sessao_atual), busca: str = "", dias: int = 30,
+def regras(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", dias: int = 30,
            so_disparadas: bool = False, deslocamento: int = 0):
     dias = max(1, min(dias, 90))
     deslocamento = max(0, min(deslocamento, 100000))
@@ -603,13 +711,13 @@ def _converter(dados: RegraNova):
 
 
 @app.post("/api/regras/converter")
-def converter_regra(dados: RegraNova, sessao=Depends(sessao_atual)):
+def converter_regra(dados: RegraNova, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     titulo, origem, xml, ramos = _converter(dados)
     return {"titulo": titulo, "sigma": origem, "xml": xml, "regras_geradas": ramos}
 
 
 @app.get("/api/regras/proprias")
-def listar_regras_proprias(request: Request, sessao=Depends(sessao_atual)):
+def listar_regras_proprias(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             """SELECT id, titulo, formato, estado, mensagem, criada_em, aplicada_em, origem FROM regras_proprias
@@ -618,7 +726,7 @@ def listar_regras_proprias(request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.post("/api/regras/proprias", status_code=201)
-def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(sessao_atual)):
+def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     titulo, origem, xml, _ = _converter(dados)
     with do_cliente(request, sessao) as con:
         gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em LIMIT 1").fetchone()
@@ -631,7 +739,7 @@ def criar_regra_propria(dados: RegraNova, request: Request, sessao=Depends(sessa
 
 
 @app.put("/api/regras/proprias/{identificador}")
-def editar_regra_propria(identificador: int, dados: RegraNova, request: Request, sessao=Depends(sessao_atual)):
+def editar_regra_propria(identificador: int, dados: RegraNova, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     """Volta a ser pendente: a versão editada passa pela mesma validação no gerenciador."""
     _inteiro_valido(identificador)
     titulo, origem, xml, _ = _converter(dados)
@@ -647,7 +755,7 @@ def editar_regra_propria(identificador: int, dados: RegraNova, request: Request,
 
 
 @app.post("/api/regras/proprias/{identificador}/desativar", status_code=204)
-def desativar_regra_propria(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+def desativar_regra_propria(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         linha = con.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE id = %s RETURNING id", (identificador,)).fetchone()
@@ -670,7 +778,7 @@ def _gravar_regra_propria(con, sessao, gerenciador, titulo, formato, origem, xml
 
 
 @app.post("/api/regras/importar")
-def importar_regras(dados: ImportacaoDeRegras, request: Request, sessao=Depends(sessao_atual)):
+def importar_regras(dados: ImportacaoDeRegras, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     """Importa um arquivo inteiro e diz o que entrou e o que não entrou, com o motivo."""
     criadas, recusadas = [], []
     if dados.formato == "xml":
@@ -701,7 +809,7 @@ def importar_regras(dados: ImportacaoDeRegras, request: Request, sessao=Depends(
 
 
 @app.get("/api/regras/exportar")
-def exportar_regras(request: Request, sessao=Depends(sessao_atual)):
+def exportar_regras(request: Request, sessao=Depends(exige(permissoes.VER))):
     """As regras criadas aqui, cada uma no formato de origem."""
     with do_cliente(request, sessao) as con:
         linhas = con.execute("SELECT titulo, formato, origem, xml_regras, estado FROM regras_proprias WHERE substitui IS NULL ORDER BY id").fetchall()
@@ -712,7 +820,7 @@ def exportar_regras(request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.get("/api/regras/biblioteca")
-def biblioteca(request: Request, sessao=Depends(sessao_atual), busca: str = "", so_convertiveis: bool = True, deslocamento: int = 0):
+def biblioteca(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", so_convertiveis: bool = True, deslocamento: int = 0):
     deslocamento = max(0, min(deslocamento, 100000))
     condicoes, parametros = ["TRUE"], []
     busca = busca.strip()[:200]
@@ -733,7 +841,7 @@ def biblioteca(request: Request, sessao=Depends(sessao_atual), busca: str = "", 
 
 
 @app.post("/api/regras/biblioteca/{identificador}/ativar", status_code=201)
-def ativar_da_biblioteca(identificador: str, request: Request, sessao=Depends(sessao_atual)):
+def ativar_da_biblioteca(identificador: str, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", identificador):
         raise HTTPException(status_code=404)
     with do_cliente(request, sessao) as con:
@@ -755,7 +863,7 @@ def ativar_da_biblioteca(identificador: str, request: Request, sessao=Depends(se
 
 
 @app.get("/api/regras/arquivos/{arquivo}")
-def arquivo_de_regras(arquivo: str, request: Request, sessao=Depends(sessao_atual)):
+def arquivo_de_regras(arquivo: str, request: Request, sessao=Depends(exige(permissoes.VER))):
     """Exporta um arquivo de regras do Wazuh tal como ele é distribuído."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}\.xml", arquivo):
         raise HTTPException(status_code=404)
@@ -768,7 +876,7 @@ def arquivo_de_regras(arquivo: str, request: Request, sessao=Depends(sessao_atua
 
 
 @app.get("/api/regras/{regra_id}")
-def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(sessao_atual), dias: int = 30):
+def detalhe_da_regra(regra_id: str, request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
     if not re.fullmatch(r"\d{1,10}", regra_id):
         raise HTTPException(status_code=404)
     dias = max(1, min(dias, 90))
@@ -823,7 +931,7 @@ def _gravar_ajuste(con, sessao, regra_id, regra, origem, desligada, acao):
 
 
 @app.put("/api/regras/{regra_id}/versao")
-def editar_regra_do_catalogo(regra_id: str, dados: VersaoDaRegra, request: Request, sessao=Depends(sessao_atual)):
+def editar_regra_do_catalogo(regra_id: str, dados: VersaoDaRegra, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     with do_cliente(request, sessao) as con:
         regra, original = _original_da_regra(con, regra_id)
         try:
@@ -834,7 +942,7 @@ def editar_regra_do_catalogo(regra_id: str, dados: VersaoDaRegra, request: Reque
 
 
 @app.post("/api/regras/{regra_id}/desligar")
-def desligar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(sessao_atual)):
+def desligar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     """Nível 0: a regra para de alertar, mas as que dependem dela continuam funcionando."""
     with do_cliente(request, sessao) as con:
         regra, original = _original_da_regra(con, regra_id)
@@ -842,7 +950,7 @@ def desligar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(s
 
 
 @app.post("/api/regras/{regra_id}/restaurar", status_code=204)
-def restaurar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(sessao_atual)):
+def restaurar_regra_do_catalogo(regra_id: str, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     if not re.fullmatch(r"\d{1,10}", regra_id):
         raise HTTPException(status_code=404)
     with do_cliente(request, sessao) as con:
@@ -904,7 +1012,7 @@ def _saude_da_fonte(fonte, origens):
 
 
 @app.get("/api/fontes")
-def listar_fontes(request: Request, sessao=Depends(sessao_atual)):
+def listar_fontes(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         gerenciador = con.execute("SELECT id, porta_base FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
         fontes = con.execute(
@@ -920,7 +1028,7 @@ def listar_fontes(request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.post("/api/fontes", status_code=201)
-def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(sessao_atual)):
+def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     try:
         origens = fontes_de_dados.validar_syslog(dados.protocolo, dados.origens)
     except fontes_de_dados.FonteInvalida as erro:
@@ -946,7 +1054,7 @@ class FonteDeNuvem(BaseModel):
 
 
 @app.post("/api/fontes/nuvem", status_code=201)
-def criar_fonte_de_nuvem(dados: FonteDeNuvem, request: Request, sessao=Depends(sessao_atual)):
+def criar_fonte_de_nuvem(dados: FonteDeNuvem, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     """A credencial sai daqui cifrada, e nenhuma rota a devolve depois."""
     try:
         config = fontes_de_dados.validar_nuvem(dados.tipo, dados.campos)
@@ -982,7 +1090,7 @@ class FonteApi(BaseModel):
 
 
 @app.post("/api/fontes/api", status_code=201)
-def criar_fonte_de_api(dados: FonteApi, request: Request, sessao=Depends(sessao_atual)):
+def criar_fonte_de_api(dados: FonteApi, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     try:
         config = fontes_de_dados.validar_api(dados.model_dump())
     except fontes_de_dados.FonteInvalida as erro:
@@ -1010,7 +1118,7 @@ class FonteWebhook(BaseModel):
 
 
 @app.post("/api/fontes/webhook", status_code=201)
-def criar_webhook(dados: FonteWebhook, request: Request, sessao=Depends(sessao_atual)):
+def criar_webhook(dados: FonteWebhook, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     """O token sai só nesta resposta: guardamos o hash, e perder o token é criar outro."""
     token = secrets.token_urlsafe(32)
     with do_cliente(request, sessao) as con:
@@ -1072,7 +1180,7 @@ async def receber_webhook(request: Request):
 
 
 @app.post("/api/fontes/{identificador}/desativar", status_code=204)
-def desativar_fonte(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+def desativar_fonte(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         linha = con.execute("UPDATE fontes SET estado = 'desativada' WHERE id = %s RETURNING config", (identificador,)).fetchone()
@@ -1086,7 +1194,7 @@ def desativar_fonte(identificador: int, request: Request, sessao=Depends(sessao_
 
 
 @app.get("/api/fontes/instalacao")
-def instalacao_de_agente(request: Request, sessao=Depends(sessao_atual)):
+def instalacao_de_agente(request: Request, sessao=Depends(exige(permissoes.INSTALAR_AGENTE))):
     """Traz a senha de inscrição do cliente, então cada consulta fica registrada."""
     with do_cliente(request, sessao) as con:
         linha = con.execute(
@@ -1140,7 +1248,7 @@ def _validar_definicao(definicao):
 
 
 @app.get("/api/automacao")
-def automacao(request: Request, sessao=Depends(sessao_atual)):
+def automacao(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         playbooks = con.execute(
             """SELECT p.id, p.nome, p.ativo, p.definicao, p.intervalo_minutos, p.criado_em, p.alterado_em,
@@ -1164,7 +1272,7 @@ def automacao(request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.post("/api/automacao/playbooks", status_code=201)
-def criar_playbook(dados: PlaybookEntrada, request: Request, sessao=Depends(sessao_atual)):
+def criar_playbook(dados: PlaybookEntrada, request: Request, sessao=Depends(exige(permissoes.GERIR_PLAYBOOKS))):
     _validar_definicao(dados.definicao)
     with do_cliente(request, sessao) as con:
         novo = con.execute(
@@ -1177,7 +1285,7 @@ def criar_playbook(dados: PlaybookEntrada, request: Request, sessao=Depends(sess
 
 
 @app.put("/api/automacao/playbooks/{identificador}", status_code=204)
-def alterar_playbook(identificador: int, dados: PlaybookEntrada, request: Request, sessao=Depends(sessao_atual)):
+def alterar_playbook(identificador: int, dados: PlaybookEntrada, request: Request, sessao=Depends(exige(permissoes.GERIR_PLAYBOOKS))):
     _inteiro_valido(identificador)
     _validar_definicao(dados.definicao)
     with do_cliente(request, sessao) as con:
@@ -1191,7 +1299,7 @@ def alterar_playbook(identificador: int, dados: PlaybookEntrada, request: Reques
 
 
 @app.post("/api/automacao/playbooks/{identificador}/{acao}", status_code=204)
-def ligar_playbook(identificador: int, acao: str, request: Request, sessao=Depends(sessao_atual)):
+def ligar_playbook(identificador: int, acao: str, request: Request, sessao=Depends(exige(permissoes.GERIR_PLAYBOOKS))):
     _inteiro_valido(identificador)
     if acao not in ("ativar", "desativar"):
         raise HTTPException(status_code=404)
@@ -1203,14 +1311,14 @@ def ligar_playbook(identificador: int, acao: str, request: Request, sessao=Depen
 
 
 @app.post("/api/automacao/para-codigo")
-def playbook_para_codigo(dados: PlaybookEntrada, sessao=Depends(sessao_atual)):
+def playbook_para_codigo(dados: PlaybookEntrada, sessao=Depends(exige(permissoes.VER))):
     _validar_definicao(dados.definicao)
     corpo = {"nome": dados.nome, "intervalo_minutos": dados.intervalo_minutos, **dados.definicao}
     return {"texto": yaml.safe_dump(corpo, allow_unicode=True, sort_keys=False)}
 
 
 @app.post("/api/automacao/de-codigo")
-def playbook_de_codigo(dados: TextoDePlaybook, sessao=Depends(sessao_atual)):
+def playbook_de_codigo(dados: TextoDePlaybook, sessao=Depends(exige(permissoes.VER))):
     # safe_load não instancia objetos: o texto pode ter sido copiado de qualquer lugar.
     try:
         corpo = yaml.safe_load(dados.texto)
@@ -1229,7 +1337,7 @@ def playbook_de_codigo(dados: TextoDePlaybook, sessao=Depends(sessao_atual)):
 
 
 @app.post("/api/automacao/simular")
-def simular_playbook(dados: DefinicaoEntrada, request: Request, sessao=Depends(sessao_atual)):
+def simular_playbook(dados: DefinicaoEntrada, request: Request, sessao=Depends(exige(permissoes.GERIR_PLAYBOOKS))):
     """Refaz os últimos dias com as mesmas funções do disparo, sem executar nada."""
     definicao = _validar_definicao(dados.definicao)
     quando = definicao["quando"]
@@ -1278,12 +1386,12 @@ def _decidir(identificador, novo_estado, motivo, request, sessao):
 
 
 @app.post("/api/automacao/aprovacoes/{identificador}/aprovar", status_code=204)
-def aprovar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(sessao_atual)):
+def aprovar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(exige(permissoes.APROVAR))):
     _decidir(identificador, "aprovada", dados.motivo, request, sessao)
 
 
 @app.post("/api/automacao/aprovacoes/{identificador}/recusar", status_code=204)
-def recusar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(sessao_atual)):
+def recusar_execucao(identificador: int, dados: Decisao, request: Request, sessao=Depends(exige(permissoes.APROVAR))):
     _decidir(identificador, "recusada", dados.motivo, request, sessao)
 
 
@@ -1294,7 +1402,7 @@ def _inteiro_valido(identificador):
 
 
 @app.get("/api/riscos/{identificador}")
-def risco(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+def risco(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         alerta = con.execute(
@@ -1316,7 +1424,7 @@ def risco(identificador: int, request: Request, sessao=Depends(sessao_atual)):
 
 
 @app.get("/api/grupos/{identificador}")
-def grupo(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+def grupo(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         dados = con.execute(

@@ -41,7 +41,7 @@ def sh(*args):
 
 def criar_usuario(amb, g):
     senha, email = secrets.token_urlsafe(18), f"analista-{uuid.uuid4().hex[:8]}@exemplo.test"
-    amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash) VALUES (%s, %s, 'Analista', %s)",
+    amb.admin.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista', %s, 'administrador')",
                       (g["cliente"], email, PasswordHasher().hash(senha)))
     return {"email": email, "senha": senha}
 
