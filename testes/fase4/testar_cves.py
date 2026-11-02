@@ -8,8 +8,10 @@ import secrets
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import psycopg
+import requests
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
@@ -72,6 +74,54 @@ def main():
             registrar("identificador inválido", http.get("/api/cves/abc").status_code == 404)
             registrar("rejeitada não entra na lista", all(not c["rejeitado"] for c in geral["cves"]))
             registrar("rejeitada não aparece como prioridade", admin.execute("SELECT count(*) FROM cves WHERE rejeitado AND prioridade NOT IN ('sem_dados', 'agora')").fetchone()[0] == 0)
+
+            print("\n== Atualização automática", flush=True)
+            antes = admin.execute("SELECT carregada_em FROM cves_carga").fetchone()[0]
+            total_antes = admin.execute("SELECT count(*) FROM cves").fetchone()[0]
+            url = f"postgresql://roar_ingestao:{ENV['ROAR_INGESTAO_SENHA']}@127.0.0.1:5433/roar"
+            with psycopg.connect(url, autocommit=True) as con:
+                banco = SimpleNamespace(con=con)
+
+                class Parar(Exception):
+                    pass
+
+                def dormir(segundos):
+                    esperas.append(segundos)
+                    raise Parar()
+
+                def rodar(carga):
+                    try:
+                        cves.rodar_para_sempre(banco, carga=carga, dormir=dormir)
+                    except Parar:
+                        pass
+
+                chamadas, esperas = [], []
+                rodar(lambda b: chamadas.append(1) or 1)
+                registrar("base recente não baixa de novo", not chamadas and esperas == [cves.SEGUNDOS_ENTRE_CONFERENCIAS])
+
+                admin.execute("UPDATE cves_carga SET carregada_em = now() - interval '4 days'")
+                esperas.clear()
+
+                def falha(b):
+                    raise cves.FonteEstranha("EPSS veio pequeno demais")
+
+                rodar(falha)
+                registrar("fonte estranha: tenta de novo mais tarde", esperas == [cves.SEGUNDOS_APOS_FALHA], str(esperas))
+                registrar("fonte estranha: a base anterior continua", admin.execute("SELECT count(*) FROM cves").fetchone()[0] == total_antes)
+                carga = http.get("/api/cves").json()["carga"]
+                registrar("a tela avisa da falha e da base velha", carga["falha"] == "EPSS veio pequeno demais" and carga["velha"] is True, str((carga["falha"], carga["velha"])))
+
+                def caiu(b):
+                    raise requests.ConnectionError("https://interno.exemplo/segredo")
+
+                esperas.clear()
+                rodar(caiu)
+                carga = http.get("/api/cves").json()["carga"]
+                registrar("rede fora: a tela não recebe endereço nenhum", "interno" not in carga["falha"] and esperas == [cves.SEGUNDOS_APOS_FALHA], carga["falha"])
+                chamadas.clear()
+                rodar(lambda b: chamadas.append(1) or 1)
+                registrar("base velha dispara a carga", chamadas == [1])
+            admin.execute("UPDATE cves_carga SET carregada_em = %s, falha = NULL, falha_em = NULL", (antes,))
 
             print("\n== Conferência da base", flush=True)
             registrar("todo KEV está em agora", admin.execute("SELECT count(*) FROM cves WHERE kev_desde IS NOT NULL AND prioridade <> 'agora'").fetchone()[0] == 0)

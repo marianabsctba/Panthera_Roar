@@ -1,18 +1,22 @@
 """Carrega a base pública de CVEs, com exploração conhecida e estimativa de exploração.
 
-    python -m roar_ingestao.cves
+    python -m roar_ingestao.cves            (fica rodando e atualiza todo dia)
+    python -m roar_ingestao.cves --uma-vez
 
 Fontes: o registro oficial de CVEs, o catálogo KEV da CISA e o EPSS. Se uma delas vier estranha,
 a carga para e a base anterior continua valendo: dado velho é melhor que dado pela metade.
 """
 
+import argparse
 import csv
 import gzip
 import json
 import logging
 import re
 import tempfile
+import time
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -21,6 +25,12 @@ log = logging.getLogger("roar.cves")
 KEV = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
 REGISTRO = "https://api.github.com/repos/CVEProject/cvelistV5/releases/latest"
+NVD = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{ano}.json.gz"
+ANO_INICIAL_NVD = 2002
+MINIMO_NVD = 150_000
+HORAS_ENTRE_CARGAS = 23
+SEGUNDOS_ENTRE_CONFERENCIAS = 1800
+SEGUNDOS_APOS_FALHA = 3600
 # Abaixo disso o feed veio cortado ou mudou de formato.
 MINIMO_KEV = 1000
 MINIMO_EPSS = 200_000
@@ -33,7 +43,7 @@ EPSS_MEDIO = 0.05
 CVSS_CRITICO = 9.0
 CVSS_ALTO = 7.0
 NOME_DE_CVE = re.compile(r"CVE-\d{4}-\d+")
-COLUNAS = ("cve", "publicado_em", "rejeitado", "titulo", "descricao", "produto", "cvss", "vetor", "kev_desde",
+COLUNAS = ("cve", "publicado_em", "rejeitado", "titulo", "descricao", "produto", "cvss", "vetor", "cvss_fonte", "kev_desde",
            "kev_ransomware", "kev_prazo", "epss", "epss_percentil", "prioridade")
 
 
@@ -111,6 +121,37 @@ def baixar_epss():
     return data.group(1), notas
 
 
+def _nota_da_nvd(item):
+    metricas = item.get("metrics") or {}
+    for versao in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+        lista = metricas.get(versao) or []
+        # Prefere a análise da própria NVD à de quem publicou.
+        escolhida = next((m for m in lista if m.get("type") == "Primary"), lista[0] if lista else None)
+        dados = (escolhida or {}).get("cvssData") or {}
+        if isinstance(dados.get("baseScore"), (int, float)):
+            return float(dados["baseScore"]), dados.get("vectorString")
+    return None
+
+
+def baixar_nvd(ano_final=None):
+    """Um arquivo por ano. Só serve para preencher o que o registro oficial não traz."""
+    notas = {}
+    for ano in range(ANO_INICIAL_NVD, (ano_final or datetime.now(timezone.utc).year) + 1):
+        r = requests.get(NVD.format(ano=ano), timeout=TEMPO_GRANDE)
+        r.raise_for_status()
+        itens = json.loads(gzip.decompress(r.content)).get("vulnerabilities")
+        if not isinstance(itens, list) or (not itens and ano < datetime.now(timezone.utc).year):
+            raise FonteEstranha(f"NVD de {ano} em formato inesperado")
+        for envelope in itens:
+            item = envelope.get("cve") or {}
+            nota = _nota_da_nvd(item)
+            if nota and item.get("id"):
+                notas[item["id"]] = nota
+    if len(notas) < MINIMO_NVD:
+        raise FonteEstranha(f"NVD veio pequena demais: {len(notas)}")
+    return notas
+
+
 def percorrer_registro(pasta):
     """A base vem como um zip dentro de outro, com um JSON por CVE. Os nomes não são usados como caminho."""
     versao = requests.get(REGISTRO, timeout=TEMPO_PEQUENO)
@@ -153,40 +194,46 @@ def percorrer_registro(pasta):
 carregar_versao = [None]
 
 
-def linhas_para_gravar(registros, kev, epss):
+def linhas_para_gravar(registros, kev, epss, nvd=None):
+    nvd = nvd or {}
     vistos = set()
     for r in registros:
         cve = r.get("cve")
         if not cve or not NOME_DE_CVE.fullmatch(cve):
             continue
         vistos.add(cve)
-        yield _linha(cve, r, kev.get(cve), epss.get(cve))
+        yield _linha(cve, r, kev.get(cve), epss.get(cve), nvd.get(cve))
     # O KEV às vezes traz CVE que o registro ainda não publicou: não pode sumir da base.
     for cve, k in kev.items():
         if cve not in vistos and NOME_DE_CVE.fullmatch(cve):
-            yield _linha(cve, {"rejeitado": False}, k, epss.get(cve))
+            yield _linha(cve, {"rejeitado": False}, k, epss.get(cve), nvd.get(cve))
 
 
-def _linha(cve, r, k, e):
+def _linha(cve, r, k, e, n=None):
     epss_nota, percentil = e if e else (None, None)
     kev_desde = k["desde"] if k else None
     # O próprio programa CVE retirou o registro: não é prioridade de ninguém, a não ser que estejam explorando.
     if r.get("rejeitado") and not kev_desde:
         epss_nota, percentil = None, None
-    return (cve, r.get("publicado_em"), r.get("rejeitado", False), r.get("titulo"), r.get("descricao"), r.get("produto"), r.get("cvss"), r.get("vetor"),
-            kev_desde, bool(k and k["ransomware"]), k["prazo"] if k else None, epss_nota, percentil, prioridade(kev_desde, epss_nota, r.get("cvss")))
+        n = None
+    cvss, vetor, fonte = r.get("cvss"), r.get("vetor"), "registro" if r.get("cvss") is not None else None
+    if cvss is None and n:
+        cvss, vetor, fonte = n[0], _texto(n[1], 200), "nvd"
+    return (cve, r.get("publicado_em"), r.get("rejeitado", False), r.get("titulo"), r.get("descricao"), r.get("produto"), cvss, vetor, fonte,
+            kev_desde, bool(k and k["ransomware"]), k["prazo"] if k else None, epss_nota, percentil, prioridade(kev_desde, epss_nota, cvss))
 
 
 def carregar(banco):
     """Troca tudo em uma transação: ninguém vê a base pela metade, e uma falha mantém a anterior."""
     kev = baixar_kev()
     data_epss, epss = baixar_epss()
-    log.info("KEV %d, EPSS %d (%s)", len(kev), len(epss), data_epss)
+    nvd = baixar_nvd()
+    log.info("KEV %d, EPSS %d (%s), NVD %d", len(kev), len(epss), data_epss, len(nvd))
     with tempfile.TemporaryDirectory(prefix="roar-cves-") as pasta, banco.con.transaction():
         banco.con.execute("CREATE TEMP TABLE cves_nova (LIKE cves INCLUDING DEFAULTS EXCLUDING GENERATED) ON COMMIT DROP")
         total = 0
         with banco.con.cursor().copy(f"COPY cves_nova ({', '.join(COLUNAS)}) FROM STDIN") as copia:
-            for linha in linhas_para_gravar(percorrer_registro(pasta), kev, epss):
+            for linha in linhas_para_gravar(percorrer_registro(pasta), kev, epss, nvd):
                 copia.write_row(linha)
                 total += 1
         if total < MINIMO_CVES:
@@ -196,17 +243,51 @@ def carregar(banco):
         banco.con.execute(f"INSERT INTO cves ({colunas}) SELECT {colunas} FROM cves_nova ON CONFLICT (cve) DO NOTHING")
         banco.con.execute(
             """INSERT INTO cves_carga (id, total, versao, epss_data, carregada_em) VALUES (1, %s, %s, %s, now())
-               ON CONFLICT (id) DO UPDATE SET total = EXCLUDED.total, versao = EXCLUDED.versao, epss_data = EXCLUDED.epss_data, carregada_em = now()""",
+               ON CONFLICT (id) DO UPDATE SET total = EXCLUDED.total, versao = EXCLUDED.versao, epss_data = EXCLUDED.epss_data,
+               carregada_em = now(), falha = NULL, falha_em = NULL""",
             (total, carregar_versao[0], data_epss))
     return total
+
+
+def _precisa_carregar(banco):
+    with banco.con.transaction():
+        return banco.con.execute(
+            "SELECT NOT EXISTS (SELECT 1 FROM cves_carga WHERE carregada_em > now() - make_interval(hours => %s))", (HORAS_ENTRE_CARGAS,)).fetchone()[0]
+
+
+def _registrar_falha(banco, erro):
+    # A mensagem vai para a tela: só o tipo do problema, nunca um endereço ou resposta de fora.
+    texto = str(erro)[:200] if isinstance(erro, FonteEstranha) else "Não foi possível falar com uma das fontes."
+    with banco.con.transaction():
+        banco.con.execute("UPDATE cves_carga SET falha = %s, falha_em = now()", (texto,))
+
+
+def rodar_para_sempre(banco, carga=carregar, dormir=time.sleep):
+    """Base velha é melhor que base nenhuma: uma falha mantém a anterior e tenta de novo mais tarde."""
+    while True:
+        espera = SEGUNDOS_ENTRE_CONFERENCIAS
+        if _precisa_carregar(banco):
+            try:
+                log.info("%d CVEs carregadas", carga(banco))
+            except (FonteEstranha, requests.RequestException, OSError, ValueError, zipfile.BadZipFile) as erro:
+                log.error("carga de CVEs falhou: %s", type(erro).__name__)
+                _registrar_falha(banco, erro)
+                espera = SEGUNDOS_APOS_FALHA
+        dormir(espera)
 
 
 def main():
     from .ciclo import conexoes
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = argparse.ArgumentParser()
+    args.add_argument("--uma-vez", action="store_true")
+    a = args.parse_args()
     _, banco, _ = conexoes()
-    log.info("%d CVEs carregadas", carregar(banco))
+    if a.uma_vez:
+        log.info("%d CVEs carregadas", carregar(banco))
+        return
+    rodar_para_sempre(banco)
 
 
 if __name__ == "__main__":
