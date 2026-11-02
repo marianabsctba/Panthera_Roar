@@ -171,7 +171,7 @@ def main():
         registrar("injeção na busca não quebra", http.get("/api/eventos", params={"busca": "'; DROP TABLE eventos; --"}).status_code == 200)
         registrar("severidade inválida é ignorada", http.get("/api/eventos", params={"severidade": "' OR 1=1"}).status_code == 200)
         registrar("filtro de severidade funciona", http.get("/api/eventos", params={"severidade": "alta"}).json()["eventos"] == [])
-        antes = ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s", (a["id"],)).fetchone()[0]
+        antes = ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'ver_bruto' AND alvo = %s", (a["id"], str(evento_a))).fetchone()[0]
         bruto = http.get(f"/api/eventos/{evento_a}/bruto")
         registrar("bruto abre com o conteúdo original", bruto.status_code == 200 and bruto.json()["bruto"]["segredo_do_bruto"] == "nao-sair")
         depois = ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'ver_bruto' AND alvo = %s",

@@ -171,6 +171,13 @@ export const AJUDA = [
       "Remover autenticador derruba as sessões da pessoa e fica na auditoria. Confirme por outro canal que é ela mesma quem está pedindo: esse pedido é um golpe conhecido.",
       "Na sua própria conta, use a janela Autenticador, que pede a senha e o código.",
     ] },
+    { id: "auditoria", vista: "auditoria", titulo: "Auditoria", blocos: [
+      "A trilha guarda quem entrou, saiu e errou a senha, quem criou ou mudou acessos, regras, fontes e playbooks, quem viu ou exportou dados, e quais ativos entraram e saíram. Filtre por período, ação ou pessoa, e exporte em CSV. A exportação também fica na trilha.",
+      { h: "Avisos" },
+      "Senha ou código recusado em uma conta da organização gera um aviso, que aparece no botão Avisos, no alto da tela, em até 15 segundos. Tentativas repetidas somam no mesmo aviso. Marcar como lido não apaga nada da trilha.",
+      { aviso: "Muitas tentativas na mesma conta podem ser um ataque de senha: confira a origem. Tentativas com um e-mail que não existe aqui não pertencem a nenhuma organização e não geram aviso." },
+      "Esta tela aparece para os perfis Administração e Auditoria. Avisos por e-mail ainda não existem.",
+    ] },
     { id: "glossario", titulo: "Glossário", blocos: [
       { chaves: [
         ["Ativo", "computador, servidor ou equipamento monitorado"],

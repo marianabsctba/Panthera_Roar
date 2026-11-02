@@ -31,9 +31,9 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Ofuscar campos sensíveis | 2 | Falta |
 | Acesso | Separação por unidade | 3 | Feito: isolamento por cliente |
 | | Papéis (RBAC) | 5 | Feito: cinco perfis, checados em cada rota |
-| | MFA | 2 | Falta |
-| Auditoria | Registro de ações | 4 | Parcial: ações principais registradas, sem tela de consulta |
-| | Integridade do log | 3 | Falta |
+| | MFA | 2 | Feito: aplicativo autenticador, códigos de recuperação e exigência por organização; SSO e passkeys faltam |
+| Auditoria | Registro de ações | 4 | Feito: logon, logoff, recusas, acessos e ativos, com tela, exportação em CSV e aviso na tela; aviso por e-mail falta |
+| | Integridade do log | 3 | Feito para volume pequeno: selos encadeados, assinados e ancorados, conferência por evento e pacote de evidência; armazenamento da prova não escala para terabytes por dia |
 | Disponibilidade | Tolerância a falhas | 3 | Falta |
 | Capacidade | Volume (EPS ou GB/dia) | 4 | Não medido de ponta a ponta |
 | | Sem descarte em pico | 4 | Não testado |

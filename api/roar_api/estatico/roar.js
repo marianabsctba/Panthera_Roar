@@ -3,6 +3,8 @@
 
 import { AJUDA } from "/estatico/ajuda.js";
 
+const SEGUNDOS_ENTRE_AVISOS = 15;
+
 const SEVERIDADE = {
   critica: { texto: "Crítica", icone: "▲" },
   alta: { texto: "Alta", icone: "◆" },
@@ -159,7 +161,7 @@ async function abrirPainel() {
     abrirMfa();
     return;
   }
-  await Promise.all([carregarFila(), carregarPanorama(), avisarSeHouverViolacao()]);
+  await Promise.all([carregarFila(), carregarPanorama(), avisarSeHouverViolacao(), atualizarAvisos()]);
 }
 
 function pode(permissao) {
@@ -1718,14 +1720,14 @@ $("prioridade-cves").addEventListener("change", () => carregarCves());
 const O_QUE_CADA_UM_FAZ = [
   ["Ver painéis, fila, eventos, regras e fontes", "ver"], ["Ver log e alerta brutos", "ver_bruto"], ["Decidir aprovações da automação", "aprovar"],
   ["Criar e mudar regras", "gerir_regras"], ["Criar e mudar playbooks", "gerir_playbooks"], ["Criar e mudar fontes de dados", "gerir_fontes"],
-  ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"],
+  ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"], ["Ver a trilha de auditoria e os avisos", "ver_auditoria"],
 ];
 const PERMISSOES_POR_PERFIL = {
-  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios"],
+  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios", "ver_auditoria"],
   engenharia: ["ver", "ver_bruto", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente"],
   analista_n2: ["ver", "ver_bruto", "aprovar"],
   analista_n1: ["ver", "ver_bruto"],
-  auditor: ["ver"],
+  auditor: ["ver", "ver_auditoria"],
 };
 
 function mostrarSenhaTemporaria(texto, senha) {
@@ -1823,6 +1825,91 @@ $("form-senha").addEventListener("submit", async (evento) => {
   if (obrigatoria) await abrirPainel();
 });
 
+// ------------------------------------------------------------------ auditoria e avisos
+
+const NOMES_DA_TRILHA = {
+  logon: "Entrou", logoff: "Saiu", login_recusado: "Senha recusada", mfa_recusado: "Código do autenticador recusado", entrar_com_mfa: "Entrou com autenticador",
+  entrar_com_codigo_de_recuperacao: "Entrou com código de recuperação", criar_usuario: "Criou usuário", alterar_usuario: "Alterou perfil ou situação de usuário", redefinir_senha: "Gerou senha temporária",
+  trocar_senha: "Trocou a própria senha", ligar_mfa: "Ligou o autenticador", desligar_mfa: "Desligou o autenticador", remover_mfa_de_usuario: "Removeu o autenticador de outra pessoa",
+  definir_mfa_obrigatorio: "Mudou a exigência do autenticador", gerar_codigos_de_recuperacao: "Gerou novos códigos de recuperação", incluir_ativo: "Ativo incluído", excluir_ativo: "Ativo excluído",
+  buscar_logs: "Buscou nos logs", ver_bruto: "Viu alerta bruto", gerar_relatorio: "Gerou relatório", gerar_evidencia: "Gerou pacote de evidência", exportar_auditoria: "Exportou a trilha",
+  criar_fonte: "Criou fonte de dados", desativar_fonte: "Desativou fonte de dados", criar_regra: "Criou regra", editar_regra: "Editou regra", desativar_regra: "Desativou regra",
+  importar_regras: "Importou regras", exportar_regras: "Exportou regras", criar_playbook: "Criou playbook", alterar_playbook: "Alterou playbook",
+  ver_instalacao_de_agente: "Viu o comando de instalação de agente", criar_caminho_fim: "Incluiu caminho na integridade", desativar_caminho_fim: "Tirou caminho da integridade", pedir_varredura_fim: "Pediu varredura de integridade",
+};
+const nomeDaAcao = (acao) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");
+let proximoDaTrilha = null;
+
+function opcoesDoFiltro(selecao, rotuloDeTodos, itens) {
+  const atual = selecao.value;
+  const todos = el("option", null, rotuloDeTodos);
+  todos.value = "";
+  selecao.replaceChildren(todos, ...itens.map(([valor, rotulo]) => {
+    const o = el("option", null, rotulo);
+    o.value = valor;
+    return o;
+  }));
+  selecao.value = itens.some(([valor]) => valor === atual) ? atual : "";
+}
+
+function filtrosDaTrilha() {
+  const filtros = new URLSearchParams({ dias: $("auditoria-dias").value });
+  if ($("auditoria-acao").value) filtros.set("acao", $("auditoria-acao").value);
+  if ($("auditoria-pessoa").value) filtros.set("pessoa", $("auditoria-pessoa").value);
+  return filtros;
+}
+
+function linhasDaTrilha(linhas) {
+  return linhas.map((l) => [el("td", null, quando(l.em)), el("td", null, nomeDaAcao(l.acao)), el("td", null, l.pessoa ?? (l.usuario_id ? "Pessoa removida" : "Sistema")), el("td", "mono", l.alvo), el("td", "mono", l.origem ?? "-")]);
+}
+
+async function carregarAuditoria(mais = false) {
+  const filtros = filtrosDaTrilha();
+  if (mais && proximoDaTrilha) filtros.set("antes_de", proximoDaTrilha);
+  const r = await pedir(`/api/auditoria?${filtros}`);
+  if (!r.ok) return;
+  const d = await r.json();
+  opcoesDoFiltro($("auditoria-acao"), "Todas as ações", d.acoes.map((a) => [a, nomeDaAcao(a)]));
+  opcoesDoFiltro($("auditoria-pessoa"), "Todas as pessoas", d.pessoas.map((p) => [p.id, p.nome]));
+  proximoDaTrilha = d.proximo;
+  $("mais-auditoria").hidden = !d.proximo;
+  if (mais) {
+    $("tabela-auditoria").querySelector("tbody").append(...linhasDaTrilha(d.linhas).map((celulas) => {
+      const tr = el("tr");
+      tr.append(...celulas);
+      return tr;
+    }));
+  } else {
+    $("tabela-auditoria").replaceChildren(d.linhas.length ? montarTabela([["Quando"], ["Ação"], ["Pessoa"], ["Alvo"], ["Origem"]], linhasDaTrilha(d.linhas)) : el("p", "texto-secao", "Nada registrado neste filtro."));
+  }
+}
+
+async function atualizarAvisos() {
+  if (!pode("ver_auditoria") || $("painel").hidden) return;
+  const r = await pedir("/api/notificacoes");
+  if (!r.ok) return;
+  const { avisos } = await r.json();
+  const total = avisos.reduce((t, a) => t + a.contagem, 0);
+  $("n-avisos").textContent = total.toLocaleString("pt-BR");
+  $("abrir-avisos").classList.toggle("com-avisos", total > 0);
+  $("avisos-lidos").hidden = !avisos.length;
+  $("lista-avisos").replaceChildren(avisos.length
+    ? montarTabela([["Última vez"], ["O que houve"], ["Conta"], ["Tentativas"], ["Origem"]], avisos.map((a) => [el("td", null, quando(a.atualizada_em)), el("td", null, nomeDaAcao(a.tipo)), el("td", "mono", a.alvo),
+      el("td", null, a.contagem.toLocaleString("pt-BR")), el("td", "mono", a.origem ?? "-")]))
+    : el("p", "texto-secao", "Nenhum aviso novo."));
+}
+
+$("abrir-avisos").addEventListener("click", () => trocarVista("auditoria"));
+$("avisos-lidos").addEventListener("click", async () => {
+  await pedir("/api/notificacoes/lidas", { method: "POST" });
+  await atualizarAvisos();
+});
+["auditoria-dias", "auditoria-acao", "auditoria-pessoa"].forEach((id) => $(id).addEventListener("change", () => carregarAuditoria()));
+$("mais-auditoria").addEventListener("click", () => carregarAuditoria(true));
+$("exportar-auditoria").addEventListener("click", () => baixar(`/api/auditoria/exportar?${filtrosDaTrilha()}`, "auditoria-roar.csv"));
+// Sem sessão, o pedido cai na tela de entrada: o erro já foi tratado ali.
+setInterval(() => atualizarAvisos().catch(() => {}), SEGUNDOS_ENTRE_AVISOS * 1000);
+
 // ------------------------------------------------------------------ prova e evidência
 
 const cesta = { fonte: null, itens: new Map() };
@@ -1853,8 +1940,11 @@ function botaoDaCesta(botao, fonte, id, resumo) {
 function desenharCesta() {
   $("prova-gerar").disabled = !cesta.itens.size;
   $("prova-cesta").replaceChildren(cesta.itens.size
-    ? montarTabela([["Evento"], ["Identificador"], [""]], [...cesta.itens].map(([id, resumo]) => [el("td", null, resumo), el("td", "mono", id),
-      el("td", null, botaoDeTabela("Tirar", "botao-discreto", () => { cesta.itens.delete(id); desenharCesta(); }))]))
+    ? montarTabela([["Evento"], ["Identificador"], [""]], [...cesta.itens].map(([id, resumo]) => {
+      const acoes = el("td");
+      acoes.append(botaoDeTabela("Tirar", "botao-discreto", () => { cesta.itens.delete(id); desenharCesta(); }));
+      return [el("td", null, resumo), el("td", "mono", id), acoes];
+    }))
     : el("p", "texto-secao", "Nenhum evento escolhido."));
 }
 
@@ -2941,13 +3031,14 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda", "prova"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda", "prova", "auditoria"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
   // O "?" abre o artigo da tela de onde a pessoa veio.
   if (vista !== "ajuda") vistaAtual = vista;
   if (vista === "ajuda") abrirArtigo(artigoAberto);
   if (vista === "prova") carregarProva();
+  if (vista === "auditoria") { carregarAuditoria(); atualizarAvisos(); }
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
   if (vista === "vulnerabilidades") carregarCves();

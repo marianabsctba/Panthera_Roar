@@ -52,6 +52,11 @@ def main():
     registrar("sem travessão", "—" not in ajuda and "–" not in ajuda)
     registrar("não monta HTML com texto", "innerHTML" not in ajuda and "insertAdjacentHTML" not in ajuda)
 
+    # Um nome declarado duas vezes derruba o módulo inteiro, e a tela abre em branco.
+    declarados = re.findall(r"^(?:const|let|function|async function) +([A-Za-z_$][\w$]*)", js, re.M)
+    repetidos = {n for n in declarados if declarados.count(n) > 1}
+    registrar("nenhum nome declarado duas vezes no código da tela", not repetidos, str(repetidos))
+
     print("\n== O que a ajuda afirma", flush=True)
     registrar("KEV vem antes de tudo", prioridade("2024-01-01", 0.0, 1.0) == "agora" and "catálogo KEV" in ajuda)
     registrar("EPSS de 50% é alta", prioridade(None, 0.5, 1.0) == "alta" and prioridade(None, 0.49, 1.0) != "alta" and "EPSS de 50%" in ajuda)

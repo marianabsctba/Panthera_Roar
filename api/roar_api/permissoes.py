@@ -8,13 +8,14 @@ INSTALAR_AGENTE = "instalar_agente"  # O comando traz a senha de inscrição do 
 GERIR_PLAYBOOKS = "gerir_playbooks"
 APROVAR = "aprovar"
 GERIR_USUARIOS = "gerir_usuarios"
+VER_AUDITORIA = "ver_auditoria"      # Quem fez o quê, e as tentativas recusadas.
 
 PERFIS = {
-    "administrador": {VER, VER_BRUTO, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS, APROVAR, GERIR_USUARIOS},
+    "administrador": {VER, VER_BRUTO, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS, APROVAR, GERIR_USUARIOS, VER_AUDITORIA},
     "engenharia": {VER, VER_BRUTO, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS},
     "analista_n2": {VER, VER_BRUTO, APROVAR},
     "analista_n1": {VER, VER_BRUTO},
-    "auditor": {VER},
+    "auditor": {VER, VER_AUDITORIA},
 }
 
 

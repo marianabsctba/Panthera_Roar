@@ -6,9 +6,12 @@ O cliente de cada consulta vem da sessão e vira a definição do RLS da transa�
 aceita cliente vindo do navegador, então um id de outro cliente simplesmente não é encontrado.
 """
 
+import csv
 import hashlib
+import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -32,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from requests.adapters import HTTPAdapter
 
 # O mesmo conversor que a instalação das regras usa.
@@ -50,6 +54,7 @@ ESTATICO = Path(__file__).parent / "estatico"
 COOKIE = "roar_sessao"
 HORAS_DE_SESSAO = 12
 SENHA_MINIMA = 12
+log = logging.getLogger("roar.api")
 MINUTOS_PARA_O_CODIGO = 10
 TENTATIVAS = 5
 JANELA_TENTATIVAS = 900
@@ -202,6 +207,18 @@ def _bloqueado(chave):
     return len(falhas_de_login[chave]) >= TENTATIVAS
 
 
+def _origem(request):
+    return request.client.host if request.client else None
+
+
+def _registrar_recusa_de_login(banco, email, origem):
+    with banco.connection() as con:
+        conhecido = con.execute("SELECT roar_registrar_recusa(%s, 'login_recusado', %s) AS ok", (email, origem)).fetchone()["ok"]
+    if not conhecido:
+        # Sem cliente a quem avisar. O e-mail foi escrito por quem tentou: vai truncado e entre aspas.
+        log.warning("login recusado para e-mail desconhecido %r de %s", email[:80], origem)
+
+
 @app.post("/api/entrar", status_code=204, response_model=None)
 def entrar(dados: Entrada, request: Request):
     email = dados.email.strip().lower()
@@ -217,7 +234,9 @@ def entrar(dados: Entrada, request: Request):
         valido = False
     if not valido:
         falhas_de_login[email].append(time.monotonic())
-        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+        # Depois da resposta: o tempo do registro não pode revelar se o e-mail existe.
+        return JSONResponse({"detail": "E-mail ou senha incorretos."}, status_code=401,
+                            background=BackgroundTask(_registrar_recusa_de_login, request.app.state.banco, email, _origem(request)))
 
     falhas_de_login.pop(email, None)
     token = secrets.token_urlsafe(32)
@@ -227,6 +246,8 @@ def entrar(dados: Entrada, request: Request):
             con.execute("SELECT roar_criar_sessao_mfa(%s, %s, %s)", (_hash_do_token(token), usuario["id"], MINUTOS_PARA_O_CODIGO))
         else:
             con.execute("SELECT roar_criar_sessao(%s, %s, %s)", (_hash_do_token(token), usuario["id"], HORAS_DE_SESSAO))
+            # Com segundo fator, o logon só vale depois do código.
+            con.execute("SELECT roar_registrar_acesso(%s, 'logon', %s)", (usuario["id"], _origem(request)))
     saida = JSONResponse({"mfa": True}) if precisa_de_codigo else Response(status_code=204)
     saida.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/", secure=os.getenv("ROAR_COOKIE_SEGURO", "1") == "1",
                      max_age=MINUTOS_PARA_O_CODIGO * 60 if precisa_de_codigo else HORAS_DE_SESSAO * 3600)
@@ -238,6 +259,9 @@ def sair(request: Request, response: Response):
     token = request.cookies.get(COOKIE)
     if token:
         with request.app.state.banco.connection() as con:
+            sessao = con.execute("SELECT usuario_id FROM roar_sessao(%s)", (_hash_do_token(token),)).fetchone()
+            if sessao:
+                con.execute("SELECT roar_registrar_acesso(%s, 'logoff', %s)", (sessao["usuario_id"], _origem(request)))
             con.execute("SELECT roar_encerrar_sessao(%s)", (_hash_do_token(token),))
     response.delete_cookie(COOKIE, path="/")
 
@@ -308,6 +332,9 @@ def verificar_mfa(dados: CodigoDeMfa, request: Request, sessao=Depends(sessao_at
                                                (sessao["usuario_id"], mfa.hash_do_codigo(sessao["usuario_id"], dados.codigo))).fetchone()["ok"]
         if not valido:
             falhas_de_login[chave].append(time.monotonic())
+            # Em conexão própria: o erro levantado aqui desfaria o registro.
+            with request.app.state.banco.connection() as outra:
+                outra.execute("SELECT roar_registrar_recusa_de(%s, 'mfa_recusado', %s)", (sessao["usuario_id"], _origem(request)))
             raise HTTPException(status_code=422, detail="Código incorreto.")
         falhas_de_login.pop(chave, None)
         con.execute("SELECT roar_concluir_mfa(%s, %s)", (token, HORAS_DE_SESSAO))
@@ -903,6 +930,71 @@ def gerar_evidencia(dados: PedidoDeEvidencia, request: Request, sessao=Depends(e
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_evidencia', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{dados.fonte} {' '.join(ids)[:600]} sha256:{resumo}"))
     return Response(conteudo, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="evidencia-roar.zip"', "X-Resumo-SHA256": resumo})
+
+
+TAMANHO_DA_TRILHA = 100
+
+
+def _consultar_trilha(con, dias, acao, pessoa, antes_de, limite):
+    condicoes, valores = ["em >= now() - make_interval(days => %s)"], [max(1, min(dias, 3650))]
+    if acao:
+        condicoes.append("acao = %s")
+        valores.append(acao[:80])
+    if pessoa:
+        condicoes.append("usuario_id = %s")
+        valores.append(pessoa)
+    if antes_de:
+        condicoes.append("id < %s")
+        valores.append(antes_de)
+    return con.execute(f"SELECT id, em, usuario_id, acao, alvo, origem FROM auditoria WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s", (*valores, limite)).fetchall()
+
+
+def _nomes_das_pessoas(con):
+    return {u["id"]: u["nome"] for u in con.execute("SELECT id, nome FROM roar_listar_usuarios()").fetchall()}
+
+
+@app.get("/api/auditoria")
+def trilha(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA)), dias: int = 30, acao: str = "", pessoa: uuid.UUID | None = None, antes_de: int | None = None):
+    with do_cliente(request, sessao) as con:
+        linhas = _consultar_trilha(con, dias, acao, pessoa, antes_de, TAMANHO_DA_TRILHA + 1)
+        nomes = _nomes_das_pessoas(con)
+        acoes = [a["acao"] for a in con.execute("SELECT DISTINCT acao FROM auditoria ORDER BY acao").fetchall()]
+    tem_mais = len(linhas) > TAMANHO_DA_TRILHA
+    linhas = linhas[:TAMANHO_DA_TRILHA]
+    return {"linhas": [{**l, "pessoa": nomes.get(l["usuario_id"])} for l in linhas], "acoes": acoes, "pessoas": [{"id": i, "nome": n} for i, n in nomes.items()],
+            "proximo": linhas[-1]["id"] if tem_mais else None}
+
+
+def _celula_segura(valor):
+    """Planilha executa célula que começa assim, e o alvo pode ter sido escrito por quem tentou entrar."""
+    texto = "" if valor is None else str(valor)
+    return f"'{texto}" if texto[:1] in ("=", "+", "-", "@", "\t", "\r") else texto
+
+
+@app.get("/api/auditoria/exportar")
+def exportar_trilha(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA)), dias: int = 30, acao: str = "", pessoa: uuid.UUID | None = None):
+    with do_cliente(request, sessao) as con:
+        linhas = _consultar_trilha(con, dias, acao, pessoa, None, 100000)
+        nomes = _nomes_das_pessoas(con)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_auditoria', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{dias}d {len(linhas)} linhas"))
+    saida = io.StringIO()
+    escritor = csv.writer(saida)
+    escritor.writerow(["quando", "acao", "pessoa", "alvo", "origem"])
+    for l in linhas:
+        escritor.writerow([l["em"].isoformat(), *(_celula_segura(v) for v in (l["acao"], nomes.get(l["usuario_id"], ""), l["alvo"], l["origem"]))])
+    return Response(saida.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="auditoria-roar.csv"'})
+
+
+@app.get("/api/notificacoes")
+def notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA))):
+    with do_cliente(request, sessao) as con:
+        return {"avisos": con.execute("SELECT id, tipo, alvo, origem, contagem, criada_em, atualizada_em FROM notificacoes WHERE lida_em IS NULL ORDER BY atualizada_em DESC LIMIT 50").fetchall()}
+
+
+@app.post("/api/notificacoes/lidas", status_code=204)
+def marcar_notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA))):
+    with do_cliente(request, sessao) as con:
+        con.execute("UPDATE notificacoes SET lida_em = now(), lida_por = %s WHERE lida_em IS NULL", (sessao["usuario_id"],))
 
 
 @app.get("/api/cves")

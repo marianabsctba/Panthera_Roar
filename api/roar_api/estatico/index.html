@@ -36,6 +36,7 @@
       <div class="sessao">
         <span id="cliente" class="cliente"></span>
         <span id="usuario"></span>
+        <button id="abrir-avisos" type="button" class="botao-discreto" data-permissao="ver_auditoria">Avisos <b id="n-avisos">0</b></button>
         <button id="abrir-ajuda" type="button" class="botao-discreto" title="Ajuda desta tela" aria-label="Ajuda desta tela">?</button>
         <button id="abrir-mfa" type="button" class="botao-discreto">Autenticador</button>
         <button id="abrir-senha" type="button" class="botao-discreto">Trocar senha</button>
@@ -68,8 +69,34 @@
       <button type="button" data-vista="relatorios">Relatórios</button>
       <button type="button" data-vista="automacao">Automação</button>
       <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
+      <button type="button" data-vista="auditoria" data-permissao="ver_auditoria">Auditoria</button>
       <button type="button" data-vista="ajuda">Ajuda</button>
     </nav>
+
+    <section id="vista-auditoria" class="pagina" aria-label="Auditoria" hidden>
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Avisos</h2>
+        <button id="avisos-lidos" type="button" class="botao-discreto" hidden>Marcar como lidos</button>
+      </div>
+      <div id="lista-avisos" class="tabela-rolagem"></div>
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Trilha de auditoria</h2>
+        <button id="exportar-auditoria" type="button" class="botao-discreto">Exportar em CSV</button>
+      </div>
+      <p class="texto-secao">Quem entrou, saiu e errou a senha, quem mudou o quê, e quais ativos entraram e saíram. A trilha não pode ser alterada pela tela.</p>
+      <div class="filtros">
+        <select id="auditoria-dias" aria-label="Período">
+          <option value="1">Último dia</option>
+          <option value="7">7 dias</option>
+          <option value="30" selected>30 dias</option>
+          <option value="180">180 dias</option>
+        </select>
+        <select id="auditoria-acao" aria-label="Ação"></select>
+        <select id="auditoria-pessoa" aria-label="Pessoa"></select>
+      </div>
+      <div id="tabela-auditoria" class="tabela-rolagem"></div>
+      <button id="mais-auditoria" type="button" class="botao-discreto" hidden>Carregar mais</button>
+    </section>
 
     <section id="vista-prova" class="pagina" aria-label="Prova e evidência" hidden>
       <h2 class="titulo-secao">Prova e evidência</h2>
