@@ -40,7 +40,7 @@ escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE
 escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
-[ -f "$DESTINO/cofre/privada" ] || PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.cofre
+[ -f "$DESTINO/cofre/privada" ] || PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.cofre gerar
 chmod 755 "$DESTINO/cofre"; chmod 600 "$DESTINO/cofre/privada"; chmod 644 "$DESTINO/cofre/publica"
 install -m 644 "$DESTINO/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem" "$DESTINO/ca-indexer.pem"
 if [ ! -f "$DESTINO/selo/privada" ]; then
