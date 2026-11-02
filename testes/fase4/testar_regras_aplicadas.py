@@ -236,8 +236,14 @@ def main():
         registrar("regra desativada para de disparar", not ok)
         ok, vistos = dispara("texto com palavra-guiada", "Guiada de teste")
         registrar("as outras continuam ativas", ok, str(vistos))
+
+        print("\n== Tirar a última regra", flush=True)
+        amb.admin.execute("UPDATE regras_proprias SET estado = 'desativada' WHERE gerenciador_id = %s", (g["id"],))
+        aplicar()
+        ok, _ = dispara("texto com palavra-guiada", "Guiada de teste", espera=8)
+        registrar("sem nenhuma regra própria, a última para de disparar", not ok)
+        registrar("gerenciador continua no ar", esperar_gerenciador(g, 60))
     finally:
-        amb.admin.execute("DELETE FROM arquivos_de_regras WHERE arquivo LIKE '%%sshd%%'")
         amb.limpar()
 
     falhas = [n for n, ok in RESULTADOS if not ok]

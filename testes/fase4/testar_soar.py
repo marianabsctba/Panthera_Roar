@@ -98,7 +98,7 @@ class Cenario:
 
 
 def iniciar_worker(cliente):
-    ambiente = {**os.environ, "PYTHONPATH": str(RAIZ / "motor"), "ROAR_WEBHOOK_INTERNO": "1"}
+    ambiente = {**os.environ, "PYTHONPATH": str(RAIZ / "motor"), "ROAR_DESTINO_INTERNO": "1"}
     return subprocess.Popen([sys.executable, "-m", "roar_motor.worker", "--cliente", cliente], env=ambiente,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

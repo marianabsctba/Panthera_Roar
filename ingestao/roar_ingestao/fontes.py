@@ -8,14 +8,35 @@ O dono de um log de syslog é o gerenciador cuja porta recebeu o log, nunca o co
 import argparse
 import hashlib
 import ipaddress
+import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
+from xml.sax.saxutils import escape
+
+import requests
+
+from . import rede_externa
 
 log = logging.getLogger("roar.fontes")
+EVENTOS_POR_LOTE = 100
+LOTES_POR_CICLO = 5
+INTERVALO_MINIMO = 5
+TAMANHO_MAXIMO_DA_RESPOSTA = 5_000_000
+TAMANHO_MAXIMO_DO_ITEM = 60_000
+MAXIMO_DE_VISTOS = 5000
+CAMINHO_NO_JSON = re.compile(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){0,9}")
+NOME_DE_CABECALHO = re.compile(r"[A-Za-z0-9-]{1,64}")
+# Quem controla o Host ou a conexão poderia desviar a chamada do endereço conferido.
+CABECALHOS_PROIBIDOS = ("host", "connection", "transfer-encoding", "content-length", "upgrade", "proxy-authorization")
 PASTA_GERENCIADORES = Path("/opt/panthera-roar/gerenciadores")
 PROTOCOLOS = ("tcp", "udp")
+TIPOS_DE_NUVEM = ("github", "office365")
+ORGANIZACAO_DO_GITHUB = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
+IDENTIFICADOR_MICROSOFT = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+ASSINATURAS_DO_OFFICE365 = ("Audit.AzureActiveDirectory", "Audit.Exchange", "Audit.General", "Audit.SharePoint", "DLP.All")
 ORIGENS_MAXIMAS = 200
 # Mais aberto que isso, qualquer um na internet escreveria nos logs do cliente.
 MENOR_PREFIXO_IPV4 = 8
@@ -45,21 +66,70 @@ def validar_syslog(protocolo, origens):
     return sorted(set(redes))
 
 
+def validar_nuvem(tipo, campos):
+    """Devolve só os campos conhecidos, já conferidos. Nenhum texto livre chega ao XML sem escape."""
+    if tipo == "github":
+        organizacao = str(campos.get("organizacao", "")).strip()
+        if not ORGANIZACAO_DO_GITHUB.fullmatch(organizacao):
+            raise FonteInvalida("Informe o nome da organização no GitHub.")
+        return {"organizacao": organizacao}
+    if tipo == "office365":
+        normalizados = {}
+        for campo, rotulo in (("locatario", "locatário (tenant)"), ("aplicativo", "aplicativo (client)")):
+            valor = str(campos.get(campo, "")).strip()
+            if not IDENTIFICADOR_MICROSOFT.fullmatch(valor):
+                raise FonteInvalida(f"O identificador do {rotulo} precisa ter o formato de um GUID.")
+            normalizados[campo] = valor.lower()
+        return normalizados
+    raise FonteInvalida("Tipo de fonte desconhecido.")
+
+
+def _bloco_de_nuvem(fonte):
+    config, segredo = fonte["config"], escape(fonte["segredo_aberto"])
+    if fonte["tipo"] == "github":
+        return (f"  <github>\n    <enabled>yes</enabled>\n    <interval>1m</interval>\n    <time_delay>1m</time_delay>\n"
+                f"    <only_future_events>yes</only_future_events>\n    <api_auth>\n      <org_name>{escape(config['organizacao'])}</org_name>\n"
+                f"      <api_token>{segredo}</api_token>\n    </api_auth>\n    <api_parameters>\n      <event_type>all</event_type>\n"
+                f"    </api_parameters>\n  </github>\n")
+    assinaturas = "".join(f"      <subscription>{a}</subscription>\n" for a in ASSINATURAS_DO_OFFICE365)
+    return (f"  <office365>\n    <enabled>yes</enabled>\n    <interval>1m</interval>\n    <only_future_events>yes</only_future_events>\n"
+            f"    <api_auth>\n      <tenant_id>{escape(config['locatario'])}</tenant_id>\n      <client_id>{escape(config['aplicativo'])}</client_id>\n"
+            f"      <client_secret>{segredo}</client_secret>\n      <api_type>commercial</api_type>\n    </api_auth>\n"
+            f"    <subscriptions>\n{assinaturas}    </subscriptions>\n  </office365>\n")
+
+
 def fragmento_de_configuracao(fontes):
-    """Uma entrada por protocolo, porque a porta interna é a mesma para todas as fontes do cliente."""
-    por_protocolo = {}
+    """Uma entrada de syslog por protocolo, porque a porta interna é a mesma para todas as fontes do cliente."""
+    por_protocolo, blocos = {}, []
     for fonte in fontes:
         if fonte["tipo"] != "syslog":
             continue
         config = fonte["config"]
         por_protocolo.setdefault(config["protocolo"], set()).update(validar_syslog(config["protocolo"], config["origens"]))
-    if not por_protocolo:
-        return ""
-    blocos = []
     for protocolo in sorted(por_protocolo):
         permitidos = "".join(f"    <allowed-ips>{rede}</allowed-ips>\n" for rede in sorted(por_protocolo[protocolo]))
         blocos.append(f"  <remote>\n    <connection>syslog</connection>\n    <port>514</port>\n    <protocol>{protocolo}</protocol>\n{permitidos}  </remote>\n")
+    blocos += [_bloco_de_nuvem(f) for f in sorted(fontes, key=lambda f: f.get("id", 0)) if f["tipo"] in TIPOS_DE_NUVEM]
+    if not blocos:
+        return ""
     return "\n<ossec_config>\n" + "".join(blocos) + "</ossec_config>\n"
+
+
+def _abrir_segredos(banco, cliente, fontes):
+    """Só aqui a credencial fica aberta, para entrar na configuração do gerenciador daquele cliente."""
+    from . import cofre
+
+    nuvem = [f for f in fontes if f["tipo"] in TIPOS_DE_NUVEM]
+    if not nuvem:
+        return
+    privada = cofre.ler_privada()
+    with banco.con.transaction():
+        banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+        for fonte in nuvem:
+            selado = banco.con.execute("SELECT selado FROM segredos WHERE nome = %s", (fonte["config"]["segredo"],)).fetchone()
+            if not selado:
+                raise FonteInvalida("A credencial desta fonte não foi encontrada.")
+            fonte["segredo_aberto"] = cofre.abrir(privada, cliente, fonte["config"]["segredo"], selado[0])
 
 
 def aplicar_fontes(banco, gerenciador_id, cliente):
@@ -78,6 +148,7 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     em_uso = [{"id": l[0], "tipo": l[1], "config": l[2]} for l in linhas if l[3] != "desativada"]
     pasta = PASTA_GERENCIADORES / gerenciador_id
     marca = pasta / "fontes.aplicadas"
+    _abrir_segredos(banco, cliente, em_uso)
     fragmento = fragmento_de_configuracao(em_uso)
     resumo = hashlib.sha256(fragmento.encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
@@ -98,6 +169,119 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     return len(pendentes)
 
 
+def encaminhar_webhooks(banco, gerenciador_id, cliente):
+    """Só apaga da fila o que o gerenciador aceitou. Se ele limitar, o resto espera o próximo ciclo."""
+    from . import provisao
+
+    entregues = 0
+    for _ in range(LOTES_POR_CICLO):
+        with banco.con.transaction():
+            banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+            lote = banco.con.execute(
+                "SELECT id, corpo FROM entrada_webhook WHERE gerenciador_id = %s ORDER BY id LIMIT %s",
+                (gerenciador_id, EVENTOS_POR_LOTE)).fetchall()
+        if not lote:
+            break
+        try:
+            provisao.enviar_eventos(gerenciador_id, [corpo for _, corpo in lote])
+        except requests.HTTPError as erro:
+            if erro.response is not None and erro.response.status_code == 429:
+                break
+            raise
+        with banco.con.transaction():
+            banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+            banco.con.execute("DELETE FROM entrada_webhook WHERE id = ANY(%s)", ([i for i, _ in lote],))
+        entregues += len(lote)
+    return entregues
+
+
+def validar_api(config):
+    """Devolve só os campos conhecidos. O endereço é conferido aqui e de novo a cada busca."""
+    endereco = str(config.get("endereco", "")).strip()
+    if not endereco.startswith("https://") and not (endereco.startswith("http://") and os.getenv("ROAR_DESTINO_INTERNO") == "1"):
+        raise FonteInvalida("O endereço precisa começar com https.")
+    try:
+        rede_externa.resolver(endereco)
+    except rede_externa.DestinoRecusado as erro:
+        raise FonteInvalida(str(erro))
+    caminho = str(config.get("caminho", "")).strip()
+    if caminho and not CAMINHO_NO_JSON.fullmatch(caminho):
+        raise FonteInvalida("O caminho até a lista usa só letras, números, _ e pontos, como data.itens.")
+    cabecalho = str(config.get("cabecalho", "")).strip()
+    if cabecalho and not NOME_DE_CABECALHO.fullmatch(cabecalho):
+        raise FonteInvalida("Nome de cabeçalho inválido.")
+    if cabecalho.lower() in CABECALHOS_PROIBIDOS:
+        raise FonteInvalida(f"O cabeçalho {cabecalho} não pode ser usado.")
+    try:
+        intervalo = int(config.get("intervalo_minutos", 15))
+    except (TypeError, ValueError):
+        raise FonteInvalida("O intervalo precisa ser um número de minutos.")
+    if not INTERVALO_MINIMO <= intervalo <= 1440:
+        raise FonteInvalida(f"O intervalo vai de {INTERVALO_MINIMO} a 1440 minutos.")
+    return {"endereco": endereco, "caminho": caminho, "cabecalho": cabecalho, "intervalo_minutos": intervalo}
+
+
+def _itens_da_resposta(corpo, caminho):
+    """O conteúdo é de fora, então nada aqui confia no formato. Devolve as linhas de JSON de cada item."""
+    try:
+        dados = json.loads(corpo)
+    except (ValueError, RecursionError):
+        raise FonteInvalida("A resposta não é JSON.")
+    for parte in caminho.split(".") if caminho else []:
+        if not isinstance(dados, dict) or parte not in dados:
+            raise FonteInvalida(f"O caminho {caminho} não existe na resposta.")
+        dados = dados[parte]
+    itens = dados if isinstance(dados, list) else [dados]
+    linhas = [json.dumps(i, ensure_ascii=False, separators=(",", ":"), sort_keys=True) for i in itens if isinstance(i, dict)]
+    return [l for l in linhas if len(l.encode()) <= TAMANHO_MAXIMO_DO_ITEM]
+
+
+def buscar_apis(banco, gerenciador_id, cliente):
+    """Uma fonte com problema fica com o motivo na tela e tenta de novo no próximo intervalo."""
+    from . import cofre, provisao
+
+    def transacao(sql, *args):
+        with banco.con.transaction():
+            banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+            cursor = banco.con.execute(sql, args)
+            return cursor.fetchall() if cursor.description else None
+
+    prontas = transacao(
+        """SELECT id, config, vistos FROM fontes WHERE gerenciador_id = %s AND tipo = 'api' AND estado = 'ativa'
+           AND (proxima_busca IS NULL OR proxima_busca <= now())""", gerenciador_id)
+    for fonte, config, vistos in prontas:
+        transacao("UPDATE fontes SET proxima_busca = now() + make_interval(mins => %s) WHERE id = %s", config["intervalo_minutos"], fonte)
+        try:
+            cabecalhos = {"Accept": "application/json"}
+            if config.get("segredo"):
+                selado = transacao("SELECT selado FROM segredos WHERE nome = %s", config["segredo"])
+                if not selado:
+                    raise FonteInvalida("A credencial desta fonte não foi encontrada.")
+                cabecalhos[config["cabecalho"] or "Authorization"] = cofre.abrir(cofre.ler_privada(), cliente, config["segredo"], selado[0][0])
+            resposta, corpo = rede_externa.chamar("GET", config["endereco"], cabecalhos, limite_de_bytes=TAMANHO_MAXIMO_DA_RESPOSTA)
+            if resposta.status_code != 200:
+                raise FonteInvalida(f"O sistema respondeu {resposta.status_code}.")
+            linhas = _itens_da_resposta(corpo, config["caminho"])
+            ja_vistos, novos = set(vistos), []
+            resumos = []
+            for linha in linhas:
+                resumo = hashlib.sha256(linha.encode()).hexdigest()[:32]
+                resumos.append(resumo)
+                if resumo not in ja_vistos:
+                    novos.append(linha)
+            for inicio in range(0, len(novos), EVENTOS_POR_LOTE):
+                provisao.enviar_eventos(gerenciador_id, novos[inicio:inicio + EVENTOS_POR_LOTE])
+            # A lista fica com o que veio agora: o que saiu da resposta não volta a ser comparado.
+            transacao("UPDATE fontes SET vistos = %s, mensagem = NULL, ultimo_dado_em = CASE WHEN %s THEN now() ELSE ultimo_dado_em END WHERE id = %s",
+                      resumos[-MAXIMO_DE_VISTOS:], bool(novos), fonte)
+        except (FonteInvalida, rede_externa.DestinoRecusado) as erro:
+            transacao("UPDATE fontes SET mensagem = %s WHERE id = %s", str(erro)[:300], fonte)
+        except requests.RequestException as erro:
+            # A exceção pode citar a URL interna da conexão: a tela recebe só o tipo do problema.
+            log.warning("busca da fonte %s falhou: %s", fonte, type(erro).__name__)
+            transacao("UPDATE fontes SET mensagem = %s WHERE id = %s", "Não foi possível falar com o sistema.", fonte)
+
+
 def ciclo(banco):
     from .regras import aplicar_regras_proprias
 
@@ -105,6 +289,8 @@ def ciclo(banco):
         if not (PASTA_GERENCIADORES / gerenciador_id).is_dir():
             continue
         try:
+            encaminhar_webhooks(banco, gerenciador_id, cliente)
+            buscar_apis(banco, gerenciador_id, cliente)
             aplicar_fontes(banco, gerenciador_id, cliente)
             # No mesmo ciclo curto: regra criada ou editada na tela não pode esperar a sincronização de hora em hora.
             aplicar_regras_proprias(banco, gerenciador_id, cliente)

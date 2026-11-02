@@ -217,6 +217,72 @@
         </div>
       </form>
       <p id="destino-syslog" class="texto-secao"></p>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Nuvem</h2>
+        <button id="nova-nuvem" type="button" class="botao-primario">Conectar uma conta</button>
+      </div>
+      <p class="texto-secao">A credencial é guardada cifrada e nunca volta para a tela. Este coletor ainda não foi testado com uma conta real.</p>
+      <form id="form-nuvem" class="formulario-regra" hidden novalidate autocomplete="off">
+        <div class="linha-campos">
+          <label>Serviço <select id="nuvem-tipo">
+            <option value="github">GitHub</option>
+            <option value="office365">Microsoft 365</option>
+          </select></label>
+          <label>Nome <input id="nuvem-nome" type="text" maxlength="120"></label>
+        </div>
+        <label id="nuvem-campo-organizacao">Organização no GitHub <input id="nuvem-organizacao" type="text" maxlength="39" spellcheck="false"></label>
+        <div id="nuvem-campos-microsoft" class="linha-campos" hidden>
+          <label>Locatário (tenant ID) <input id="nuvem-locatario" type="text" maxlength="36" spellcheck="false"></label>
+          <label>Aplicativo (client ID) <input id="nuvem-aplicativo" type="text" maxlength="36" spellcheck="false"></label>
+        </div>
+        <label><span id="nuvem-rotulo-segredo">Token de acesso</span> <input id="nuvem-segredo" type="password" maxlength="4096" autocomplete="new-password"></label>
+        <p id="nuvem-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="nuvem-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Conectar</button>
+        </div>
+      </form>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Webhook</h2>
+        <button id="novo-webhook" type="button" class="botao-primario">Criar um endereço</button>
+      </div>
+      <p class="texto-secao">Para qualquer sistema que saiba enviar JSON. Cada endereço tem um token próprio, que aparece uma única vez.</p>
+      <form id="form-webhook" class="formulario-regra" hidden novalidate>
+        <label>Nome <input id="webhook-nome" type="text" maxlength="120" placeholder="Sistema de RH"></label>
+        <p id="webhook-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="webhook-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Criar</button>
+        </div>
+      </form>
+      <div id="webhook-criado" class="simulacao" hidden></div>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">Buscar em uma API</h2>
+        <button id="nova-api" type="button" class="botao-primario">Conectar um sistema</button>
+      </div>
+      <p class="texto-secao">Para sistemas sem módulo pronto: buscamos o endereço de tempos em tempos e entregamos só o que for novo.</p>
+      <form id="form-api" class="formulario-regra" hidden novalidate autocomplete="off">
+        <div class="linha-campos">
+          <label>Nome <input id="api-nome" type="text" maxlength="120"></label>
+          <label>Buscar a cada (minutos) <input id="api-intervalo" type="number" min="5" max="1440" value="15"></label>
+        </div>
+        <label>Endereço completo, começando por https <input id="api-endereco" type="url" maxlength="2000" spellcheck="false"></label>
+        <label>Onde está a lista na resposta (opcional) <input id="api-caminho" type="text" maxlength="200" spellcheck="false" placeholder="data.itens"></label>
+        <div class="linha-campos">
+          <label>Cabeçalho da credencial (opcional) <input id="api-cabecalho" type="text" maxlength="64" spellcheck="false" placeholder="Authorization"></label>
+          <label>Credencial (opcional) <input id="api-segredo" type="password" maxlength="4096" autocomplete="new-password"></label>
+        </div>
+        <p id="api-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="api-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Conectar</button>
+        </div>
+      </form>
+
+      <h2 class="titulo-secao">Fontes configuradas</h2>
       <div id="tabela-fontes" class="tabela-rolagem"></div>
     </section>
 

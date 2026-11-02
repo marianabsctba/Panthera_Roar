@@ -22,6 +22,8 @@ from .sigma import ID_INICIAL, arquivo_de_regras, converter_textos
 
 PASTA_GERENCIADORES = Path("/opt/panthera-roar/gerenciadores")
 TAMANHO_DA_PAGINA = 500
+TENTATIVAS_NO_LIMITE = 5
+SEGUNDOS_APOS_O_LIMITE = 65
 NORMAS = ("pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc", "gpg13")
 URL_D3FEND = "https://d3fend.mitre.org/api/offensive-technique/attack"
 FAIXA_POR_REGRA = 32
@@ -49,11 +51,17 @@ def _pedir(gerenciador_id, rota, parametros=None):
 def _pedir_texto(gerenciador_id, rota, parametros=None):
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     base, senha = _api_do_gerenciador(gerenciador_id)
-    token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", senha), verify=False, timeout=30)
-    token.raise_for_status()
-    r = requests.get(base + rota, headers={"Authorization": f"Bearer {token.text}"}, verify=False, timeout=60, params=parametros)
-    r.raise_for_status()
-    return r.text
+    # O gerenciador limita as chamadas por minuto, e carregar o catálogo inteiro passa desse limite.
+    for tentativa in range(TENTATIVAS_NO_LIMITE):
+        token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", senha), verify=False, timeout=30)
+        if token.status_code != 429:
+            token.raise_for_status()
+            r = requests.get(base + rota, headers={"Authorization": f"Bearer {token.text}"}, verify=False, timeout=60, params=parametros)
+            if r.status_code != 429:
+                r.raise_for_status()
+                return r.text
+        time.sleep(SEGUNDOS_APOS_O_LIMITE)
+    raise RuntimeError(f"O gerenciador {gerenciador_id} continuou limitando as chamadas.")
 
 
 def buscar_regras(gerenciador_id):
@@ -226,7 +234,11 @@ def aplicar_regras_proprias(banco, gerenciador_id, cliente):
         else:
             recusadas.append((i, str(detalhe.get("saida") or detalhe)[:400]))
 
-    valida, detalhe = provisao.aplicar_regras(gerenciador_id, "roar_proprias.xml", "".join(resultado) or VAZIO)
+    if resultado:
+        valida, detalhe = provisao.aplicar_regras(gerenciador_id, "roar_proprias.xml", "".join(resultado))
+    else:
+        # O gerenciador recusa arquivo sem regra: sem nada para instalar, o arquivo sai.
+        valida, detalhe = provisao.remover_regras(gerenciador_id, "roar_proprias.xml")
     if not valida:
         log.error("regras próprias de %s reprovaram: %s", gerenciador_id, detalhe)
         return 0

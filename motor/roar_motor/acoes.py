@@ -6,12 +6,15 @@ e público, e o endereço do webhook é o que a pessoa configurou no playbook, n
 
 import ipaddress
 import os
-import socket
+import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 import requests
 import urllib3
+
+# A mesma conexão presa ao IP conferido que a busca de fontes usa.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
+from roar_ingestao import rede_externa  # noqa: E402
 
 PASTA_GERENCIADORES = Path(os.getenv("ROAR_GERENCIADORES", "/opt/panthera-roar/gerenciadores"))
 # Todo bloqueio vence sozinho: um endereço forjado num log não pode ficar bloqueado para sempre.
@@ -120,28 +123,20 @@ def bloquear_ip(gerenciador_id, contexto, parametros):
 
 
 def _destino_permitido(endereco):
-    partes = urlparse(str(endereco))
-    if partes.scheme not in ("https", "http") or not partes.hostname:
-        raise AcaoRecusada("Endereço de webhook inválido.")
-    if partes.username or partes.password:
-        raise AcaoRecusada("O endereço do webhook não pode trazer usuário e senha.")
-    # Um webhook não pode virar caminho para a rede interna do próprio servidor.
-    if os.getenv("ROAR_WEBHOOK_INTERNO") != "1":
-        try:
-            enderecos = {i[4][0] for i in socket.getaddrinfo(partes.hostname, partes.port or 443)}
-        except socket.gaierror:
-            raise AcaoRecusada("Não foi possível encontrar o endereço do webhook.")
-        for e in enderecos:
-            if not _e_publico(ipaddress.ip_address(e)):
-                raise AcaoRecusada("O webhook não pode apontar para um endereço interno.")
+    try:
+        rede_externa.resolver(endereco)
+    except rede_externa.DestinoRecusado as erro:
+        raise AcaoRecusada(str(erro))
     return str(endereco)
 
 
 def webhook(gerenciador_id, contexto, parametros):
     destino = _destino_permitido(parametros.get("url"))
     corpo = {k: contexto.get(k) for k in ("playbook", "alvo", "agente_id", "origem_tipo", "origem_id", "titulo")}
-    # O redirecionamento poderia levar a um endereço interno depois da checagem.
-    r = requests.post(destino, json=corpo, timeout=15, allow_redirects=False)
+    try:
+        r, _ = rede_externa.chamar("POST", destino, json=corpo)
+    except rede_externa.DestinoRecusado as erro:
+        raise AcaoRecusada(str(erro))
     if r.status_code >= 500:
         raise RuntimeError(f"Webhook respondeu {r.status_code}")
     if r.status_code >= 300:

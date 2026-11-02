@@ -1464,6 +1464,7 @@ const SAUDE_DA_FONTE = {
   recebendo: "● Recebendo", parada: "▲ Parada", nunca_recebeu: "○ Nada recebido ainda", desconhecida: "? Não foi possível conferir",
 };
 const ESTADOS_DE_FONTE = { pendente: "Aplicando...", recusada: "Recusada", ativa: "Ativa" };
+const TIPOS_DE_FONTE = { syslog: "Syslog", github: "GitHub", office365: "Microsoft 365", webhook: "Webhook", api: "API" };
 
 async function carregarFontes() {
   const r = await pedir("/api/fontes");
@@ -1473,14 +1474,16 @@ async function carregarFontes() {
     : "Nenhum ativo inscrito ainda.";
   $("destino-syslog").textContent = porta ? `Aponte os equipamentos para ${endereco}, porta ${porta}.` : "";
   $("tabela-fontes").replaceChildren(fontes.length ? montarTabela(
-    [["Nome"], ["Protocolo"], ["Origens"], ["Estado"], ["Dados"], ["Último dado"], [""]],
+    [["Nome"], ["Tipo"], ["Detalhe"], ["Estado"], ["Dados"], ["Último dado"], [""]],
     fontes.map((f) => {
       const acoes = el("td");
       acoes.append(botaoDeTabela("Desativar", "botao-discreto", async () => {
         await pedir(`/api/fontes/${f.id}/desativar`, { method: "POST" });
         await carregarFontes();
       }));
-      return [el("td", null, f.nome), el("td", null, f.config.protocolo.toUpperCase()), el("td", "mono ip", f.config.origens.join(", ")),
+      const detalhe = f.tipo === "syslog" ? `${f.config.protocolo.toUpperCase()}: ${f.config.origens.join(", ")}`
+        : f.config.organizacao ?? f.config.locatario ?? f.config.endereco ?? (f.tipo === "webhook" ? "Token guardado" : "-");
+      return [el("td", null, f.nome), el("td", null, TIPOS_DE_FONTE[f.tipo] ?? f.tipo), el("td", "mono ip", detalhe),
         el("td", null, f.mensagem ?? ESTADOS_DE_FONTE[f.estado] ?? f.estado), el("td", null, SAUDE_DA_FONTE[f.saude] ?? "-"),
         el("td", null, quando(f.ultimo_dado)), acoes];
     })) : el("p", "vazio", "Nenhum equipamento configurado."));
@@ -1514,6 +1517,126 @@ async function mostrarInstalacao() {
     }));
   area.hidden = false;
 }
+
+function ajustarFormularioDeNuvem() {
+  const microsoft = $("nuvem-tipo").value === "office365";
+  $("nuvem-campo-organizacao").hidden = microsoft;
+  $("nuvem-campos-microsoft").hidden = !microsoft;
+  $("nuvem-rotulo-segredo").textContent = microsoft ? "Segredo do aplicativo" : "Token de acesso";
+}
+
+$("nova-nuvem").addEventListener("click", () => {
+  $("form-nuvem").hidden = false;
+  ajustarFormularioDeNuvem();
+  $("nuvem-nome").focus();
+});
+$("nuvem-cancelar").addEventListener("click", () => {
+  $("form-nuvem").reset();
+  $("form-nuvem").hidden = true;
+});
+$("nuvem-tipo").addEventListener("change", ajustarFormularioDeNuvem);
+$("form-nuvem").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const erro = $("nuvem-erro");
+  erro.hidden = true;
+  const nome = $("nuvem-nome").value.trim();
+  if (!nome || !$("nuvem-segredo").value) {
+    erro.textContent = "Preencha o nome e a credencial.";
+    erro.hidden = false;
+    return;
+  }
+  const tipo = $("nuvem-tipo").value;
+  const campos = tipo === "office365"
+    ? { locatario: $("nuvem-locatario").value, aplicativo: $("nuvem-aplicativo").value }
+    : { organizacao: $("nuvem-organizacao").value };
+  const r = await pedir("/api/fontes/nuvem", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nome, tipo, campos, segredo: $("nuvem-segredo").value }),
+  });
+  if (!r.ok) {
+    erro.textContent = await detalheDoErro(r, "Confira os campos.");
+    erro.hidden = false;
+    return;
+  }
+  // A credencial não fica nem no formulário depois de enviada.
+  $("form-nuvem").reset();
+  $("form-nuvem").hidden = true;
+  await carregarFontes();
+});
+
+$("nova-api").addEventListener("click", () => {
+  $("form-api").hidden = false;
+  $("api-nome").focus();
+});
+$("api-cancelar").addEventListener("click", () => {
+  $("form-api").reset();
+  $("form-api").hidden = true;
+});
+$("form-api").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const erro = $("api-erro");
+  erro.hidden = true;
+  const nome = $("api-nome").value.trim();
+  if (!nome) {
+    erro.textContent = "Dê um nome ao sistema.";
+    erro.hidden = false;
+    return;
+  }
+  const r = await postarJson("/api/fontes/api", {
+    nome,
+    endereco: $("api-endereco").value.trim(),
+    caminho: $("api-caminho").value.trim(),
+    intervalo_minutos: Number($("api-intervalo").value || 15),
+    cabecalho: $("api-cabecalho").value.trim(),
+    segredo: $("api-segredo").value,
+  });
+  if (!r.ok) {
+    erro.textContent = await detalheDoErro(r, "Confira os campos.");
+    erro.hidden = false;
+    return;
+  }
+  // A credencial não fica nem no formulário depois de enviada.
+  $("form-api").reset();
+  $("form-api").hidden = true;
+  await carregarFontes();
+});
+
+$("novo-webhook").addEventListener("click", () => {
+  $("form-webhook").hidden = false;
+  $("webhook-criado").hidden = true;
+  $("webhook-nome").focus();
+});
+$("webhook-cancelar").addEventListener("click", () => { $("form-webhook").hidden = true; });
+$("form-webhook").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const erro = $("webhook-erro");
+  erro.hidden = true;
+  const nome = $("webhook-nome").value.trim();
+  if (!nome) {
+    erro.textContent = "Dê um nome ao endereço.";
+    erro.hidden = false;
+    return;
+  }
+  const r = await postarJson("/api/fontes/webhook", { nome });
+  if (!r.ok) {
+    erro.textContent = await detalheDoErro(r, "Não foi possível criar.");
+    erro.hidden = false;
+    return;
+  }
+  const { token, caminho } = await r.json();
+  const endereco = window.location.origin + caminho;
+  const exemplo = `curl -X POST ${endereco} -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"mensagem": "teste"}'`;
+  const copiar = botaoDeTabela("Copiar", "botao-discreto", async () => {
+    await navigator.clipboard.writeText(exemplo);
+    copiar.textContent = "Copiado";
+  });
+  $("webhook-criado").replaceChildren(el("strong", null, "Guarde agora: este token não aparece de novo."), el("pre", "bruto", exemplo), copiar);
+  $("webhook-criado").hidden = false;
+  $("form-webhook").reset();
+  $("form-webhook").hidden = true;
+  await carregarFontes();
+});
 
 $("instalar-agente").addEventListener("click", mostrarInstalacao);
 $("nova-fonte").addEventListener("click", () => {

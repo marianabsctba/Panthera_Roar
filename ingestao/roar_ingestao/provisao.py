@@ -221,14 +221,14 @@ def criar(nome, endereco_portas="127.0.0.1"):
             "host": f"gerenciador-{gerenciador_id}"}
 
 
-def _api_do_gerenciador(gerenciador_id, metodo, rota):
+def _api_do_gerenciador(gerenciador_id, metodo, rota, **kwargs):
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     env = ler_env(DESTINO / "gerenciadores" / gerenciador_id / ".env")
     base = f"https://127.0.0.1:{env['PORTA_API']}"
     token = requests.post(f"{base}/security/user/authenticate?raw=true", auth=("roar", env["API_SENHA"]),
                           verify=False, timeout=30)
     token.raise_for_status()
-    r = requests.request(metodo, base + rota, headers={"Authorization": f"Bearer {token.text}"}, verify=False, timeout=120)
+    r = requests.request(metodo, base + rota, headers={"Authorization": f"Bearer {token.text}"}, verify=False, timeout=120, **kwargs)
     r.raise_for_status()
     return r.json()
 
@@ -283,6 +283,28 @@ def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
     return True, detalhe
 
 
+def enviar_eventos(gerenciador_id, eventos):
+    """Entrega ao analisador do gerenciador, que aplica as mesmas regras de qualquer outro log."""
+    return _api_do_gerenciador(gerenciador_id, "POST", "/events", json={"events": eventos})
+
+
+def remover_regras(gerenciador_id, nome):
+    """Tira um arquivo de regras. Se nunca foi instalado, não reinicia nada."""
+    if not re.fullmatch(r"roar_[a-z0-9_]+\.xml", nome):
+        raise ValueError("nome de arquivo de regras inválido")
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    caminho = f"/var/ossec/etc/rules/{nome}"
+    existe = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                             "exec", "-T", "gerenciador", "test", "-f", caminho], capture_output=True)
+    if existe.returncode != 0:
+        return True, {"status": "OK", "saida": ""}
+    _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", caminho)
+    valida, detalhe = _configuracao_valida(gerenciador_id)
+    if valida:
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
+    return valida, detalhe
+
+
 def aplicar_configuracao(gerenciador_id, fragmento):
     """Troca o trecho das fontes de dados. Se reprovar, volta ao arquivo anterior e não reinicia."""
     pasta = DESTINO / "gerenciadores" / gerenciador_id
@@ -301,7 +323,7 @@ def aplicar_configuracao(gerenciador_id, fragmento):
     novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text()) + fragmento)
     instalar(novo)
     # O analisador sozinho aprova um syslog inválido, que só derrubaria o recebimento ao reiniciar.
-    valida, detalhe = _configuracao_valida(gerenciador_id, ("wazuh-analysisd", "wazuh-remoted"))
+    valida, detalhe = _configuracao_valida(gerenciador_id, ("wazuh-analysisd", "wazuh-remoted", "wazuh-modulesd"))
     if not valida:
         instalar(anterior)
         return False, detalhe
@@ -342,7 +364,7 @@ def remover(gerenciador_id, apagar_dados=True):
                           (gerenciador_id,))
             banco.execute("DELETE FROM aprovacoes WHERE execucao_id IN (SELECT id FROM execucoes WHERE gerenciador_id = %s)",
                           (gerenciador_id,))
-            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias", "fontes",
+            for tabela in ("quarentena", "eventos", "grupos_alerta", "regras", "ativos", "regras_proprias", "entrada_webhook", "fontes",
                            "inscricao_de_agentes", "execucoes"):
                 banco.execute(f"DELETE FROM {tabela} WHERE gerenciador_id = %s", (gerenciador_id,))
             banco.execute("DELETE FROM checkpoints WHERE fonte = %s", (gerenciador_id,))
@@ -351,7 +373,7 @@ def remover(gerenciador_id, apagar_dados=True):
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
                 for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
-                               "auditoria", "aprovacoes", "execucoes", "playbooks", "soar_cursor"):
+                               "auditoria", "aprovacoes", "execucoes", "playbooks", "soar_cursor", "segredos"):
                     banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))
 

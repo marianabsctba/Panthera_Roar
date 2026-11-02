@@ -24,6 +24,7 @@ import yaml
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
@@ -35,6 +36,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
+from roar_ingestao import cofre  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
@@ -51,6 +53,10 @@ TAMANHO_DA_PAGINA = 100
 DIAS_DE_SIMULACAO = 7
 REGRA_DE_BLOQUEIO_CONFIRMADO = "651"
 DIAS_DE_SAUDE = 7
+EVENTOS_POR_ENVIO = 100
+TAMANHO_MAXIMO_DO_EVENTO = 60_000
+TAMANHO_MAXIMO_DO_ENVIO = 1_000_000
+LIMITE_DA_FILA_DO_WEBHOOK = 10_000
 MINUTOS_ATE_PARADA = 15
 DESLOCAMENTO_SYSLOG = 3
 VERSAO_DO_AGENTE = "4.14.9"
@@ -866,16 +872,26 @@ def _agregar_origens_de_syslog(request, gerenciador_id):
 
 def _saude_da_fonte(fonte, origens):
     """Recebendo, parada ou nunca recebeu. Sem resposta do índice, diz que não sabe, em vez de chutar."""
+    if fonte["tipo"] in ("webhook", "api"):
+        ultimo = fonte.pop("ultimo_dado_em", None)
+        if not ultimo:
+            return {"saude": "nunca_recebeu", "ultimo_dado": None}
+        parada = (datetime.now(timezone.utc) - ultimo).total_seconds() >= MINUTOS_ATE_PARADA * 60
+        return {"saude": "parada" if parada else "recebendo", "ultimo_dado": ultimo.isoformat()}
     if origens is None:
         return {"saude": "desconhecida", "ultimo_dado": None}
-    redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
     ultimos = []
-    for local, ultimo in origens:
-        try:
-            if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
-                ultimos.append(ultimo)
-        except ValueError:
-            continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
+    if fonte["tipo"] == "syslog":
+        redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
+        for local, ultimo in origens:
+            try:
+                if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
+                    ultimos.append(ultimo)
+            except ValueError:
+                continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
+    else:
+        # Os módulos de nuvem aparecem com o próprio nome no lugar da origem.
+        ultimos = [u for local, u in origens if u and local == fonte["tipo"]]
     if not ultimos:
         return {"saude": "nunca_recebeu", "ultimo_dado": None}
     ultimo = max(ultimos) / 1000
@@ -888,7 +904,7 @@ def listar_fontes(request: Request, sessao=Depends(sessao_atual)):
     with do_cliente(request, sessao) as con:
         gerenciador = con.execute("SELECT id, porta_base FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
         fontes = con.execute(
-            "SELECT id, tipo, nome, config, estado, mensagem, criada_em, aplicada_em FROM fontes WHERE estado <> 'desativada' ORDER BY id DESC LIMIT 200").fetchall()
+            "SELECT id, tipo, nome, config, estado, mensagem, criada_em, aplicada_em, ultimo_dado_em FROM fontes WHERE estado <> 'desativada' ORDER BY id DESC LIMIT 200").fetchall()
         agentes = con.execute(
             """SELECT count(*) AS total, count(*) FILTER (WHERE estado = 'active') AS conectados
                FROM ativos WHERE agente_id <> '000' AND gerenciador_id = %s""", (gerenciador["id"] if gerenciador else "",)).fetchone()
@@ -917,12 +933,145 @@ def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(sessao_atual)
     return {"id": nova, "estado": "pendente"}
 
 
+class FonteDeNuvem(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    tipo: str = Field(pattern="^(github|office365)$")
+    campos: dict[str, str]
+    segredo: str = Field(min_length=1, max_length=4096)
+
+
+@app.post("/api/fontes/nuvem", status_code=201)
+def criar_fonte_de_nuvem(dados: FonteDeNuvem, request: Request, sessao=Depends(sessao_atual)):
+    """A credencial sai daqui cifrada, e nenhuma rota a devolve depois."""
+    try:
+        config = fontes_de_dados.validar_nuvem(dados.tipo, dados.campos)
+    except fontes_de_dados.FonteInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    nome_do_segredo = f"fonte-{secrets.token_hex(8)}"
+    selado = cofre.selar(cofre.ler_publica(), sessao["cliente_id"], nome_do_segredo, dados.segredo)
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], nome_do_segredo, selado, sessao["usuario_id"]))
+        nova = con.execute(
+            "INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, criada_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (sessao["cliente_id"], gerenciador["id"], dados.tipo, dados.nome, json.dumps({**config, "segredo": nome_do_segredo}), sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
+    return {"id": nova, "estado": "pendente"}
+
+
+class FonteApi(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    endereco: str = Field(max_length=2000)
+    caminho: str = Field(default="", max_length=200)
+    intervalo_minutos: int = 15
+    cabecalho: str = Field(default="", max_length=64)
+    segredo: str = Field(default="", max_length=4096)
+
+
+@app.post("/api/fontes/api", status_code=201)
+def criar_fonte_de_api(dados: FonteApi, request: Request, sessao=Depends(sessao_atual)):
+    try:
+        config = fontes_de_dados.validar_api(dados.model_dump())
+    except fontes_de_dados.FonteInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    nome_do_segredo = f"fonte-{secrets.token_hex(8)}" if dados.segredo else None
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        if nome_do_segredo:
+            selado = cofre.selar(cofre.ler_publica(), sessao["cliente_id"], nome_do_segredo, dados.segredo)
+            con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)",
+                        (sessao["cliente_id"], nome_do_segredo, selado, sessao["usuario_id"]))
+        nova = con.execute(
+            """INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, estado, criada_por, aplicada_em)
+               VALUES (%s, %s, 'api', %s, %s, 'ativa', %s, now()) RETURNING id""",
+            (sessao["cliente_id"], gerenciador["id"], dados.nome, json.dumps({**config, "segredo": nome_do_segredo}), sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
+    return {"id": nova, "estado": "ativa"}
+
+
+class FonteWebhook(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+
+
+@app.post("/api/fontes/webhook", status_code=201)
+def criar_webhook(dados: FonteWebhook, request: Request, sessao=Depends(sessao_atual)):
+    """O token sai só nesta resposta: guardamos o hash, e perder o token é criar outro."""
+    token = secrets.token_urlsafe(32)
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        # Não muda a configuração do gerenciador, então já nasce ativa.
+        nova = con.execute(
+            """INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, estado, criada_por, token_hash, aplicada_em)
+               VALUES (%s, %s, 'webhook', %s, '{}', 'ativa', %s, %s, now()) RETURNING id""",
+            (sessao["cliente_id"], gerenciador["id"], dados.nome, sessao["usuario_id"], _hash_do_token(token))).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
+    return {"id": nova, "token": token, "caminho": "/api/entrada/webhook"}
+
+
+def _eventos_do_webhook(corpo):
+    """Cada evento vira uma linha de JSON refeita aqui: nada do texto original passa sem ser analisado."""
+    try:
+        dados = json.loads(corpo)
+    except (ValueError, RecursionError):
+        raise HTTPException(status_code=422, detail="O corpo precisa ser JSON.")
+    eventos = dados if isinstance(dados, list) else [dados]
+    if not 1 <= len(eventos) <= EVENTOS_POR_ENVIO or not all(isinstance(e, dict) for e in eventos):
+        raise HTTPException(status_code=422, detail=f"Envie um objeto ou uma lista de 1 a {EVENTOS_POR_ENVIO} objetos.")
+    linhas = [json.dumps(e, ensure_ascii=False, separators=(",", ":")) for e in eventos]
+    if any(len(l.encode()) > TAMANHO_MAXIMO_DO_EVENTO or "\x00" in l for l in linhas):
+        raise HTTPException(status_code=413, detail="Evento grande demais.")
+    return linhas
+
+
+def _gravar_no_webhook(request, token, linhas):
+    with request.app.state.banco.connection() as con:
+        return con.execute("SELECT roar_receber_webhook(%s, %s, %s) AS r",
+                           (_hash_do_token(token), linhas, LIMITE_DA_FILA_DO_WEBHOOK)).fetchone()["r"]
+
+
+@app.post("/api/entrada/webhook", status_code=202)
+async def receber_webhook(request: Request):
+    """Sem sessão: quem chama é outro sistema. Só o token diz de qual cliente é o evento."""
+    autorizacao = request.headers.get("authorization", "")
+    if not autorizacao.startswith("Bearer ") or not 20 <= len(autorizacao) <= 200:
+        raise HTTPException(status_code=401)
+    declarado = request.headers.get("content-length", "")
+    if declarado.isdigit() and int(declarado) > TAMANHO_MAXIMO_DO_ENVIO:
+        raise HTTPException(status_code=413, detail="Corpo grande demais.")
+    corpo = bytearray()
+    async for pedaco in request.stream():
+        corpo += pedaco
+        if len(corpo) > TAMANHO_MAXIMO_DO_ENVIO:
+            raise HTTPException(status_code=413, detail="Corpo grande demais.")
+    linhas = _eventos_do_webhook(bytes(corpo))
+    resultado = await run_in_threadpool(_gravar_no_webhook, request, autorizacao[7:], linhas)
+    if resultado == "desconhecida":
+        raise HTTPException(status_code=401)
+    if resultado == "cheia":
+        raise HTTPException(status_code=429, detail="Fila cheia: tente de novo em alguns minutos.")
+    return {"recebidos": len(linhas)}
+
+
 @app.post("/api/fontes/{identificador}/desativar", status_code=204)
 def desativar_fonte(identificador: int, request: Request, sessao=Depends(sessao_atual)):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
-        if not con.execute("UPDATE fontes SET estado = 'desativada' WHERE id = %s RETURNING id", (identificador,)).fetchone():
+        linha = con.execute("UPDATE fontes SET estado = 'desativada' WHERE id = %s RETURNING config", (identificador,)).fetchone()
+        if not linha:
             raise HTTPException(status_code=404)
+        # Sem a fonte, a credencial não tem por que continuar guardada.
+        if linha["config"].get("segredo"):
+            con.execute("DELETE FROM segredos WHERE nome = %s", (linha["config"]["segredo"],))
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_fonte', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
 

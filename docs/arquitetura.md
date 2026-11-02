@@ -169,9 +169,11 @@ Limites da automação:
 
 - **Sem desbloqueio manual:** a API do Wazuh só envia o comando de adicionar. Para desfazer antes do prazo, é preciso remover a regra no próprio ativo.
 - **Quem cria:** sem papéis, qualquer analista do cliente cria um playbook que bloqueia.
-- **Webhook:** o destino é checado na criação e antes de enviar, mas o nome é resolvido de novo na conexão, então um DNS que muda de resposta nesse intervalo ainda alcança a rede interna. `ROAR_WEBHOOK_INTERNO=1` desliga a checagem de rede interna.
+- **Rede interna:** webhook de saída e busca em API só conectam em endereço público, no IP já conferido, sem seguir redirecionamento (`ingestao/roar_ingestao/rede_externa.py`). `ROAR_DESTINO_INTERNO=1` libera a rede interna, para instalações cujo destino está nela de propósito.
 - **Ações:** só bloquear, avisar e registrar. O catálogo das integrações e os scripts em contêiner isolado ainda não estão ligados à tela.
 - **Serviço:** `roar_motor.disparo` ainda é iniciado à mão, e gerenciadores criados antes desta versão precisam ser recriados para ter os prazos de bloqueio.
+
+Fontes de dados (`ingestao/roar_ingestao/fontes.py`, aplicadas por um serviço de ciclo curto): agente, syslog e módulos de nuvem são os do próprio Wazuh, e a tela só os configura. Webhook de entrada e busca em API são nossos, porque o Wazuh não tem, e entregam ao analisador do gerenciador do cliente, passando pelas mesmas regras. Uma configuração recusada volta à anterior sem parar a coleta. Limites: GitHub e Microsoft 365 foram testados com credencial falsa, então está provado que a configuração é aceita e o módulo roda, mas não que os dados chegam; o syslog do Wazuh não tem TLS; o comando de instalação só foi provado em Debian e Ubuntu; gerenciadores antigos precisam ganhar a porta de syslog.
 
 Guarda de credenciais (`ingestao/roar_ingestao/cofre.py`): a API só tem a chave pública, então grava e troca segredos, mas não os lê. Quem abre é o serviço que configura o gerenciador, com a chave privada, que fica em `/opt/panthera-roar/cofre` e nunca vai ao banco. O cliente e o nome da credencial entram na autenticação, então copiar um valor cifrado para outro cliente faz a abertura falhar. `testes/fase4/testar_cofre.py` comprova isso. Limites: quem tem root no servidor lê a chave privada, e os módulos de nuvem do Wazuh exigem a credencial aberta dentro do gerenciador daquele cliente.
 
