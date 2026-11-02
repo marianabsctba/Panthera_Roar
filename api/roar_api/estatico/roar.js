@@ -1,6 +1,8 @@
 // Tudo o que vem de alerta pode ter sido escrito por um atacante. Por isso a tela só monta
 // elementos com textContent, nunca com innerHTML.
 
+import { AJUDA } from "/estatico/ajuda.js";
+
 const SEVERIDADE = {
   critica: { texto: "Crítica", icone: "▲" },
   alta: { texto: "Alta", icone: "◆" },
@@ -2775,15 +2777,79 @@ $("form-playbook").addEventListener("submit", async (evento) => {
 });
 desenharModelos();
 
+// ------------------------------------------------------------------ ajuda
+
+let vistaAtual = "panorama";
+let artigoAberto = "primeiros-passos";
+const ARTIGOS = AJUDA.flatMap((g) => g.artigos);
+
+function semAcento(texto) {
+  return texto.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+function textoDoBloco(bloco) {
+  if (typeof bloco === "string") return bloco;
+  return [bloco.h, bloco.aviso, bloco.texto, ...(bloco.lista ?? []), ...(bloco.passos ?? []), ...(bloco.chaves ?? []).flat()].filter(Boolean).join(" ");
+}
+
+function desenharIndiceDaAjuda() {
+  const busca = semAcento($("busca-ajuda").value.trim());
+  const combina = (a) => semAcento(`${a.titulo} ${a.blocos.map(textoDoBloco).join(" ")}`).includes(busca);
+  const grupos = AJUDA.map((g) => ({ ...g, artigos: g.artigos.filter(combina) })).filter((g) => g.artigos.length);
+  $("indice-ajuda").replaceChildren(...grupos.flatMap((g) => [el("h3", null, g.grupo), ...g.artigos.map((a) => {
+    const b = botaoDeTabela(a.titulo, "ajuda-link", () => abrirArtigo(a.id));
+    if (a.id === artigoAberto) b.setAttribute("aria-current", "true");
+    return b;
+  })]));
+  if (!grupos.length) $("indice-ajuda").append(el("p", "texto-secao", "Nada encontrado."));
+}
+
+function montarBloco(bloco) {
+  if (typeof bloco === "string") return el("p", null, bloco);
+  if (bloco.h) return el("h3", null, bloco.h);
+  if (bloco.aviso) return el("div", "simulacao", bloco.aviso);
+  if (bloco.artigo) return botaoDeTabela(bloco.texto, "botao-discreto", () => abrirArtigo(bloco.artigo));
+  if (bloco.lista || bloco.passos) {
+    const lista = el(bloco.passos ? "ol" : "ul", "passos");
+    lista.append(...(bloco.lista ?? bloco.passos).map((t) => el("li", null, t)));
+    return lista;
+  }
+  const chaves = el("dl", "chaves");
+  chaves.append(...bloco.chaves.flatMap(([k, v]) => [el("dt", null, k), el("dd", null, v)]));
+  return chaves;
+}
+
+function abrirArtigo(id) {
+  const artigo = ARTIGOS.find((a) => a.id === id) ?? ARTIGOS[0];
+  artigoAberto = artigo.id;
+  const destino = $("artigo-ajuda");
+  destino.replaceChildren(el("h2", "titulo-secao", artigo.titulo), ...artigo.blocos.map(montarBloco));
+  const botao = artigo.vista && document.querySelector(`.navegacao [data-vista="${artigo.vista}"]`);
+  // Quem não tem acesso à tela ainda pode ler o artigo, só não recebe o atalho.
+  if (botao && !botao.hidden) destino.append(botaoDeTabela("Abrir esta tela", "botao-primario", () => trocarVista(artigo.vista)));
+  desenharIndiceDaAjuda();
+  // Em tela estreita o artigo fica abaixo do índice: sem isto, o clique parece não fazer nada.
+  destino.scrollIntoView({ block: "start" });
+}
+
+$("busca-ajuda").addEventListener("input", desenharIndiceDaAjuda);
+$("abrir-ajuda").addEventListener("click", () => {
+  if ($("vista-ajuda").hidden) artigoAberto = ARTIGOS.find((a) => a.vista === vistaAtual)?.id ?? artigoAberto;
+  trocarVista("ajuda");
+});
+
 function trocarVista(vista) {
   document.querySelectorAll(".navegacao button").forEach((b) => {
     if (b.dataset.vista === vista) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
+  // O "?" abre o artigo da tela de onde a pessoa veio.
+  if (vista !== "ajuda") vistaAtual = vista;
+  if (vista === "ajuda") abrirArtigo(artigoAberto);
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
   if (vista === "vulnerabilidades") carregarCves();

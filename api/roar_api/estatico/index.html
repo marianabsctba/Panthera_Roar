@@ -36,6 +36,7 @@
       <div class="sessao">
         <span id="cliente" class="cliente"></span>
         <span id="usuario"></span>
+        <button id="abrir-ajuda" type="button" class="botao-discreto" title="Ajuda desta tela" aria-label="Ajuda desta tela">?</button>
         <button id="abrir-mfa" type="button" class="botao-discreto">Autenticador</button>
         <button id="abrir-senha" type="button" class="botao-discreto">Trocar senha</button>
         <button id="sair" type="button" class="botao-discreto">Sair</button>
@@ -64,7 +65,18 @@
       <button type="button" data-vista="relatorios">Relatórios</button>
       <button type="button" data-vista="automacao">Automação</button>
       <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
+      <button type="button" data-vista="ajuda">Ajuda</button>
     </nav>
+
+    <section id="vista-ajuda" class="pagina" aria-label="Ajuda" hidden>
+      <div class="ajuda">
+        <aside class="ajuda-indice">
+          <input id="busca-ajuda" type="search" placeholder="Buscar na ajuda" aria-label="Buscar na ajuda">
+          <nav id="indice-ajuda" aria-label="Artigos da ajuda"></nav>
+        </aside>
+        <article id="artigo-ajuda" class="ajuda-artigo" tabindex="-1"></article>
+      </div>
+    </section>
 
     <section id="vista-usuarios" class="pagina" aria-label="Usuários" hidden>
       <div class="titulo-com-acao">

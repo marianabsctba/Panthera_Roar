@@ -1,0 +1,176 @@
+// Documentação dentro do produto. Cada tela tem um artigo com o mesmo nome da vista: testes/fase4/testar_ajuda.py cobra isso.
+export const AJUDA = [
+  { grupo: "Começar", artigos: [
+    { id: "primeiros-passos", titulo: "Primeiros passos", blocos: [
+      "O Panthera Roar recebe logs dos seus ativos e serviços, transforma o que importa em alertas, soma o risco de cada pessoa e pode responder sozinho, ou pedir a sua decisão antes.",
+      { h: "Na primeira semana" },
+      { passos: [
+        "Ligue o autenticador da sua conta, no botão Autenticador, no alto da tela.",
+        "Em Fontes de dados, conecte os primeiros ativos e serviços. Cada conector explica o passo a passo.",
+        "Em Ativos, confira se os ativos apareceram como conectados.",
+        "Em Integridade, diga quais pastas importantes vigiar, além das que já vêm monitoradas.",
+        "Em Usuários, crie as contas da equipe, cada uma com o menor perfil que resolve o trabalho dela.",
+        "Em Regras, desligue o que só faz barulho no seu ambiente.",
+        "Em Automação, comece por playbooks que pedem aprovação. Tire a aprovação só depois de confiar no resultado.",
+      ] },
+      { h: "No dia a dia" },
+      { lista: [
+        "Panorama: como está o período.",
+        "Fila: o que olhar primeiro.",
+        "Eventos e Logs brutos: investigar.",
+        "Automação: decidir o que está aguardando.",
+      ] },
+    ] },
+    { id: "conta", titulo: "Sua conta e o autenticador", blocos: [
+      "Além da senha, o autenticador pede um código de 6 dígitos gerado no seu celular. Serve qualquer aplicativo do padrão TOTP.",
+      { h: "Ligar" },
+      { passos: [
+        "Clique em Autenticador, no alto da tela, e confirme a senha.",
+        "Leia o QR com o aplicativo, ou digite a chave.",
+        "Digite o código que o aplicativo mostra. Só depois disso o autenticador fica ligado.",
+        "Guarde os 10 códigos de recuperação fora do celular. Eles não aparecem de novo.",
+      ] },
+      { h: "Sem o celular" },
+      "Na tela do código, digite um código de recuperação. Cada um entra uma vez, e o uso fica na auditoria. Sem códigos, peça a outra pessoa administradora para remover o seu autenticador em Usuários: as suas sessões caem, e você volta a entrar só com a senha.",
+      { aviso: "Cada código do aplicativo vale uma vez. Se ele for recusado logo depois de usado, espere o próximo. Se todos forem recusados, confira o horário do celular. Cinco erros seguidos bloqueiam as tentativas por alguns minutos." },
+      { h: "Senha temporária" },
+      "Quem recebe uma senha gerada por outra pessoa precisa trocá-la no primeiro acesso, e até lá não vê nenhum dado.",
+    ] },
+  ] },
+  { grupo: "Acompanhar", artigos: [
+    { id: "panorama", vista: "panorama", titulo: "Panorama", blocos: [
+      "A visão geral do período escolhido: alertas por dia e por severidade, as pessoas com maior risco agora, os sinais de comportamento e as principais origens de alertas.",
+      "Use os botões de 7, 30 ou 90 dias. Em Ver dados, os números do gráfico aparecem em tabela.",
+      "Para decidir o que fazer, vá para a Fila.",
+    ] },
+    { id: "fila", vista: "fila", titulo: "Fila", blocos: [
+      "A ordem de trabalho. A aba Risco mostra as pessoas cujo comportamento passou do limite. A aba Alertas reúne alertas parecidos em grupos, para você não abrir o mesmo problema cem vezes.",
+      "Clique em um item para ver o que aconteceu e o motivo.",
+      { artigo: "regras-comportamento", texto: "Como o risco é calculado" },
+    ] },
+    { id: "eventos", vista: "eventos", titulo: "Eventos", blocos: [
+      "Todos os alertas, com busca por usuário, IP, ativo, regra ou descrição, e filtros de severidade e período. Clique em uma linha para ver os campos do alerta.",
+      "Para ver o que não virou alerta, use Logs brutos.",
+    ] },
+    { id: "logs", vista: "logs", titulo: "Logs brutos", blocos: [
+      "Tudo o que foi recebido, mesmo sem alerta. Digite palavras, ou combine campos.",
+      { h: "Consultas" },
+      { chaves: [
+        ["sshd falha", "logs com as duas palavras"],
+        ["\"falha de login\"", "a frase exata"],
+        ["ativo=srv-rh", "igual a"],
+        ["origem!=10.*", "diferente de, com * como curinga"],
+        ["usuario~mar", "contém"],
+        ["nivel>=10", "maior ou igual; também >, < e <="],
+        ["a=1 E (b=2 OU NAO c=3)", "combinações"],
+        ["| contar por usuario", "quantos logs por valor"],
+        ["| campos ativo, origem", "quais colunas mostrar"],
+        ["| ordenar -quando", "ordem, com - para decrescente"],
+        ["| limite 10", "quantos resultados"],
+      ] },
+      "Campos com nome simples: ativo, origem, destino, usuario, fonte, tipo, programa, protocolo, log, quando, regra e nivel.",
+      { aviso: "Log é dado de quem o enviou: um endereço de origem pode ter sido forjado." },
+    ] },
+    { id: "ataques", vista: "ataques", titulo: "Ataque e defesa", blocos: [
+      "A matriz de técnicas de ataque, com o que foi observado nos seus alertas. Marque Só o que foi observado para ficar apenas com isso.",
+      "Técnica sem alerta não prova que não houve ataque. Pode ser só falta de fonte ou de regra para enxergá-la.",
+    ] },
+    { id: "normas", vista: "normas", titulo: "Normas", blocos: [
+      "Organiza os alertas pelos controles de cada norma, para ajudar a preparar uma auditoria.",
+      { aviso: "É um apoio para a conformidade, não um atestado: o que está sem alerta pode só não estar sendo observado." },
+    ] },
+    { id: "relatorios", vista: "relatorios", titulo: "Relatórios", blocos: [
+      "Gera um PDF com capa e sumário, ou os mesmos dados em JSON. O completo tem todos os capítulos, e o executivo é um resumo para a direção.",
+      { aviso: "O relatório reúne nomes de pessoas e endereços. A geração fica na auditoria: compartilhe só com quem precisa." },
+    ] },
+  ] },
+  { grupo: "Conectar", artigos: [
+    { id: "fontes", vista: "fontes", titulo: "Fontes de dados", blocos: [
+      "Cada conector traz o passo a passo, os cuidados e até onde foi testado. Leia essa etiqueta antes de depender dele.",
+      { lista: [
+        "Agente: instalado no ativo, traz logs, integridade de arquivos, inventário e permite resposta.",
+        "Syslog: para equipamentos que não aceitam agente. Só os endereços cadastrados são aceitos.",
+        "Nuvem e SaaS: lidos da conta do serviço, com uma credencial de leitura.",
+        "Webhook: o serviço envia para um endereço com token próprio.",
+        "API: o Roar busca em intervalos, em uma API que você descreve.",
+      ] },
+      { aviso: "Crie credenciais só com a permissão de leitura que o conector pede. Elas ficam cifradas e não voltam para a tela depois de salvas." },
+    ] },
+    { id: "ativos", vista: "ativos", titulo: "Ativos", blocos: [
+      "Os ativos com agente desta organização e a situação de cada um. Um ativo novo aparece aqui alguns minutos depois de instalar o agente.",
+      { artigo: "fontes", texto: "Como instalar o agente" },
+    ] },
+    { id: "arquivos", vista: "arquivos", titulo: "Integridade", blocos: [
+      "Avisa quando um arquivo importante é criado, alterado ou apagado. Pastas como /etc e System32 já vêm monitoradas. Acrescente as suas em O que monitorar: a mudança chega aos ativos em alguns minutos.",
+      "Abra um ativo para ver o estado atual dos arquivos, e peça uma varredura quando precisar.",
+      { aviso: "\"Com quem alterou\" precisa do serviço de auditoria no ativo: auditd no Linux ou auditoria habilitada no Windows." },
+    ] },
+  ] },
+  { grupo: "Detectar e responder", artigos: [
+    { id: "regras", vista: "regras", titulo: "Regras", blocos: [
+      "Existem dois tipos: as regras de detecção, que olham cada log, e as de comportamento, que olham a pessoa ao longo do tempo.",
+      { h: "Regras de detecção" },
+      { lista: [
+        "Abra uma regra do catálogo para ler, editar ou desligar.",
+        "Crie as suas, ou importe um arquivo Sigma ou XML.",
+        "A biblioteca traz regras prontas da comunidade.",
+      ] },
+      "Antes de instalar, a regra é conferida. Uma regra inválida é recusada, e o que já funcionava continua funcionando.",
+      { artigo: "regras-comportamento", texto: "Regras de comportamento" },
+    ] },
+    { id: "regras-comportamento", titulo: "Risco de comportamento", blocos: [
+      "Cada sinal suspeito soma pontos no risco da pessoa. O alerta abre em 60 pontos, e os pontos caem pela metade a cada 24 horas.",
+      "Assim, um deslize isolado some sozinho, e vários sinais em pouco tempo chamam atenção mesmo quando nenhum deles é grave.",
+    ] },
+    { id: "automacao", vista: "automacao", titulo: "Automação", blocos: [
+      "Um playbook diz o que fazer quando um alerta acontece. É montado em blocos, sem programar.",
+      { h: "O que um playbook pode fazer" },
+      { lista: [
+        "Bloquear um endereço em um ativo, por tempo limitado. Só vale para endereço externo.",
+        "Desativar uma conta. Sempre pede aprovação antes.",
+        "Avisar outro sistema por webhook.",
+        "Registrar o fato no histórico.",
+      ] },
+      { h: "Antes de aprovar" },
+      "Confira o alvo: a origem de um log pode ter sido forjada, e bloquear sem olhar pode derrubar quem não tem culpa.",
+      { aviso: "Enviado não é o mesmo que confirmado. O histórico só diz que o bloqueio foi confirmado quando o próprio ativo responde. Um ativo sem firewall recebe o pedido e não bloqueia." },
+    ] },
+    { id: "vulnerabilidades", vista: "vulnerabilidades", titulo: "Vulnerabilidades", blocos: [
+      "A base pública de CVEs, para consultar qualquer falha pelo código ou por uma palavra, com uma prioridade que parte da exploração real, e não só da nota.",
+      { h: "Como a prioridade é decidida" },
+      { chaves: [
+        ["Agora", "exploração confirmada, no catálogo KEV"],
+        ["Alta", "EPSS de 50% ou mais, ou CVSS 9 ou mais"],
+        ["Média", "EPSS de 5% ou mais, ou CVSS 7 ou mais"],
+        ["Sem nota", "ainda sem CVSS: não dá para dizer que é baixa"],
+        ["Baixa", "as demais"],
+      ] },
+      { aviso: "Esta tela mostra a base pública. Ela ainda não diz quais falhas existem nos seus ativos." },
+    ] },
+  ] },
+  { grupo: "Administrar", artigos: [
+    { id: "usuarios", vista: "usuarios", titulo: "Usuários", blocos: [
+      "Crie as contas, escolha o perfil e veja quem usa autenticador. Mudar o perfil ou desativar encerra as sessões daquela pessoa na hora. A tabela no fim da tela mostra o que cada perfil pode fazer.",
+      { h: "Exigir o autenticador" },
+      "Marque a opção para exigir de todos. Quem ainda não tem precisa configurar antes de ver qualquer dado. Para ligar a exigência, o seu autenticador precisa estar ligado.",
+      { h: "Quem perdeu o celular" },
+      "Remover autenticador derruba as sessões da pessoa e fica na auditoria. Confirme por outro canal que é ela mesma quem está pedindo: esse pedido é um golpe conhecido.",
+      "Na sua própria conta, use a janela Autenticador, que pede a senha e o código.",
+    ] },
+    { id: "glossario", titulo: "Glossário", blocos: [
+      { chaves: [
+        ["Ativo", "computador, servidor ou equipamento monitorado"],
+        ["Agente", "programa instalado no ativo, que envia os dados"],
+        ["Alerta", "log que uma regra considerou importante"],
+        ["Severidade", "a gravidade do alerta: baixa, média, alta ou crítica"],
+        ["Playbook", "a resposta automática a um tipo de alerta"],
+        ["CVE", "o código público de uma falha de segurança"],
+        ["CVSS", "nota de 0 a 10 para a gravidade técnica de uma falha"],
+        ["EPSS", "a probabilidade estimada de uma falha ser explorada em 30 dias"],
+        ["KEV", "catálogo público de falhas já exploradas de verdade"],
+        ["Sigma", "formato aberto para escrever regras de detecção"],
+        ["TOTP", "o padrão dos códigos de 6 dígitos que mudam a cada 30 segundos"],
+      ] },
+    ] },
+  ] },
+];
