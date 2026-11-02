@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_api import permissoes  # noqa: E402
-from roar_ingestao import cofre  # noqa: E402
+from roar_ingestao import cofre, fim  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
@@ -639,6 +639,90 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
                 FROM eventos WHERE 'syscheck' = ANY(regra_grupos) AND ocorrido_em >= now() - make_interval(days => %s) {condicao}
                 ORDER BY id DESC LIMIT %s""", (*parametros, TAMANHO_DA_PAGINA)).fetchall()
     return {"arquivos": linhas}
+
+
+class CaminhoDeFim(BaseModel):
+    caminho: str = Field(max_length=400)
+    sistema: str
+    modo: str = "agendado"
+
+
+class PedidoDeVarredura(BaseModel):
+    agente_id: str = Field(pattern=r"^[0-9]{3,8}$")
+
+
+@app.get("/api/fim")
+def visao_de_fim(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        caminhos = con.execute(
+            "SELECT id, caminho, sistema, modo, estado, mensagem, criado_em FROM fim_caminhos WHERE estado <> 'desativado' ORDER BY sistema, caminho").fetchall()
+        ativos_ = con.execute(
+            """SELECT a.agente_id, a.nome, a.sistema, a.estado, a.fim_inicio, a.fim_fim,
+                      (SELECT count(*) FROM fim_base b WHERE b.gerenciador_id = a.gerenciador_id AND b.agente_id = a.agente_id) AS arquivos
+               FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""").fetchall()
+        por_dia = con.execute(
+            """SELECT ocorrido_em::date AS dia, bruto #>> '{syscheck,event}' AS mudanca, count(*) AS total FROM eventos
+               WHERE 'syscheck' = ANY(regra_grupos) AND ocorrido_em >= now() - interval '30 days' GROUP BY 1, 2 ORDER BY 1""").fetchall()
+    return {"caminhos": caminhos, "ativos": ativos_, "por_dia": por_dia}
+
+
+@app.get("/api/fim/ativos/{agente}/arquivos")
+def base_de_arquivos(agente: str, request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", deslocamento: int = 0):
+    if not re.fullmatch(r"[0-9]{3,8}", agente):
+        raise HTTPException(status_code=404)
+    termo = f"%{_sem_curinga(busca.strip()[:200])}%"
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            """SELECT caminho, tamanho, modificado_em, sha256, dono, permissao, count(*) OVER () AS total FROM fim_base
+               WHERE agente_id = %s AND caminho ILIKE %s ORDER BY caminho LIMIT %s OFFSET %s""",
+            (agente, termo, TAMANHO_DA_PAGINA, max(0, deslocamento))).fetchall()
+    return {"arquivos": linhas, "total": linhas[0]["total"] if linhas else 0}
+
+
+@app.post("/api/fim/caminhos", status_code=201)
+def criar_caminho_de_fim(dados: CaminhoDeFim, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    try:
+        caminho = fim.validar_caminho(dados.caminho, dados.sistema, dados.modo)
+    except fim.CaminhoInvalido as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    try:
+        with do_cliente(request, sessao) as con:
+            gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+            if not gerenciador:
+                raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+            novo = con.execute(
+                "INSERT INTO fim_caminhos (cliente_id, gerenciador_id, caminho, sistema, modo, criado_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (sessao["cliente_id"], gerenciador["id"], caminho, dados.sistema, dados.modo, sessao["usuario_id"])).fetchone()["id"]
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_caminho_fim', %s)",
+                        (sessao["cliente_id"], sessao["usuario_id"], caminho))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Este caminho já está monitorado.")
+    return {"id": novo, "estado": "pendente"}
+
+
+@app.post("/api/fim/caminhos/{identificador}/desativar", status_code=204)
+def desativar_caminho_de_fim(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("UPDATE fim_caminhos SET estado = 'desativado' WHERE id = %s RETURNING caminho", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desativar_caminho_fim', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], linha["caminho"]))
+
+
+@app.post("/api/fim/varreduras", status_code=202)
+def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Só aceita ativo do próprio cliente: o gerenciador vem da linha do ativo, sob o RLS."""
+    with do_cliente(request, sessao) as con:
+        ativo = con.execute("SELECT gerenciador_id FROM ativos WHERE agente_id = %s AND agente_id <> '000' ORDER BY atualizado_em DESC LIMIT 1", (dados.agente_id,)).fetchone()
+        if not ativo:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO fim_varreduras (cliente_id, gerenciador_id, agente_id, pedida_por) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], ativo["gerenciador_id"], dados.agente_id, sessao["usuario_id"]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_varredura_fim', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], dados.agente_id))
+    return {"estado": "pendente"}
 
 
 @app.get("/api/regras")

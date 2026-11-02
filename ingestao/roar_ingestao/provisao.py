@@ -286,6 +286,30 @@ def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
     return True, detalhe
 
 
+def aplicar_agent_conf(gerenciador_id, conteudo, grupo="default"):
+    """Configuração que o gerenciador distribui aos agentes, validada pelo programa dele. Reprovou: volta ao anterior."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    caminho = f"/var/ossec/etc/shared/{grupo}/agent.conf"
+    anterior, novo = pasta / "agent.conf.anterior", pasta / "agent.conf.novo"
+    copia = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                            "exec", "-T", "gerenciador", "cat", caminho], capture_output=True)
+    anterior.write_bytes(copia.stdout if copia.returncode == 0 else b"<agent_config>\n</agent_config>\n")
+
+    def instalar(arquivo):
+        _compose(pasta, gerenciador_id, "cp", str(arquivo), f"gerenciador:{caminho}")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "wazuh:wazuh", caminho)
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
+
+    novo.write_text(conteudo, encoding="utf-8")
+    instalar(novo)
+    r = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                        "exec", "-T", "gerenciador", "/var/ossec/bin/verify-agent-conf", "-f", caminho], capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        instalar(anterior)
+        return False, {"status": "erro", "saida": (r.stderr or r.stdout)[-400:]}
+    return True, {"status": "OK", "saida": ""}
+
+
 def enviar_eventos(gerenciador_id, eventos):
     """Entrega ao analisador do gerenciador, que aplica as mesmas regras de qualquer outro log."""
     return _api_do_gerenciador(gerenciador_id, "POST", "/events", json={"events": eventos})

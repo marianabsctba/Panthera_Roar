@@ -967,6 +967,88 @@ async function carregarArquivos() {
     celula(botaoBruto(a.id))])));
 }
 
+const MODOS_DE_FIM = { agendado: "Nas varreduras", tempo_real: "Em tempo real", quem_alterou: "Em tempo real, com quem alterou" };
+const ESTADOS_DE_CAMINHO = { pendente: "Aplicando...", ativo: "Ativo", recusado: "Recusado" };
+
+async function carregarFim() {
+  const r = await pedir("/api/fim");
+  const { caminhos, ativos, por_dia: porDia } = await r.json();
+  const soma = (m) => porDia.filter((d) => d.mudanca === m).reduce((t, d) => t + Number(d.total), 0).toLocaleString("pt-BR");
+  $("fim-numeros").replaceChildren(...[["Criados", "added"], ["Alterados", "modified"], ["Apagados", "deleted"]].map(([rotulo, chave]) => {
+    const n = el("div", "numero");
+    n.append(el("b", null, soma(chave)), el("span", null, `${rotulo.toLowerCase()} em 30 dias`));
+    return n;
+  }));
+  $("tabela-caminhos").replaceChildren(caminhos.length ? montarTabela([["Caminho"], ["Sistema"], ["Como"], ["Estado"], [""]], caminhos.map((c) => {
+    const acao = el("td");
+    if (pode("gerir_fontes")) {
+      acao.append(botaoDeTabela("Tirar", "botao-discreto", async () => {
+        await pedir(`/api/fim/caminhos/${c.id}/desativar`, { method: "POST" });
+        carregarFim();
+      }));
+    }
+    return [el("td", "mono", c.caminho), el("td", null, c.sistema === "windows" ? "Windows" : "Linux"), el("td", null, MODOS_DE_FIM[c.modo] ?? c.modo),
+      el("td", null, c.mensagem ?? ESTADOS_DE_CAMINHO[c.estado] ?? c.estado), acao];
+  })) : el("p", "vazio", "Só o monitoramento padrão de cada sistema."));
+  $("tabela-fim-ativos").replaceChildren(ativos.length ? montarTabela([["Ativo"], ["Sistema"], ["Última varredura"], ["Arquivos na base", "numero-celula"], [""]], ativos.map((a) => {
+    const acoes = el("td");
+    acoes.append(botaoDeTabela("Ver arquivos", "botao-discreto", () => abrirBaseDoAtivo(a)));
+    if (pode("gerir_fontes")) {
+      acoes.append(" ", botaoDeTabela("Varrer agora", "botao-discreto", async (e) => {
+        const b = e.currentTarget;
+        const v = await postarJson("/api/fim/varreduras", { agente_id: a.agente_id });
+        b.textContent = v.ok ? "Pedido enviado" : "Não foi possível";
+        b.disabled = true;
+      }));
+    }
+    return [el("td", null, a.nome ?? a.agente_id), el("td", null, a.sistema ?? "-"), el("td", null, quando(a.fim_fim ?? a.fim_inicio)),
+      el("td", "numero-celula", Number(a.arquivos).toLocaleString("pt-BR")), acoes];
+  })) : el("p", "vazio", "Nenhum ativo inscrito ainda."));
+}
+
+async function carregarBase() {
+  const a = estado.ativoDoFim;
+  const r = await pedir(`/api/fim/ativos/${encodeURIComponent(a.agente_id)}/arquivos?${new URLSearchParams({ busca: $("busca-fim-base").value })}`);
+  const { arquivos, total } = await r.json();
+  $("fim-base-total").textContent = total > arquivos.length ? `Mostrando ${arquivos.length} de ${Number(total).toLocaleString("pt-BR")} arquivos.` : `${total} arquivos.`;
+  $("tabela-fim-base").replaceChildren(arquivos.length ? montarTabela([["Arquivo"], ["Tamanho", "numero-celula"], ["Modificado"], ["Dono"], ["Permissão"], ["SHA-256"]], arquivos.map((x) => [
+    el("td", "mono", x.caminho), el("td", "numero-celula", x.tamanho === null ? "-" : Number(x.tamanho).toLocaleString("pt-BR")), el("td", null, quando(x.modificado_em)),
+    el("td", "mono", x.dono ?? "-"), el("td", "mono", x.permissao ?? "-"), el("td", "mono", x.sha256 ?? "-")])) : el("p", "vazio", "Nenhum arquivo encontrado."));
+}
+
+function abrirBaseDoAtivo(a) {
+  estado.ativoDoFim = a;
+  $("fim-base-titulo").textContent = `Arquivos de ${a.nome ?? a.agente_id}`;
+  $("fim-base").hidden = false;
+  $("busca-fim-base").value = "";
+  carregarBase();
+}
+
+$("form-fim-base").addEventListener("submit", (ev) => { ev.preventDefault(); carregarBase(); });
+$("novo-caminho").addEventListener("click", () => {
+  $("form-caminho").hidden = false;
+  $("caminho-valor").focus();
+});
+$("caminho-cancelar").addEventListener("click", () => { $("form-caminho").hidden = true; });
+$("form-caminho").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const erro = $("caminho-erro");
+  erro.hidden = true;
+  const r = await pedir("/api/fim/caminhos", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ caminho: $("caminho-valor").value, sistema: $("caminho-sistema").value, modo: $("caminho-modo").value }),
+  });
+  if (!r.ok) {
+    const corpo = await r.json().catch(() => ({}));
+    erro.textContent = typeof corpo.detail === "string" ? corpo.detail : "Confira o caminho.";
+    erro.hidden = false;
+    return;
+  }
+  $("form-caminho").reset();
+  $("form-caminho").hidden = true;
+  carregarFim();
+});
+
 // ------------------------------------------------------------------ normas
 
 async function carregarNormas(norma = estado.norma) {
@@ -2423,7 +2505,7 @@ function trocarVista(vista) {
   if (vista === "logs" && !estado.logs.length) carregarLogs();
   if (vista === "ataques") carregarAtaques();
   if (vista === "ativos") carregarAtivos();
-  if (vista === "arquivos") carregarArquivos();
+  if (vista === "arquivos") { carregarArquivos(); carregarFim(); }
   if (vista === "normas") carregarNormas();
   if (vista === "panorama" && estado.panorama) desenharColunas(estado.panorama.por_dia);
   if (vista === "eventos" && !estado.eventos.length) carregarEventos();

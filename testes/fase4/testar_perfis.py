@@ -38,6 +38,8 @@ ESPERADO = {
 ROTAS = {
     ("GET", "/api/fila"): "ver", ("GET", "/api/panorama"): "ver", ("GET", "/api/eventos"): "ver", ("GET", "/api/eventos/{identificador}/bruto"): "ver_bruto",
     ("GET", "/api/logs"): "ver_bruto", ("GET", "/api/ativos"): "ver", ("GET", "/api/mitre/matriz"): "ver", ("GET", "/api/mitre/tecnicas/{tecnica}"): "ver",
+    ("GET", "/api/fim"): "ver", ("GET", "/api/fim/ativos/{agente}/arquivos"): "ver", ("POST", "/api/fim/caminhos"): "gerir_fontes",
+    ("POST", "/api/fim/caminhos/{identificador}/desativar"): "gerir_fontes", ("POST", "/api/fim/varreduras"): "gerir_fontes",
     ("GET", "/api/normas"): "ver", ("GET", "/api/arquivos"): "ver", ("GET", "/api/regras"): "ver", ("POST", "/api/regras/converter"): "gerir_regras",
     ("GET", "/api/regras/proprias"): "ver", ("POST", "/api/regras/proprias"): "gerir_regras", ("PUT", "/api/regras/proprias/{identificador}"): "gerir_regras",
     ("POST", "/api/regras/proprias/{identificador}/desativar"): "gerir_regras", ("POST", "/api/regras/importar"): "gerir_regras", ("GET", "/api/regras/exportar"): "ver",
@@ -52,7 +54,7 @@ ROTAS = {
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
-VALORES = {"identificador": "999999", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
+VALORES = {"identificador": "999999", "agente": "999", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
 
 
 def registrar(nome, passou, detalhe=""):

@@ -371,6 +371,8 @@ th.numero-celula { text-align: right; }
 #conector-prova { margin-bottom: 8px; }
 .comando { margin-bottom: 10px; }
 .comando .bruto { margin-top: 6px; max-height: 160px; }
+.fim-numeros { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 8px 0 16px; }
+.fim-numeros .numero { padding: 12px 14px; background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; }
 .botao-automatizar { margin: 12px 0 4px; }
 .modelos { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .modelo {

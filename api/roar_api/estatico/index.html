@@ -48,7 +48,7 @@
       <button type="button" data-vista="ataques">Ataque e defesa</button>
       <button type="button" data-vista="fontes">Fontes de dados</button>
       <button type="button" data-vista="ativos">Ativos</button>
-      <button type="button" data-vista="arquivos">Arquivos</button>
+      <button type="button" data-vista="arquivos">Integridade</button>
       <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
       <button type="button" data-vista="automacao">Automação</button>
@@ -291,8 +291,50 @@
       <div id="tabela-ativos" class="tabela-rolagem"></div>
     </section>
 
-    <section id="vista-arquivos" class="pagina" aria-label="Arquivos" hidden>
-      <p class="texto-secao">Arquivos monitorados que foram criados, alterados ou apagados.</p>
+    <section id="vista-arquivos" class="pagina" aria-label="Integridade de arquivos" hidden>
+      <h2 class="titulo-secao">Integridade de arquivos</h2>
+      <div id="fim-numeros" class="fim-numeros"></div>
+
+      <div class="titulo-com-acao">
+        <h2 class="titulo-secao">O que monitorar</h2>
+        <button id="novo-caminho" type="button" class="botao-primario" data-permissao="gerir_fontes">Adicionar pasta ou arquivo</button>
+      </div>
+      <p class="texto-secao">Além do que já vem monitorado em cada sistema, como /etc e System32. A mudança chega aos ativos em alguns minutos.</p>
+      <form id="form-caminho" class="formulario-regra" hidden novalidate>
+        <div class="linha-campos">
+          <label>Caminho completo <input id="caminho-valor" type="text" maxlength="400" spellcheck="false" placeholder="/var/www"></label>
+          <label>Sistema <select id="caminho-sistema">
+            <option value="linux">Linux</option>
+            <option value="windows">Windows</option>
+          </select></label>
+          <label>Como monitorar <select id="caminho-modo">
+            <option value="agendado">Nas varreduras (mais leve)</option>
+            <option value="tempo_real">Em tempo real</option>
+            <option value="quem_alterou">Em tempo real, com quem alterou</option>
+          </select></label>
+        </div>
+        <p class="texto-secao">"Com quem alterou" precisa do serviço de auditoria no ativo: auditd no Linux ou auditoria habilitada no Windows.</p>
+        <p id="caminho-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra">
+          <button id="caminho-cancelar" type="button" class="botao-discreto">Cancelar</button>
+          <button type="submit" class="botao-primario">Salvar</button>
+        </div>
+      </form>
+      <div id="tabela-caminhos" class="tabela-rolagem"></div>
+
+      <h2 class="titulo-secao">Ativos</h2>
+      <div id="tabela-fim-ativos" class="tabela-rolagem"></div>
+      <div id="fim-base" hidden>
+        <h2 id="fim-base-titulo" class="titulo-secao"></h2>
+        <form id="form-fim-base" class="filtros" role="search">
+          <input id="busca-fim-base" type="search" placeholder="Parte do caminho" aria-label="Buscar na base de arquivos">
+          <button type="submit" class="botao-primario">Buscar</button>
+        </form>
+        <p id="fim-base-total" class="texto-secao"></p>
+        <div id="tabela-fim-base" class="tabela-rolagem"></div>
+      </div>
+
+      <h2 class="titulo-secao">Alterações</h2>
       <form id="form-arquivos" class="filtros" role="search">
         <input id="busca-arquivos" type="search" placeholder="Caminho do arquivo ou ativo" aria-label="Buscar arquivos">
         <button type="submit" class="botao-primario">Buscar</button>

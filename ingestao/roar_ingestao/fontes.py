@@ -385,6 +385,7 @@ def buscar_apis(banco, gerenciador_id, cliente):
 
 
 def ciclo(banco):
+    from . import fim
     from .regras import aplicar_regras_proprias
 
     for gerenciador_id, cliente in banco.gerenciadores():
@@ -393,6 +394,9 @@ def ciclo(banco):
         try:
             encaminhar_webhooks(banco, gerenciador_id, cliente)
             buscar_apis(banco, gerenciador_id, cliente)
+            fim.aplicar_caminhos(banco, gerenciador_id, cliente)
+            fim.enviar_varreduras(banco, gerenciador_id, cliente)
+            fim.atualizar_base(banco, gerenciador_id, cliente)
             aplicar_fontes(banco, gerenciador_id, cliente)
             # No mesmo ciclo curto: regra criada ou editada na tela não pode esperar a sincronização de hora em hora.
             aplicar_regras_proprias(banco, gerenciador_id, cliente)
