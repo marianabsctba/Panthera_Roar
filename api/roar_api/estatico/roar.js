@@ -1584,6 +1584,154 @@ $("form-senha").addEventListener("submit", async (evento) => {
   if (obrigatoria) await abrirPainel();
 });
 
+// ------------------------------------------------------------------ catálogo de conectores
+
+const SEM_CONTA_REAL = "Ainda não testado com uma conta real";
+const CATALOGO = [
+  { grupo: "Ativos e rede", itens: [
+    { id: "agente", rotulo: "Agente", logo: "linux", resumo: "Linux, Windows e macOS: logs, integridade de arquivos, inventário e resposta a incidentes.", prova: "Testado em Linux. Windows e macOS ainda não",
+      passos: ["Abra o comando do sistema do ativo, logo abaixo.", "Rode o comando no ativo como administrador.", "Em alguns minutos o ativo aparece conectado em Ativos."],
+      cuidado: "O comando traz a senha de inscrição da sua organização: não o publique. Para bloquear endereços, o ativo precisa ter firewall.", abrir: "agente", permissao: "instalar_agente" },
+    { id: "syslog", rotulo: "Syslog", sigla: "SYS", resumo: "Firewall, switch e outros equipamentos que não aceitam agente.", prova: "Testado com envio real",
+      passos: ["Cadastre abaixo os endereços dos equipamentos: o que estiver fora da lista é ignorado.", "Espere a fonte ficar ativa.", "No equipamento, aponte o envio de syslog para o endereço e a porta mostrados aqui."],
+      cuidado: "O syslog não é cifrado: use apenas em rede de confiança.", formulario: "form-fonte", tipos: ["syslog"], permissao: "gerir_fontes" },
+  ] },
+  { grupo: "Nuvem e SaaS", itens: [
+    { id: "aws", rotulo: "AWS CloudTrail", logo: "amazonwebservices", resumo: "Quem fez o quê na conta da AWS.", prova: SEM_CONTA_REAL,
+      passos: ["No CloudTrail, crie uma trilha que grave em um bucket do S3.", "No IAM, crie um usuário só com s3:GetObject e s3:ListBucket nesse bucket.", "Gere uma chave de acesso para esse usuário.", "Preencha abaixo o bucket, a chave de acesso e a chave secreta."], tipo: "aws" },
+    { id: "azure", rotulo: "Azure Log Analytics", sigla: "AZ", resumo: "Atividade da assinatura do Azure, lida de um workspace.", prova: SEM_CONTA_REAL,
+      passos: ["No Entra ID, registre um aplicativo e crie um segredo para ele.", "Dê ao aplicativo permissão de leitura no workspace do Log Analytics.", "Preencha abaixo o domínio, o aplicativo, o workspace e o segredo."], tipo: "azure" },
+    { id: "gcp", rotulo: "Google Cloud Pub/Sub", logo: "googlecloud", resumo: "Registros do Google Cloud, entregues por uma assinatura do Pub/Sub.", prova: SEM_CONTA_REAL,
+      passos: ["Encaminhe os registros para um tópico do Pub/Sub e crie uma assinatura.", "Em IAM e administrador, crie uma conta de serviço com os papéis Pub/Sub Publisher e Pub/Sub Subscriber.", "Gere uma chave em JSON para essa conta.", "Preencha abaixo o projeto, a assinatura e cole o JSON."],
+      cuidado: "Cada cliente pode ter uma assinatura do Google Cloud: é um limite do coletor.", tipo: "gcp" },
+    { id: "office365", rotulo: "Microsoft 365", sigla: "365", resumo: "Atividade de Exchange, SharePoint, OneDrive e Teams, e administração.", prova: SEM_CONTA_REAL,
+      passos: ["No Entra ID, registre um aplicativo e crie um segredo para ele.", "Dê ao aplicativo a permissão de leitura do feed de atividades da API de gerenciamento do Office 365.", "Preencha abaixo o locatário, o aplicativo e o segredo."], tipo: "office365" },
+    { id: "msgraph", rotulo: "Microsoft Graph", sigla: "GR", resumo: "Alertas e incidentes de segurança, entradas e auditoria do diretório.", prova: SEM_CONTA_REAL,
+      passos: ["No Entra ID, registre um aplicativo e crie um segredo para ele.", "Dê ao aplicativo permissão de leitura de alertas e incidentes de segurança e dos logs de auditoria.", "Preencha abaixo o locatário, o aplicativo e o segredo."], tipo: "msgraph" },
+    { id: "github", rotulo: "GitHub", logo: "github", resumo: "Log de auditoria da organização: permissões, membros e atividade.", prova: SEM_CONTA_REAL,
+      passos: ["Entre com a conta dona da organização e crie um token de acesso pessoal.", "Marque o escopo read:audit_log e gere o token.", "Preencha abaixo a organização e o token."],
+      cuidado: "Só funciona com o plano GitHub Enterprise Cloud: nos outros, a API de auditoria não existe.", tipo: "github" },
+  ] },
+  { grupo: "Seus sistemas", itens: [
+    { id: "webhook", rotulo: "Webhook", sigla: "API", resumo: "Qualquer sistema que saiba enviar JSON por HTTP.", prova: "Testado com envio real",
+      passos: ["Crie o endereço abaixo e guarde o token: ele aparece uma única vez.", "No sistema de origem, envie um POST em JSON com o token no cabeçalho Authorization.", "Os eventos passam pelas mesmas regras de qualquer outro log."], formulario: "form-webhook", tipos: ["webhook"], permissao: "gerir_fontes" },
+    { id: "api", rotulo: "Buscar em uma API", sigla: "GET", resumo: "Sistemas sem módulo pronto: buscamos de tempos em tempos e entregamos só o novo.", prova: "Testado com um sistema de exemplo",
+      passos: ["Informe o endereço, sempre em https.", "Se a lista não for a raiz da resposta, diga onde ela está, como data.itens.", "Se precisar de credencial, informe o cabeçalho e o valor."],
+      cuidado: "Endereços da rede interna são recusados.", formulario: "form-api", tipos: ["api"], permissao: "gerir_fontes" },
+  ] },
+  { grupo: "Avisos e consultas", itens: [
+    { id: "slack", rotulo: "Slack", logo: "slack", resumo: "Avisa um canal a partir de um nível de alerta.", prova: "Testado com um receptor local, ainda não no Slack",
+      passos: ["No Slack, crie um Incoming Webhook para o canal.", "Preencha abaixo o nível e o endereço do webhook."], cuidado: "Os alertas saem do ambiente com os dados que trazem.", tipo: "slack" },
+    { id: "pagerduty", rotulo: "PagerDuty", logo: "pagerduty", resumo: "Abre um incidente a partir de um nível de alerta.", prova: SEM_CONTA_REAL,
+      passos: ["No serviço do PagerDuty, adicione uma integração e copie a chave.", "Preencha abaixo o nível e a chave."], cuidado: "Os alertas saem do ambiente com os dados que trazem.", tipo: "pagerduty" },
+    { id: "virustotal", rotulo: "VirusTotal", logo: "virustotal", resumo: "Consulta o hash de cada arquivo alterado.", prova: SEM_CONTA_REAL,
+      passos: ["Copie a chave da API na sua conta do VirusTotal.", "Preencha abaixo."], cuidado: "O hash sai para um serviço externo, nunca o arquivo. Na chave gratuita valem os termos e o limite deles.", tipo: "virustotal" },
+    { id: "maltiverse", rotulo: "Maltiverse", sigla: "MV", resumo: "Consulta endereços e hashes dos alertas.", prova: SEM_CONTA_REAL,
+      passos: ["Copie a chave da API na sua conta do Maltiverse.", "Preencha abaixo o nível e a chave."], cuidado: "Endereços e hashes saem para um serviço externo.", tipo: "maltiverse" },
+  ] },
+];
+
+function logoDoConector(item) {
+  const caixa = el("span", "logo-conector");
+  if (item.logo) {
+    const imagem = el("img");
+    imagem.src = `/estatico/logos/${item.logo}.svg`;
+    imagem.alt = "";
+    caixa.append(imagem);
+  } else {
+    caixa.append(el("b", null, item.sigla));
+  }
+  return caixa;
+}
+
+function situacaoDoConector(item) {
+  if (item.id === "agente") {
+    const { total = 0, conectados = 0 } = estado.fontes?.agentes ?? {};
+    return total ? { texto: `${conectados} de ${total} conectados`, classe: conectados ? "ok" : "alerta" } : { texto: "Não conectado", classe: "" };
+  }
+  const tipos = item.tipos ?? [item.tipo];
+  const fontes = (estado.fontes?.fontes ?? []).filter((f) => tipos.includes(f.tipo));
+  if (!fontes.length) return { texto: "Não conectado", classe: "" };
+  if (fontes.some((f) => f.estado === "recusada")) return { texto: "Recusado", classe: "alerta" };
+  if (fontes.some((f) => f.estado === "pendente")) return { texto: "Aplicando...", classe: "" };
+  if (fontes.some((f) => f.mensagem || f.saude === "parada")) return { texto: "Com problema", classe: "alerta" };
+  if (fontes.some((f) => f.saude === "recebendo")) return { texto: "Recebendo", classe: "ok" };
+  return { texto: fontes[0].saude === null ? "Conectado" : "Conectado, sem dados ainda", classe: "" };
+}
+
+function desenharCatalogo() {
+  $("catalogo").replaceChildren(...CATALOGO.flatMap(({ grupo, itens }) => {
+    const grade = el("div", "cartoes-conector");
+    grade.append(...itens.map((item) => {
+      const cartao = el("button", "cartao-conector");
+      cartao.type = "button";
+      const topo = el("div", "conector-titulo");
+      topo.append(logoDoConector(item), el("strong", null, item.rotulo));
+      const situacao = situacaoDoConector(item);
+      cartao.append(topo, el("span", "conector-resumo", item.resumo), el("span", `conector-situacao ${situacao.classe}`, situacao.texto));
+      cartao.addEventListener("click", () => abrirConector(item));
+      return cartao;
+    }));
+    return [el("h3", "grupo-conector", grupo), grade];
+  }));
+}
+
+function devolverFormularios() {
+  $("formularios-de-fontes").append(...$("conector-formulario").children);
+}
+
+async function abrirConector(item) {
+  devolverFormularios();
+  $("titulo-conector").textContent = item.rotulo;
+  $("logo-conector").replaceChildren(logoDoConector(item));
+  $("conector-resumo").textContent = item.resumo;
+  $("conector-prova").textContent = item.prova;
+  $("conector-passos").replaceChildren(...item.passos.map((p) => el("li", null, p)));
+  $("conector-cuidado").textContent = item.cuidado ?? "";
+  $("conector-cuidado").hidden = !item.cuidado;
+  const { endereco, porta } = estado.fontes ?? {};
+  $("conector-destino").textContent = item.id === "syslog" && porta ? `Aponte os equipamentos para ${endereco}, porta ${porta}.` : "";
+  $("webhook-criado").hidden = true;
+  const slot = $("conector-formulario");
+  if (pode(item.permissao ?? "gerir_fontes")) {
+    if (item.id === "agente") {
+      slot.append($("instalacao-agente"));
+      await mostrarInstalacao();
+    } else {
+      const formulario = $(item.formulario ?? "form-nuvem");
+      formulario.hidden = false;
+      slot.append(formulario);
+      if (item.id === "webhook") slot.append($("webhook-criado"));
+      if (item.tipo) {
+        $("nuvem-tipo").value = item.tipo;
+        // O serviço já foi escolhido no cartão: o seletor só apareceria para atrapalhar.
+        $("nuvem-tipo").closest("label").hidden = true;
+        $("nuvem-nome").value = item.rotulo;
+        ajustarFormularioDeNuvem();
+      }
+    }
+  } else {
+    slot.append(el("p", "texto-secao", "Seu perfil não permite conectar. Peça a quem administra."));
+  }
+  $("janela-conector").showModal();
+}
+
+$("fechar-conector").addEventListener("click", () => fecharConector());
+function limparConector() {
+  // A credencial digitada não fica guardada no formulário ao fechar a janela.
+  ["form-nuvem", "form-api"].forEach((id) => $(id).reset());
+  [...$("conector-formulario").children].filter((e) => e.tagName === "P").forEach((e) => e.remove());
+  devolverFormularios();
+}
+
+function fecharConector() {
+  limparConector();
+  $("janela-conector").close();
+}
+
+// Fechar com Esc não passa pelo botão.
+$("janela-conector").addEventListener("cancel", limparConector);
+
 // ------------------------------------------------------------------ fontes de dados
 
 const SAUDE_DA_FONTE = {
@@ -1601,7 +1749,8 @@ async function carregarFontes() {
   $("resumo-agentes").textContent = agentes.total
     ? `${agentes.total === 1 ? "1 ativo inscrito" : `${agentes.total} ativos inscritos`}, ${agentes.conectados === 1 ? "1 conectado" : `${agentes.conectados} conectados`} agora.`
     : "Nenhum ativo inscrito ainda.";
-  $("destino-syslog").textContent = porta ? `Aponte os equipamentos para ${endereco}, porta ${porta}.` : "";
+  estado.fontes = { fontes, endereco, porta, agentes };
+  desenharCatalogo();
   $("tabela-fontes").replaceChildren(fontes.length ? montarTabela(
     [["Nome"], ["Tipo"], ["Detalhe"], ["Estado"], ["Dados"], ["Último dado"], [""]],
     fontes.map((f) => {
@@ -1623,11 +1772,6 @@ async function carregarFontes() {
 
 async function mostrarInstalacao() {
   const area = $("instalacao-agente");
-  if (!area.hidden) {
-    area.hidden = true;
-    area.replaceChildren();
-    return;
-  }
   const r = await pedir("/api/fontes/instalacao");
   if (!r.ok) {
     area.replaceChildren(el("p", "erro", await detalheDoErro(r, "Não foi possível montar o comando.")));
@@ -1694,15 +1838,7 @@ $("nuvem-tipo").replaceChildren(...Object.entries(CONECTORES).map(([tipo, c]) =>
   return opcao;
 }));
 
-$("nova-nuvem").addEventListener("click", () => {
-  $("form-nuvem").hidden = false;
-  ajustarFormularioDeNuvem();
-  $("nuvem-nome").focus();
-});
-$("nuvem-cancelar").addEventListener("click", () => {
-  $("form-nuvem").reset();
-  $("form-nuvem").hidden = true;
-});
+$("nuvem-cancelar").addEventListener("click", () => fecharConector());
 $("nuvem-tipo").addEventListener("change", ajustarFormularioDeNuvem);
 $("form-nuvem").addEventListener("submit", async (evento) => {
   evento.preventDefault();
@@ -1729,19 +1865,12 @@ $("form-nuvem").addEventListener("submit", async (evento) => {
   }
   // A credencial não fica nem no formulário depois de enviada.
   $("form-nuvem").reset();
-  $("form-nuvem").hidden = true;
   ajustarFormularioDeNuvem();
+  fecharConector();
   await carregarFontes();
 });
 
-$("nova-api").addEventListener("click", () => {
-  $("form-api").hidden = false;
-  $("api-nome").focus();
-});
-$("api-cancelar").addEventListener("click", () => {
-  $("form-api").reset();
-  $("form-api").hidden = true;
-});
+$("api-cancelar").addEventListener("click", () => fecharConector());
 $("form-api").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   const erro = $("api-erro");
@@ -1767,16 +1896,11 @@ $("form-api").addEventListener("submit", async (evento) => {
   }
   // A credencial não fica nem no formulário depois de enviada.
   $("form-api").reset();
-  $("form-api").hidden = true;
+  fecharConector();
   await carregarFontes();
 });
 
-$("novo-webhook").addEventListener("click", () => {
-  $("form-webhook").hidden = false;
-  $("webhook-criado").hidden = true;
-  $("webhook-nome").focus();
-});
-$("webhook-cancelar").addEventListener("click", () => { $("form-webhook").hidden = true; });
+$("webhook-cancelar").addEventListener("click", () => fecharConector());
 $("form-webhook").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   const erro = $("webhook-erro");
@@ -1807,12 +1931,7 @@ $("form-webhook").addEventListener("submit", async (evento) => {
   await carregarFontes();
 });
 
-$("instalar-agente").addEventListener("click", mostrarInstalacao);
-$("nova-fonte").addEventListener("click", () => {
-  $("form-fonte").hidden = false;
-  $("fonte-nome").focus();
-});
-$("fonte-cancelar").addEventListener("click", () => { $("form-fonte").hidden = true; });
+$("fonte-cancelar").addEventListener("click", () => fecharConector());
 $("form-fonte").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   const erro = $("fonte-erro");
@@ -1834,7 +1953,7 @@ $("form-fonte").addEventListener("submit", async (evento) => {
     return;
   }
   $("form-fonte").reset();
-  $("form-fonte").hidden = true;
+  fecharConector();
   await carregarFontes();
 });
 

@@ -213,19 +213,16 @@
     </section>
 
     <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>
-      <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Ativos com agente</h2>
-        <button id="instalar-agente" type="button" class="botao-primario" data-permissao="instalar_agente">Instalar em um ativo</button>
-      </div>
+      <h2 class="titulo-secao">Conectores</h2>
       <p id="resumo-agentes" class="texto-secao"></p>
-      <div id="instalacao-agente" hidden></div>
+      <div id="catalogo"></div>
 
-      <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Syslog</h2>
-        <button id="nova-fonte" type="button" class="botao-primario" data-permissao="gerir_fontes">Adicionar equipamento</button>
-      </div>
-      <p class="texto-secao">Para firewall, switch e outros equipamentos que não aceitam agente. O syslog não é cifrado: use em rede de confiança.</p>
-      <form id="form-fonte" class="formulario-regra" hidden novalidate>
+      <h2 class="titulo-secao">Fontes configuradas</h2>
+      <div id="tabela-fontes" class="tabela-rolagem"></div>
+      <p class="credito">Os logotipos pertencem às suas respectivas marcas e só identificam com quem cada conector fala.</p>
+
+      <div id="formularios-de-fontes" hidden>
+        <form id="form-fonte" class="formulario-regra" hidden novalidate>
         <div class="linha-campos">
           <label>Nome <input id="fonte-nome" type="text" maxlength="120" placeholder="Firewall da matriz"></label>
           <label>Protocolo <select id="fonte-protocolo">
@@ -242,14 +239,7 @@
           <button type="submit" class="botao-primario">Salvar</button>
         </div>
       </form>
-      <p id="destino-syslog" class="texto-secao"></p>
-
-      <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Nuvem e avisos</h2>
-        <button id="nova-nuvem" type="button" class="botao-primario" data-permissao="gerir_fontes">Conectar um serviço</button>
-      </div>
-      <p class="texto-secao">A credencial é guardada cifrada e nunca volta para a tela. Estes conectores ainda não foram testados com contas reais.</p>
-      <form id="form-nuvem" class="formulario-regra" hidden novalidate autocomplete="off">
+        <form id="form-nuvem" class="formulario-regra" hidden novalidate autocomplete="off">
         <div class="linha-campos">
           <label>Serviço <select id="nuvem-tipo"></select></label>
           <label>Nome <input id="nuvem-nome" type="text" maxlength="120"></label>
@@ -266,13 +256,7 @@
           <button type="submit" class="botao-primario">Conectar</button>
         </div>
       </form>
-
-      <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Webhook</h2>
-        <button id="novo-webhook" type="button" class="botao-primario" data-permissao="gerir_fontes">Criar um endereço</button>
-      </div>
-      <p class="texto-secao">Para qualquer sistema que saiba enviar JSON. Cada endereço tem um token próprio, que aparece uma única vez.</p>
-      <form id="form-webhook" class="formulario-regra" hidden novalidate>
+        <form id="form-webhook" class="formulario-regra" hidden novalidate>
         <label>Nome <input id="webhook-nome" type="text" maxlength="120" placeholder="Sistema de RH"></label>
         <p id="webhook-erro" class="erro" role="alert" hidden></p>
         <div class="acoes-regra">
@@ -280,14 +264,7 @@
           <button type="submit" class="botao-primario">Criar</button>
         </div>
       </form>
-      <div id="webhook-criado" class="simulacao" hidden></div>
-
-      <div class="titulo-com-acao">
-        <h2 class="titulo-secao">Buscar em uma API</h2>
-        <button id="nova-api" type="button" class="botao-primario" data-permissao="gerir_fontes">Conectar um sistema</button>
-      </div>
-      <p class="texto-secao">Para sistemas sem módulo pronto: buscamos o endereço de tempos em tempos e entregamos só o que for novo.</p>
-      <form id="form-api" class="formulario-regra" hidden novalidate autocomplete="off">
+        <form id="form-api" class="formulario-regra" hidden novalidate autocomplete="off">
         <div class="linha-campos">
           <label>Nome <input id="api-nome" type="text" maxlength="120"></label>
           <label>Buscar a cada (minutos) <input id="api-intervalo" type="number" min="5" max="1440" value="15"></label>
@@ -304,9 +281,9 @@
           <button type="submit" class="botao-primario">Conectar</button>
         </div>
       </form>
-
-      <h2 class="titulo-secao">Fontes configuradas</h2>
-      <div id="tabela-fontes" class="tabela-rolagem"></div>
+        <div id="instalacao-agente" hidden></div>
+        <div id="webhook-criado" class="simulacao" hidden></div>
+      </div>
     </section>
 
     <section id="vista-ativos" class="pagina" aria-label="Ativos" hidden>
@@ -523,6 +500,22 @@
       <p id="senha-erro" class="erro" role="alert" hidden></p>
       <div class="acoes-regra"><button type="submit" class="botao-primario">Trocar</button></div>
     </form>
+  </dialog>
+
+  <dialog id="janela-conector" class="janela" aria-labelledby="titulo-conector">
+    <div class="janela-topo">
+      <div class="conector-titulo"><span id="logo-conector"></span><h2 id="titulo-conector"></h2></div>
+      <button id="fechar-conector" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <div class="conteudo-janela">
+      <p id="conector-resumo" class="texto-secao"></p>
+      <p id="conector-prova" class="etiqueta"></p>
+      <h3>Como implantar</h3>
+      <ol id="conector-passos" class="passos"></ol>
+      <div id="conector-cuidado" class="simulacao" hidden></div>
+      <div id="conector-destino" class="texto-secao"></div>
+      <div id="conector-formulario"></div>
+    </div>
   </dialog>
 
   <div id="dica" class="dica" role="status" hidden></div>
