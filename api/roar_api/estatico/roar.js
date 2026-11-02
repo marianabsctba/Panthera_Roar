@@ -1565,6 +1565,35 @@ $("copiar-bruto").addEventListener("click", async () => {
   setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
 });
 
+// ------------------------------------------------------------------ relatórios
+
+$("form-relatorio").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const erro = $("relatorio-erro");
+  const botao = $("relatorio-gerar");
+  erro.hidden = true;
+  const tipo = $("relatorio-tipo").value;
+  const formato = $("relatorio-formato").value;
+  botao.disabled = true;
+  botao.textContent = "Gerando...";
+  try {
+    const consulta = new URLSearchParams({ tipo, formato, dias: $("relatorio-dias").value });
+    const r = await pedir(`/api/relatorios?${consulta}`);
+    if (!r.ok) throw new Error("falhou");
+    const link = el("a");
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = `relatorio-${tipo}.${formato}`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+  } catch {
+    erro.textContent = "Não foi possível gerar o relatório. Tente de novo em instantes.";
+    erro.hidden = false;
+  } finally {
+    botao.disabled = false;
+    botao.textContent = "Gerar relatório";
+  }
+});
+
 // ------------------------------------------------------------------ vulnerabilidades
 
 function dataComAno(dia) {
@@ -1617,6 +1646,11 @@ async function carregarCves() {
   $("resumo-cves").textContent = carga
     ? `${Number(carga.total).toLocaleString("pt-BR")} registros, carregados em ${quando(carga.carregada_em)}. EPSS de ${dataComAno(carga.epss_data)}.`
     : "A base de CVEs ainda não foi carregada.";
+  const avisos = [];
+  if (carga?.velha) avisos.push("A base está com mais de 3 dias: uma CVE nova ou recém-explorada pode não aparecer aqui.");
+  if (carga?.falha) avisos.push(`A última atualização falhou em ${quando(carga.falha_em)}: ${carga.falha} Continua valendo a base anterior.`);
+  $("aviso-cves").textContent = avisos.join(" ");
+  $("aviso-cves").hidden = !avisos.length;
   if (contagem.length) {
     $("numeros-cves").replaceChildren(...Object.entries(PRIORIDADES_DE_CVE).map(([chave, d]) => {
       const n = el("button", "numero numero-botao");
@@ -2582,7 +2616,7 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
   if (vista === "usuarios") carregarUsuarios();

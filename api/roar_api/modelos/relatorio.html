@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Relatório de segurança - {{ cliente }}</title>
+<style>
+  @page { size: A4; margin: 22mm 16mm 20mm;
+    @top-left { content: "Panthera Roar"; font: 600 8pt "DejaVu Sans"; color: #c2185b; }
+    @top-right { content: string(capitulo); font: 8pt "DejaVu Sans"; color: #666; }
+    @bottom-left { content: "Confidencial: contém dados pessoais e de segurança"; font: 7pt "DejaVu Sans"; color: #888; }
+    @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt "DejaVu Sans"; color: #666; }
+  }
+  @page capa { margin: 0; @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
+  body { margin: 0; color: #1c1c1c; font: 9.5pt/1.45 "DejaVu Sans", sans-serif; }
+  .capa { page: capa; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; height: 297mm; padding: 34mm 22mm 22mm; color: #f4f4f4; background: #0b0b0b; break-after: page; }
+  .capa h1 { margin: 0 0 6mm; color: #ff1fa8; font-size: 30pt; line-height: 1.1; }
+  .capa .marca { color: #ff6cc6; font-size: 11pt; font-weight: 700; letter-spacing: .03em; }
+  .capa .sub { font-size: 14pt; }
+  .capa dl { display: grid; grid-template-columns: 34mm auto; gap: 2mm 4mm; margin: 0; font-size: 9.5pt; }
+  .capa dt { color: #b5b5b5; }
+  .capa dd { margin: 0; overflow-wrap: anywhere; }
+  .capa .aviso { padding-top: 5mm; color: #b5b5b5; font-size: 8pt; border-top: 1px solid #444; }
+  h1.capitulo { string-set: capitulo content(); break-before: page; margin: 0 0 4mm; padding-bottom: 2mm; color: #0b0b0b; font-size: 17pt; border-bottom: 2.5px solid #ff1fa8; }
+  h2 { margin: 6mm 0 2mm; color: #8e1466; font-size: 11.5pt; break-after: avoid; }
+  p { margin: 0 0 2.5mm; }
+  .nota { color: #555; font-size: 8.5pt; }
+  table { width: 100%; margin: 1mm 0 3mm; border-collapse: collapse; font-size: 8.3pt; }
+  thead { display: table-header-group; }
+  th { padding: 1.5mm 2mm; color: #fff; font-weight: 600; text-align: left; background: #1c1c1c; }
+  td { padding: 1.2mm 2mm; overflow-wrap: anywhere; border-bottom: .5px solid #ddd; vertical-align: top; }
+  tr { break-inside: avoid; }
+  tbody tr:nth-child(even) td { background: #f7f7f7; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 7.6pt; }
+  .vazio { padding: 3mm; color: #666; background: #f5f5f5; border-radius: 1.5mm; }
+  .sumario ol { margin: 0; padding: 0; list-style: none; }
+  .sumario li { margin-bottom: 1.8mm; }
+  .sumario li.sub { margin-left: 6mm; color: #555; font-size: 8.8pt; }
+  .sumario a { display: flex; color: inherit; text-decoration: none; }
+  .sumario a::after { content: target-counter(attr(href), page); margin-left: auto; padding-left: 3mm; }
+  .numeros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2.5mm; margin: 3mm 0; }
+  .numero { padding: 3mm; background: #f7f7f7; border-left: 3px solid #ff1fa8; }
+  .numero b { display: block; font-size: 15pt; line-height: 1.2; }
+  .numero span { color: #555; font-size: 7.6pt; }
+  .numero i { display: block; margin-top: 1mm; color: #8e1466; font-size: 7.4pt; font-style: normal; }
+  .legenda { display: flex; flex-wrap: wrap; gap: 4mm; margin: 1mm 0; font-size: 8pt; }
+  .legenda span::before { content: ""; display: inline-block; width: 2.6mm; height: 2.6mm; margin-right: 1mm; background: var(--cor); border-radius: .5mm; }
+  .grafico { width: 100%; height: auto; }
+  .barra { margin-bottom: 1.2mm; font-size: 8.2pt; }
+  .barra div { display: flex; justify-content: space-between; gap: 3mm; }
+  .barra u { display: block; height: 2mm; margin-top: .4mm; text-decoration: none; background: #eee; border-radius: 1mm; }
+  .barra s { display: block; height: 100%; text-decoration: none; border-radius: 1mm; }
+  .achado { margin: 0 0 2mm; padding: 2mm 3mm; background: #fdf1f8; border-left: 3px solid #c2185b; break-inside: avoid; }
+  .selo { font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+{% set completo = tipo == "completo" %}
+<section class="capa">
+  <div>
+    <div class="marca">PANTHERA ROAR</div>
+    <h1 style="margin-top:44mm">Relatório {{ "completo" if completo else "executivo" }} de segurança</h1>
+    <div class="sub">{{ cliente }}</div>
+  </div>
+  <div>
+    <dl>
+      <dt>Período</dt><dd>{{ inicio|data(false) }} a {{ agora|data(false) }} ({{ dias }} dias)</dd>
+      <dt>Gerado em</dt><dd>{{ agora|data }}</dd>
+      <dt>Gerado por</dt><dd>{{ autor }}</dd>
+    </dl>
+    <p class="aviso" style="margin-top:8mm">Documento confidencial. Pode conter nomes de pessoas, contas e endereços: compartilhe apenas com quem precisa, e guarde pelo tempo da sua política de retenção.</p>
+  </div>
+</section>
+
+<section class="sumario">
+  <h1 class="capitulo" id="sumario">Sumário</h1>
+  <ol>
+    <li><a href="#c-resumo">1. Resumo executivo</a></li>
+    <li><a href="#c-alertas">2. Alertas</a></li>
+    {% if completo %}
+    <li class="sub"><a href="#s-regras">Regras que mais dispararam</a></li>
+    <li class="sub"><a href="#s-ativos">Ativos mais afetados</a></li>
+    <li class="sub"><a href="#s-origens">Origens, países e contas</a></li>
+    <li><a href="#c-risco">3. Risco de comportamento</a></li>
+    <li><a href="#c-ataque">4. Técnicas de ataque e defesas</a></li>
+    <li><a href="#c-fim">5. Integridade de arquivos</a></li>
+    <li><a href="#c-vuln">6. Vulnerabilidades</a></li>
+    <li><a href="#c-auto">7. Automação e resposta</a></li>
+    <li><a href="#c-ativos">8. Inventário de ativos</a></li>
+    <li><a href="#c-fontes">9. Fontes de dados e detecção</a></li>
+    <li><a href="#c-normas">10. Conformidade por norma</a></li>
+    <li><a href="#c-auditoria">11. Trilha de auditoria e acessos</a></li>
+    <li><a href="#c-dados">Apêndice A. Alertas por dia</a></li>
+    {% endif %}
+    <li><a href="#c-metodo">{{ "Apêndice B." if completo else "3." }} Método e limites</a></li>
+  </ol>
+</section>
+
+<h1 class="capitulo" id="c-resumo">1. Resumo executivo</h1>
+<div class="numeros">
+  <div class="numero"><b>{{ resumo.alertas|n }}</b><span>alertas</span><i>{{ variacao_alertas }} sobre o período anterior</i></div>
+  <div class="numero"><b>{{ resumo.graves|n }}</b><span>críticos e altos</span><i>{{ variacao_graves }} sobre o período anterior</i></div>
+  <div class="numero"><b>{{ resumo.ativos|n }}</b><span>ativos com alerta</span></div>
+  <div class="numero"><b>{{ resumo.origens|n }}</b><span>origens distintas</span></div>
+</div>
+<p>No período, foram registrados {{ resumo.eventos_total|n }} eventos de segurança, dos quais {{ resumo.alertas|n }} pediram atenção (nível {{ 5 }} ou acima). O período anterior, de mesma duração, teve {{ resumo.anterior|n }} alertas.</p>
+<h2>O que merece atenção</h2>
+{% set riscos_abertos = riscos|selectattr("estado", "equalto", "aberto")|list %}
+{% if resumo.critica %}<p class="achado"><b>{{ resumo.critica|n }} alertas críticos</b> no período. Comece pelo capítulo 2.</p>{% endif %}
+{% if riscos_abertos %}<p class="achado"><b>{{ riscos_abertos|length }} alertas de risco de comportamento abertos</b>, o mais alto em {{ riscos_abertos[0].entidade }}.</p>{% endif %}
+{% if desconectados %}<p class="achado"><b>{{ desconectados|length }} ativos sem conexão.</b> Ativo desconectado não manda log: a ausência de alerta nele não significa que está tudo bem.</p>{% endif %}
+{% if not resumo.critica and not riscos_abertos and not desconectados %}<p>Nenhum destes pontos apareceu: alerta crítico, risco aberto ou ativo desconectado. Isso vale só para o que as fontes conectadas enxergam.</p>{% endif %}
+<h2>Alertas por dia</h2>
+{% if grafico %}
+<div class="legenda">{% for f in faixas %}<span style="--cor:{{ cores[f] }}">{{ rotulos[f] }}</span>{% endfor %}</div>
+{{ grafico|safe }}
+{% else %}<p class="vazio">Sem alertas no período.</p>{% endif %}
+<h2>Por severidade</h2>
+<table><thead><tr><th>Severidade</th><th class="num">Alertas</th></tr></thead><tbody>
+{% for f in faixas %}<tr><td class="selo" style="color:{{ cores[f] }}">{{ rotulos[f] }}</td><td class="num">{{ resumo[f]|n }}</td></tr>{% endfor %}
+</tbody></table>
+
+<h1 class="capitulo" id="c-alertas">2. Alertas</h1>
+<h2 id="s-regras">Regras que mais dispararam</h2>
+{% if regras %}<table><thead><tr><th>Regra</th><th>O que detecta</th><th class="num">Nível</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
+{% for r in regras %}<tr><td class="mono">{{ r.regra_id }}</td><td>{{ r.descricao or "-" }}</td><td class="num">{{ r.nivel }}</td><td class="num">{{ r.total|n }}</td><td class="num">{{ r.ativos|n }}</td><td>{{ r.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma regra disparou no período.</p>{% endif %}
+{% if completo %}
+<h2 id="s-ativos">Ativos mais afetados</h2>
+{% if ativos_com_alerta %}<table><thead><tr><th>Ativo</th><th class="num">Alertas</th><th class="num">Críticos e altos</th><th class="num">Regras</th><th>Último</th></tr></thead><tbody>
+{% for a in ativos_com_alerta %}<tr><td>{{ a.ativo }}</td><td class="num">{{ a.total|n }}</td><td class="num">{{ a.graves|n }}</td><td class="num">{{ a.regras|n }}</td><td>{{ a.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum ativo com alerta.</p>{% endif %}
+<h2 id="s-origens">Origens</h2>
+{% if origens %}<table><thead><tr><th>Endereço</th><th>País provável</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
+{% for o in origens %}<tr><td class="mono">{{ o.origem }}</td><td>{{ o.pais or "-" }}</td><td class="num">{{ o.total|n }}</td><td class="num">{{ o.ativos|n }}</td><td>{{ o.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum alerta trouxe endereço de origem.</p>{% endif %}
+<h2>Países prováveis</h2>
+<p class="nota">Estimativa pela base de localização: VPN e serviços de nuvem enganam.</p>
+{% for b in barras_paises %}<div class="barra"><div><span>{{ b.rotulo }}</span><span>{{ b.total|n }}</span></div><u><s style="width:{{ b.largura }}%;background:{{ b.cor }}"></s></u></div>{% else %}<p class="vazio">Sem localização no período.</p>{% endfor %}
+<h2>Contas envolvidas</h2>
+{% if usuarios %}<table><thead><tr><th>Conta</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
+{% for u in usuarios %}<tr><td class="mono">{{ u.usuario }}</td><td class="num">{{ u.total|n }}</td><td class="num">{{ u.ativos|n }}</td><td>{{ u.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum alerta trouxe conta.</p>{% endif %}
+
+<h1 class="capitulo" id="c-risco">3. Risco de comportamento</h1>
+<p>O risco soma desvios do que cada pessoa ou ativo costuma fazer, e cai pela metade a cada 24 horas. O alerta abre em 60 pontos.</p>
+<h2>Alertas de risco</h2>
+{% if riscos %}<table><thead><tr><th>Quem</th><th>Tipo</th><th>Severidade</th><th class="num">Risco máximo</th><th>Aberto em</th><th>Estado</th></tr></thead><tbody>
+{% for r in riscos %}<tr><td>{{ r.entidade }}</td><td>{{ "Ativo" if r.tipo == "ativo" else "Pessoa" }}</td><td class="selo" style="color:{{ cores[r.severidade] }}">{{ rotulos[r.severidade] }}</td><td class="num">{{ r.risco_maximo|round|int }}</td><td>{{ r.aberto_em|data }}</td><td>{{ "Aberto" if r.estado == "aberto" else "Encerrado" }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum alerta de risco no período.</p>{% endif %}
+<h2>O que mais pesou</h2>
+{% for b in barras_sinais %}<div class="barra"><div><span>{{ b.rotulo }}</span><span>{{ b.total|n }}</span></div><u><s style="width:{{ b.largura }}%;background:{{ b.cor }}"></s></u></div>{% else %}<p class="vazio">Nenhum desvio registrado.</p>{% endfor %}
+
+<h1 class="capitulo" id="c-ataque">4. Técnicas de ataque e defesas</h1>
+<h2>Táticas observadas</h2>
+{% for b in barras_taticas %}<div class="barra"><div><span>{{ b.rotulo }}</span><span>{{ b.total|n }}</span></div><u><s style="width:{{ b.largura }}%;background:{{ b.cor }}"></s></u></div>{% else %}<p class="vazio">Nenhuma tática associada aos alertas.</p>{% endfor %}
+<h2>Técnicas mais vistas</h2>
+{% if tecnicas %}<table><thead><tr><th>Técnica</th><th>Nome</th><th>Táticas</th><th class="num">Alertas</th><th class="num">Ativos</th></tr></thead><tbody>
+{% for t in tecnicas %}<tr><td class="mono">{{ t.tecnica }}</td><td>{{ t.nome or "-" }}</td><td>{{ t.taticas or "-" }}</td><td class="num">{{ t.total|n }}</td><td class="num">{{ t.ativos|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma técnica no período.</p>{% endif %}
+<h2>Defesas relacionadas</h2>
+<p class="nota">Defesas que o MITRE D3FEND relaciona às técnicas acima. São pontos de partida, não uma lista do que falta: elas não foram conferidas contra o seu ambiente.</p>
+{% if defesas %}<table><thead><tr><th>Defesa</th><th>Tipo</th><th class="num">Técnicas cobertas</th></tr></thead><tbody>
+{% for d in defesas %}<tr><td>{{ d.defesa_nome }}</td><td>{{ d.tatica_defesa }}</td><td class="num">{{ d.tecnicas|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Sem técnicas para relacionar.</p>{% endif %}
+
+<h1 class="capitulo" id="c-fim">5. Integridade de arquivos</h1>
+<h2>Alterações no período</h2>
+{% if fim_mudancas %}<table><thead><tr><th>Mudança</th><th class="num">Arquivos</th></tr></thead><tbody>
+{% for m in fim_mudancas %}<tr><td>{{ mudancas.get(m.mudanca, m.mudanca or "Outra") }}</td><td class="num">{{ m.total|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma alteração em arquivo monitorado.</p>{% endif %}
+<h2>Arquivos que mais mudaram</h2>
+{% if fim_arquivos %}<table><thead><tr><th>Arquivo</th><th class="num">Mudanças</th><th class="num">Ativos</th><th>Última</th></tr></thead><tbody>
+{% for a in fim_arquivos %}<tr><td class="mono">{{ a.caminho or "-" }}</td><td class="num">{{ a.total|n }}</td><td class="num">{{ a.ativos|n }}</td><td>{{ a.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Sem dados.</p>{% endif %}
+<h2>Monitoramento adicional configurado</h2>
+{% if fim_caminhos %}<table><thead><tr><th>Caminho</th><th>Sistema</th><th>Como</th><th>Estado</th></tr></thead><tbody>
+{% for c in fim_caminhos %}<tr><td class="mono">{{ c.caminho }}</td><td>{{ "Windows" if c.sistema == "windows" else "Linux" }}</td><td>{{ {"agendado": "Nas varreduras", "tempo_real": "Em tempo real", "quem_alterou": "Com quem alterou"}.get(c.modo, c.modo) }}</td><td>{{ c.estado }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Só o monitoramento padrão de cada sistema.</p>{% endif %}
+
+<h1 class="capitulo" id="c-vuln">6. Vulnerabilidades</h1>
+<p class="vazio">A detecção de vulnerabilidades nos seus ativos ainda não está ligada, então este relatório não diz o que está vulnerável aí. A ausência de achados aqui não significa ausência de vulnerabilidades.</p>
+{% if cves %}<p class="nota">Base pública consultada na tela: {{ cves.total|n }} registros, carregados em {{ cves.carregada_em|data }}.{% if cves.falha %} A última atualização falhou.{% endif %}</p>{% endif %}
+
+<h1 class="capitulo" id="c-auto">7. Automação e resposta</h1>
+<h2>Execuções no período</h2>
+{% if execucoes %}<table><thead><tr><th>Estado</th><th class="num">Execuções</th></tr></thead><tbody>
+{% for e in execucoes %}<tr><td>{{ estados_de_execucao.get(e.estado, e.estado) }}</td><td class="num">{{ e.total|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma execução no período.</p>{% endif %}
+<h2>Playbooks</h2>
+{% if playbooks %}<table><thead><tr><th>Playbook</th><th>Situação</th><th class="num">Execuções</th></tr></thead><tbody>
+{% for p in playbooks %}<tr><td>{{ p.nome }}</td><td>{{ "Ativo" if p.ativo else "Desligado" }}</td><td class="num">{{ p.execucoes|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum playbook criado.</p>{% endif %}
+<h2>Quem decidiu</h2>
+{% if decisoes %}<table><thead><tr><th>Pessoa</th><th>Decisão</th><th class="num">Aprovações</th></tr></thead><tbody>
+{% for d in decisoes %}<tr><td>{{ d.pessoa }}</td><td>{{ d.estado }}</td><td class="num">{{ d.total|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma aprovação no período.</p>{% endif %}
+<h2>Execuções recentes</h2>
+{% if execucoes_recentes %}<table><thead><tr><th>Quando</th><th>Playbook</th><th>Alvo</th><th>Estado</th></tr></thead><tbody>
+{% for x in execucoes_recentes %}<tr><td>{{ x.criada_em|data }}</td><td>{{ x.playbook }}</td><td class="mono">{{ x.alvo or "-" }}</td><td>{{ estados_de_execucao.get(x.estado, x.estado) }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Sem execuções.</p>{% endif %}
+
+<h1 class="capitulo" id="c-ativos">8. Inventário de ativos</h1>
+<p>{{ ativos|length }} ativos inscritos, {{ desconectados|length }} sem conexão no momento em que este relatório foi gerado.</p>
+{% if ativos %}<table><thead><tr><th>Ativo</th><th>Sistema</th><th>Endereço</th><th>Estado</th><th>Última conexão</th><th class="num">Configuração segura</th><th>Última varredura</th></tr></thead><tbody>
+{% for a in ativos %}<tr><td>{{ a.nome or a.agente_id }}</td><td>{{ a.sistema or "-" }}</td><td class="mono">{{ a.ip or "-" }}</td><td>{{ {"active": "Conectado", "disconnected": "Desconectado", "pending": "Pendente", "never_connected": "Nunca conectou"}.get(a.estado, a.estado or "-") }}</td><td>{{ a.ultima_conexao|data }}</td><td class="num">{% if a.sca_nota is not none %}{{ a.sca_nota }}%{% else %}-{% endif %}</td><td>{{ a.fim_fim|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum ativo inscrito.</p>{% endif %}
+
+<h1 class="capitulo" id="c-fontes">9. Fontes de dados e detecção</h1>
+<h2>Fontes conectadas</h2>
+{% if fontes %}<table><thead><tr><th>Nome</th><th>Tipo</th><th>Estado</th><th>Último dado</th><th>Observação</th></tr></thead><tbody>
+{% for f in fontes %}<tr><td>{{ f.nome }}</td><td>{{ tipos_de_fonte.get(f.tipo, f.tipo) }}</td><td>{{ f.estado }}</td><td>{{ f.ultimo_dado_em|data }}</td><td>{{ f.mensagem or "-" }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Além dos agentes, nenhuma fonte conectada.</p>{% endif %}
+<h2>Regras</h2>
+<table><thead><tr><th>Item</th><th class="num">Quantidade</th></tr></thead><tbody>
+<tr><td>Regras no catálogo</td><td class="num">{{ catalogo.regras|n }}</td></tr>
+<tr><td>Regras criadas pela organização, ativas</td><td class="num">{{ catalogo.proprias|n }}</td></tr>
+<tr><td>Regras do catálogo editadas</td><td class="num">{{ catalogo.editadas|n }}</td></tr>
+<tr><td>Regras do catálogo desativadas</td><td class="num">{{ catalogo.desligadas|n }}</td></tr>
+</tbody></table>
+
+<h1 class="capitulo" id="c-normas">10. Conformidade por norma</h1>
+<p class="nota">Alertas por controle, conforme a marcação de cada regra. Isto ajuda a reunir evidências: não é um atestado de conformidade, e não substitui a avaliação de quem responde pela norma.</p>
+{% for norma in normas %}
+<h2>{{ norma.rotulo }}</h2>
+{% if norma.controles %}<table><thead><tr><th>Controle</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
+{% for c in norma.controles %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum alerta marcado com esta norma no período.</p>{% endif %}
+{% endfor %}
+
+<h1 class="capitulo" id="c-auditoria">11. Trilha de auditoria e acessos</h1>
+<h2>Ações registradas</h2>
+{% if auditoria_acoes %}<table><thead><tr><th>Ação</th><th class="num">Vezes</th><th>Última</th></tr></thead><tbody>
+{% for a in auditoria_acoes %}<tr><td class="mono">{{ a.acao }}</td><td class="num">{{ a.total|n }}</td><td>{{ a.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nada registrado no período.</p>{% endif %}
+<h2>Quem mais agiu</h2>
+{% if auditoria_pessoas %}<table><thead><tr><th>Pessoa</th><th class="num">Ações</th><th>Última</th></tr></thead><tbody>
+{% for a in auditoria_pessoas %}<tr><td>{{ a.pessoa }}</td><td class="num">{{ a.total|n }}</td><td>{{ a.ultimo|data }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Sem dados.</p>{% endif %}
+<h2>Pessoas com acesso</h2>
+<table><thead><tr><th>Pessoa</th><th>Perfil</th><th>Situação</th></tr></thead><tbody>
+{% for u in usuarios_do_sistema %}<tr><td>{{ u.nome }}</td><td>{{ {"administrador": "Administração", "engenharia": "Engenharia de detecção", "analista_n2": "Analista N2", "analista_n1": "Analista N1", "auditor": "Auditoria"}.get(u.perfil, u.perfil) }}</td><td>{{ "Ativa" if u.ativo else "Desativada" }}</td></tr>{% endfor %}
+</tbody></table>
+
+<h1 class="capitulo" id="c-dados">Apêndice A. Alertas por dia</h1>
+{% if por_dia %}<table><thead><tr><th>Dia</th>{% for f in faixas %}<th class="num">{{ rotulos[f] }}</th>{% endfor %}</tr></thead><tbody>
+{% for d in por_dia %}<tr><td>{{ d.dia|data(false) }}</td>{% for f in faixas %}<td class="num">{{ d[f]|n }}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Sem alertas no período.</p>{% endif %}
+{% endif %}
+
+<h1 class="capitulo" id="c-metodo">{{ "Apêndice B." if completo else "3." }} Método e limites</h1>
+<h2>De onde vêm os números</h2>
+<p>Todos os dados vêm da plataforma, separados por organização. O relatório não inclui o conteúdo bruto dos logs. Listas longas mostram os {{ 25 }} primeiros itens.</p>
+<h2>O que este relatório não diz</h2>
+<ul>
+  <li>Só enxerga o que as fontes conectadas enviam. Ativo sem agente, ou desconectado, fica fora.</li>
+  <li>Poucos alertas não provam que nada aconteceu: uma técnica sem regra não aparece.</li>
+  <li>O alerta traz o que foi registrado no log, e a origem de um log pode ser forjada.</li>
+  <li>A localização por endereço é uma estimativa.</li>
+  <li>A marcação de normas ajuda a reunir evidências, mas não atesta conformidade.</li>
+</ul>
+<p class="nota">MITRE ATT&amp;CK e D3FEND são marcas da The MITRE Corporation. As descrições de regras e o texto dos alertas aparecem como foram registrados.</p>
+</body>
+</html>

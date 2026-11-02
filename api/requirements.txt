@@ -6,4 +6,6 @@ psycopg-pool>=3.2,<4
 httpx>=0.27,<1
 requests
 pyyaml
+jinja2>=3.1,<4
+weasyprint>=62,<69
 cryptography>=43,<47

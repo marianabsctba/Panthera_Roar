@@ -52,6 +52,7 @@
       <button type="button" data-vista="arquivos">Integridade</button>
       <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
+      <button type="button" data-vista="relatorios">Relatórios</button>
       <button type="button" data-vista="automacao">Automação</button>
       <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
     </nav>
@@ -213,9 +214,50 @@
       <p id="credito-attack" class="credito"></p>
     </section>
 
+    <section id="vista-relatorios" class="pagina" aria-label="Relatórios" hidden>
+      <h2 class="titulo-secao">Relatórios</h2>
+      <p class="texto-secao">O relatório sai em PDF, com capa e sumário, e a geração fica registrada na auditoria. Ele reúne nomes de pessoas e endereços: compartilhe só com quem precisa.</p>
+      <form id="form-relatorio" class="formulario-regra" novalidate>
+        <div class="linha-campos">
+          <label>Tipo <select id="relatorio-tipo">
+            <option value="completo">Completo: todos os capítulos</option>
+            <option value="executivo">Executivo: resumo para a direção</option>
+          </select></label>
+          <label>Período <select id="relatorio-dias">
+            <option value="7">Últimos 7 dias</option>
+            <option value="30" selected>Últimos 30 dias</option>
+            <option value="90">Últimos 90 dias</option>
+            <option value="365">Último ano</option>
+          </select></label>
+          <label>Formato <select id="relatorio-formato">
+            <option value="pdf">PDF</option>
+            <option value="json">Dados em JSON</option>
+          </select></label>
+        </div>
+        <p id="relatorio-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra"><button id="relatorio-gerar" type="submit" class="botao-primario">Gerar relatório</button></div>
+      </form>
+      <h2 class="titulo-secao">O que vem no relatório completo</h2>
+      <ol class="passos">
+        <li>Resumo executivo, comparado ao período anterior</li>
+        <li>Alertas: regras, ativos, origens, países e contas</li>
+        <li>Risco de comportamento</li>
+        <li>Técnicas de ataque e defesas relacionadas</li>
+        <li>Integridade de arquivos</li>
+        <li>Vulnerabilidades</li>
+        <li>Automação e resposta, com quem decidiu</li>
+        <li>Inventário de ativos</li>
+        <li>Fontes de dados e detecção</li>
+        <li>Conformidade por norma</li>
+        <li>Trilha de auditoria e acessos</li>
+        <li>Apêndices: números por dia, método e limites</li>
+      </ol>
+    </section>
+
     <section id="vista-vulnerabilidades" class="pagina" aria-label="Vulnerabilidades" hidden>
       <h2 class="titulo-secao">Base de CVEs</h2>
       <p id="resumo-cves" class="texto-secao"></p>
+      <p id="aviso-cves" class="erro" role="status" hidden></p>
       <div id="numeros-cves" class="fim-numeros"></div>
       <form id="form-cves" class="filtros" role="search">
         <input id="busca-cves" type="search" spellcheck="false" placeholder="CVE-2021-44228, ou uma palavra como log4j" aria-label="Buscar CVE">
@@ -230,7 +272,7 @@
         <button type="submit" class="botao-primario">Buscar</button>
       </form>
       <div id="tabela-cves" class="tabela-rolagem"></div>
-      <p class="credito">Dados do registro CVE, do catálogo KEV da CISA e do EPSS, atualizados por eles.</p>
+      <p class="credito">Dados do registro CVE, da NVD, do catálogo KEV da CISA e do EPSS, atualizados por eles. Este produto usa dados da API da NVD, mas não é endossado nem certificado pela NVD.</p>
     </section>
 
     <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>

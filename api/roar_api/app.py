@@ -38,7 +38,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import permissoes  # noqa: E402
+from roar_api import permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, fim  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
@@ -641,6 +641,26 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
     return {"arquivos": linhas}
 
 
+@app.get("/api/relatorios")
+def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, tipo: str = "completo", formato: str = "pdf"):
+    """Reúne nomes e endereços em um arquivo que sai do sistema: toda geração fica registrada, com o resumo do arquivo."""
+    if tipo not in ("completo", "executivo") or formato not in ("pdf", "json"):
+        raise HTTPException(status_code=422, detail="Tipo ou formato desconhecido.")
+    dias = max(1, min(dias, 365))
+    with do_cliente(request, sessao) as con:
+        dados = relatorios.coletar(con, dias)
+    if formato == "json":
+        conteudo, tipo_midia, extensao = relatorios.dados_em_json(dados), "application/json", "json"
+    else:
+        conteudo, tipo_midia, extensao = relatorios.gerar_pdf(relatorios.montar_html(dados, sessao, dias, tipo)), "application/pdf", "pdf"
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_relatorio', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{tipo} {dias}d {extensao} sha256:{resumo}"))
+    nome = f"relatorio-{tipo}-{datetime.now(timezone.utc):%Y%m%d}.{extensao}"
+    return Response(conteudo, media_type=tipo_midia, headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo})
+
+
 @app.get("/api/cves")
 def consultar_cves(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", prioridade: str = "", deslocamento: int = 0):
     """A base é pública e igual para todos: nada aqui depende do cliente, nem revela o que ele tem."""
@@ -663,7 +683,7 @@ def consultar_cves(request: Request, sessao=Depends(exige(permissoes.VER)), busc
             f"""SELECT cve, publicado_em, rejeitado, coalesce(titulo, left(descricao, 160)) AS titulo, produto, cvss, epss, kev_desde, kev_ransomware, prioridade FROM cves
                 WHERE {onde} ORDER BY kev_desde DESC NULLS LAST, epss DESC NULLS LAST, cve DESC LIMIT %s OFFSET %s""",
             (*parametros, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
-        carga = con.execute("SELECT total, versao, epss_data, carregada_em FROM cves_carga").fetchone()
+        carga = con.execute("SELECT total, versao, epss_data, carregada_em, falha, falha_em, carregada_em < now() - interval '3 days' AS velha FROM cves_carga").fetchone()
         contagem = con.execute("SELECT prioridade, count(*) AS total FROM cves WHERE NOT rejeitado GROUP BY 1").fetchall() if not busca and not prioridade else []
     return {"cves": linhas, "carga": carga, "contagem": contagem}
 
@@ -674,7 +694,7 @@ def detalhe_de_cve(cve: str, request: Request, sessao=Depends(exige(permissoes.V
         raise HTTPException(status_code=404)
     with do_cliente(request, sessao) as con:
         linha = con.execute(
-            """SELECT cve, publicado_em, rejeitado, titulo, descricao, produto, cvss, vetor, kev_desde, kev_ransomware, kev_prazo, epss, epss_percentil, prioridade
+            """SELECT cve, publicado_em, rejeitado, titulo, descricao, produto, cvss, vetor, cvss_fonte, kev_desde, kev_ransomware, kev_prazo, epss, epss_percentil, prioridade
                FROM cves WHERE cve = %s""", (cve.upper(),)).fetchone()
     if not linha:
         raise HTTPException(status_code=404)
