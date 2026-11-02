@@ -369,6 +369,7 @@
           </select>
           <select id="estado-achados" aria-label="Situação">
             <option value="aberto" selected>Abertos</option>
+            <option value="correcao_informada">Correção informada</option>
             <option value="corrigido">Corrigidos</option>
             <option value="aceito">Riscos aceitos</option>
             <option value="falso_positivo">Falsos positivos</option>
@@ -377,6 +378,7 @@
           <button type="submit" class="botao-primario">Buscar</button>
           <button id="exportar-achados" type="button" class="botao-discreto">Exportar em CSV</button>
         </form>
+        <p class="texto-secao">Clique em um achado para ver como corrigir e para informar a correção, aceitar o risco ou marcar falso positivo.</p>
         <div id="tabela-achados" class="tabela-rolagem"></div>
         <button id="mais-achados" type="button" class="botao-discreto" hidden>Carregar mais</button>
       </div>

@@ -178,6 +178,31 @@ def main():
             registrar("risco aceito que sumiu continua como decidido", feito == (0, 0, 0) and http.get(f"/api/vuln/achados/{reaberto['id']}").json()["estado"] == "aceito", str(feito))
             registrar("reabre por decisão", http.post(f"/api/vuln/achados/{reaberto['id']}/estado", json={"estado": "aberto"}).status_code == 204)
 
+            print("\n== Informar correção", flush=True)
+            feito, _ = rodar(vuln.Resultado("rede", ["10.0.0.5", "10.0.0.6"], [sem_cred, vuln.Achado("10.0.0.5", "regra-b", "Falha média", 5.0, [], "80/tcp")], autenticada=True))
+            informado = http.get("/api/vuln/achados", params={"busca": "CVE-2021-44228"}).json()["achados"][0]
+            antes = http.get("/api/vuln/indicadores").json()
+            registrar("sem explicar, é recusado", http.post(f"/api/vuln/achados/{informado['id']}/estado", json={"estado": "correcao_informada", "motivo": "ok"}).status_code == 422)
+            registrar("analista não informa", http_ivo.post(f"/api/vuln/achados/{informado['id']}/estado", json={"estado": "correcao_informada", "motivo": "tentando sem permissão"}).status_code == 403)
+            registrar("informa a correção", http.post(f"/api/vuln/achados/{informado['id']}/estado", json={"estado": "correcao_informada", "motivo": "Atualizei a biblioteca para a 2.17."}).status_code == 204)
+            registrar("o que foi feito fica na história", http.get(f"/api/vuln/achados/{informado['id']}").json()["historico"][0]["motivo"] == "Atualizei a biblioteca para a 2.17.")
+            registrar("continua entre os abertos", any(a["id"] == informado["id"] and a["estado"] == "correcao_informada" for a in http.get("/api/vuln/achados").json()["achados"]))
+            registrar("tem filtro próprio", [a["id"] for a in http.get("/api/vuln/achados", params={"estado": "correcao_informada"}).json()["achados"]] == [informado["id"]])
+            depois = http.get("/api/vuln/indicadores").json()
+            registrar("sem prova, o risco continua contando", depois["exposicao"] == antes["exposicao"] and depois["abertos"] == antes["abertos"], f"{antes['exposicao']} {depois['exposicao']}")
+            registrar("não conta como corrigido", depois["corrigidos"] == antes["corrigidos"])
+            r = http.post(f"/api/vuln/achados/{informado['id']}/confirmar")
+            registrar("pede a varredura de confirmação no mesmo alvo", r.status_code == 201 and r.json()["alvo"] == "Servidores", r.text[:120])
+            registrar("não duplica a confirmação", http.post(f"/api/vuln/achados/{informado['id']}/confirmar").status_code == 409)
+            registrar("outro cliente não confirma", http_b.post(f"/api/vuln/achados/{informado['id']}/confirmar").status_code == 409)
+            feito = vuln.concluir_varredura(banco, a, r.json()["id"], vuln.Resultado("rede", ["10.0.0.5", "10.0.0.6"], [sem_cred], autenticada=True))
+            situacao = http.get(f"/api/vuln/achados/{informado['id']}").json()
+            registrar("ainda encontrou: volta a aberto, e diz que não funcionou", situacao["estado"] == "aberto" and "não funcionou" in situacao["historico"][0]["motivo"], str(situacao["historico"][0]))
+            http.post(f"/api/vuln/achados/{informado['id']}/estado", json={"estado": "correcao_informada", "motivo": "Agora atualizei de verdade."})
+            feito, _ = rodar(vuln.Resultado("rede", ["10.0.0.5", "10.0.0.6"], [], autenticada=True))
+            registrar("deixou de encontrar: confirma", http.get(f"/api/vuln/achados/{informado['id']}").json()["estado"] == "corrigido", str(feito))
+            feito, _ = rodar(vuln.Resultado("rede", ["10.0.0.5", "10.0.0.6"], [sem_cred], autenticada=True))
+
             print("\n== Falha", flush=True)
             antes = http.get("/api/vuln/indicadores").json()["abertos"]
             nova = http.post("/api/vuln/varreduras", json={"alvo_id": alvo}).json()["id"]

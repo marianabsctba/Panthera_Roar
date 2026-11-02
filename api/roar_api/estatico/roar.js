@@ -1718,7 +1718,7 @@ $("prioridade-cves").addEventListener("change", () => carregarCves());
 // ------------------------------------------------------------------ gestão de vulnerabilidades
 
 const ROTULO_SEVERIDADE = { critica: "Crítica", alta: "Alta", media: "Média", baixa: "Baixa", informativa: "Informativa" };
-const ROTULO_ESTADO_ACHADO = { aberto: "Aberto", corrigido: "Corrigido", aceito: "Risco aceito", falso_positivo: "Falso positivo" };
+const ROTULO_ESTADO_ACHADO = { aberto: "Aberto", correcao_informada: "Correção informada", corrigido: "Corrigido", aceito: "Risco aceito", falso_positivo: "Falso positivo" };
 const ROTULO_VARREDURA = { pendente: "Na fila", em_andamento: "Em andamento", concluida: "Concluída", falhou: "Falhou" };
 const ROTULO_FERRAMENTA = { rede: "Rede e servidores", web: "Aplicação web", conteiner: "Contêiner", nuvem: "Nuvem" };
 const SUB_VULN = { panorama: carregarIndicadoresVuln, achados: () => carregarAchados(), ativos: carregarAtivosVuln, varreduras: carregarVarreduras, base: carregarCves };
@@ -1810,11 +1810,11 @@ async function abrirAchado(id) {
   if (a.evidencia) corpo.push(el("h3", null, "Evidência"), el("pre", "bruto", a.evidencia));
   if (pode("gerir_vulnerabilidades") && a.estado !== "corrigido") {
     const motivo = el("input");
-    motivo.placeholder = "Motivo: quem decidiu, por quê e até quando";
+    motivo.placeholder = "O que foi feito ou decidido, por quem e até quando";
     motivo.maxLength = 1000;
     const erro = el("p", "erro");
     erro.hidden = true;
-    const mudar = (novo) => botaoDeTabela({ aberto: "Reabrir", aceito: "Aceitar o risco", falso_positivo: "Falso positivo" }[novo], "botao-discreto", async () => {
+    const mudar = (novo) => botaoDeTabela({ aberto: "Reabrir", correcao_informada: "Informar correção", aceito: "Aceitar o risco", falso_positivo: "Falso positivo" }[novo], novo === "correcao_informada" ? "botao-primario" : "botao-discreto", async () => {
       const m = await postarJson(`/api/vuln/achados/${id}/estado`, { estado: novo, motivo: motivo.value });
       if (!m.ok) {
         erro.textContent = await detalheDoErro(m, "Não foi possível mudar.");
@@ -1825,8 +1825,23 @@ async function abrirAchado(id) {
       await carregarAchados();
     });
     const acoes = el("div", "acoes-regra");
-    acoes.append(...(a.estado === "aberto" ? ["aceito", "falso_positivo"] : ["aberto"]).map(mudar));
-    corpo.push(el("h3", null, "Decisão"), motivo, erro, acoes);
+    acoes.append(...(a.estado === "aberto" ? ["aceito", "falso_positivo", "correcao_informada"] : ["aberto"]).map(mudar));
+    if (a.estado === "correcao_informada") {
+      acoes.append(botaoDeTabela("Varrer agora para confirmar", "botao-primario", async () => {
+        const v = await pedir(`/api/vuln/achados/${id}/confirmar`, { method: "POST" });
+        if (!v.ok) {
+          erro.textContent = await detalheDoErro(v, "Não foi possível pedir a varredura.");
+          erro.hidden = false;
+          return;
+        }
+        erro.textContent = "Varredura pedida. O resultado aparece aqui quando ela terminar.";
+        erro.hidden = false;
+      }));
+    }
+    const explicacao = el("p", "texto-secao", a.estado === "correcao_informada"
+      ? "A correção foi informada e ainda não foi provada: o risco continua contando até a varredura deixar de encontrar a falha."
+      : "Corrigiu? Informe o que foi feito. A próxima varredura confirma, ou reabre se ainda encontrar a falha.");
+    corpo.push(el("h3", null, "O que fazer"), explicacao, motivo, erro, acoes);
   }
   corpo.push(el("h3", null, "Histórico"), montarTabela([["Quando"], ["Mudança"], ["Por"], ["Motivo"]], a.historico.map((h) => [el("td", null, quando(h.quando)),
     el("td", null, `${h.de ? `${ROTULO_ESTADO_ACHADO[h.de]} para ` : ""}${ROTULO_ESTADO_ACHADO[h.para]}`), el("td", null, h.por ?? (h.varredura_id ? `Varredura ${h.varredura_id}` : "-")), el("td", null, h.motivo ?? "-")])));

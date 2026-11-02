@@ -136,22 +136,22 @@ def gravar_resultado(con, cliente, varredura, resultado):
             continue
         achado, estado = existente
         # Aceito e falso positivo continuam como estão: a decisão foi de uma pessoa, e não cabe à varredura desfazer.
-        voltou = estado == "corrigido"
+        voltou = estado in ("corrigido", "correcao_informada")
         con.execute("""UPDATE vuln_achados SET titulo = %s, cves = %s, cvss = %s, severidade = %s, porta = %s, evidencia = %s, solucao = %s,
                          ultima_vez = now(), ultima_varredura = %s, estado = CASE WHEN %s THEN 'aberto' ELSE estado END, corrigido_em = CASE WHEN %s THEN NULL ELSE corrigido_em END,
                          autenticada = autenticada OR %s, intrusiva = intrusiva OR %s, todas_portas = todas_portas OR %s
                        WHERE id = %s""", (*valores, varredura, voltou, voltou, resultado.autenticada, resultado.intrusiva, resultado.todas_portas, achado))
         if voltou:
-            _historico(con, cliente, achado, "corrigido", "aberto", varredura, "A varredura voltou a encontrar.")
+            _historico(con, cliente, achado, estado, "aberto", varredura, "A varredura ainda encontrou: a correção não funcionou." if estado == "correcao_informada" else "A varredura voltou a encontrar.")
             reabertos += 1
     corrigidos = con.execute(
         """UPDATE vuln_achados SET estado = 'corrigido', corrigido_em = now()
-           WHERE cliente_id = %s AND fonte = %s AND estado = 'aberto' AND ativo_id = ANY(%s) AND ultima_varredura IS DISTINCT FROM %s
+           WHERE cliente_id = %s AND fonte = %s AND estado IN ('aberto', 'correcao_informada') AND ativo_id = ANY(%s) AND ultima_varredura IS DISTINCT FROM %s
              AND (NOT autenticada OR %s) AND (NOT intrusiva OR %s) AND (NOT todas_portas OR %s)
            RETURNING id""",
         (cliente, resultado.fonte, [respondendo[h] for h in resultado.hosts_respondendo], varredura, resultado.autenticada, resultado.intrusiva, resultado.todas_portas)).fetchall()
     for (achado,) in corrigidos:
-        _historico(con, cliente, achado, "aberto", "corrigido", varredura, "A varredura deixou de encontrar.")
+        _historico(con, cliente, achado, None, "corrigido", varredura, "A varredura deixou de encontrar.")
     return novos, reabertos, len(corrigidos)
 
 
