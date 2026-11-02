@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
-# Sobe o ambiente. Roda em Linux com Docker. Na primeira vez gera os segredos em .env.
+# Instala ou atualiza. Roda em Linux com Docker e systemd. Na primeira vez gera os segredos em .env.
+#
+#   sudo bash infra/subir.sh --email pessoa@exemplo.test [--dominio siem.exemplo.test] [--organizacao "Minha empresa"] [--com-greenbone]
+#
+# Sem domínio, usa localhost com certificado próprio.
 set -euo pipefail
+
+DOMINIO=localhost; EMAIL=""; ORGANIZACAO="Minha organização"; COM_GREENBONE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dominio) DOMINIO="$2"; shift 2 ;;
+    --email) EMAIL="$2"; shift 2 ;;
+    --organizacao) ORGANIZACAO="$2"; shift 2 ;;
+    --com-greenbone) COM_GREENBONE=1; shift ;;
+    *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
+  esac
+done
+case "$DOMINIO" in *[!A-Za-z0-9.:-]*) echo "Domínio inválido." >&2; exit 2 ;; esac
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
 RAIZ="$(dirname "$BASE")"
@@ -16,6 +32,21 @@ gerar() { head -c 1024 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-"$1"; }
 
 mkdir -p "$DESTINO"
 cp -r "$BASE/docker-compose.yml" "$BASE/temporal" "$DESTINO/"
+# Domínio de verdade tira certificado público; endereço local usa a autoridade própria da borda.
+case "$DOMINIO" in
+  localhost|*.local|*.test|*.internal|[0-9]*.[0-9]*.[0-9]*.[0-9]*) TLS="tls internal" ;;
+  *) TLS="" ;;
+esac
+cat >"$DESTINO/Caddyfile" <<CADDY
+$DOMINIO {
+  $TLS
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    -Server
+  }
+  reverse_proxy 127.0.0.1:8600
+}
+CADDY
 
 # Acrescenta só as chaves que faltam, para instalações existentes manterem as senhas.
 touch "$DESTINO/.env"
@@ -60,7 +91,24 @@ if [ ! -x "$DESTINO/venv/bin/python" ]; then
   python3 -m venv "$DESTINO/venv"
 fi
 "$DESTINO/venv/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/ingestao/requirements.txt" -r "$RAIZ/ueba/requirements.txt" -r "$RAIZ/api/requirements.txt"
+# As integrações de terceiros fixam versões próprias, e rodam isoladas do resto.
+if [ ! -x "$DESTINO/venv-motor/bin/python" ]; then
+  python3 -m venv "$DESTINO/venv-motor"
+fi
+"$DESTINO/venv-motor/bin/pip" install -q -r "$RAIZ/motor/requirements.txt" -r "$RAIZ/motor/requirements-integracoes.txt"
 
 PYTHONPATH="$RAIZ/ingestao" "$DESTINO/venv/bin/python" -m roar_ingestao.provisao preparar
 
-echo "Ambiente no ar. Para cada cliente: python -m roar_ingestao.provisao criar --nome <cliente>"
+bash "$BASE/servicos.sh" "$DOMINIO"
+docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d borda
+
+if [ -n "$EMAIL" ]; then
+  PYTHONPATH="$RAIZ/ingestao" "$DESTINO/venv/bin/python" -m roar_ingestao.provisao primeiro-acesso --organizacao "$ORGANIZACAO" --email "$EMAIL"
+fi
+
+if [ "$COM_GREENBONE" = 1 ]; then
+  bash "$BASE/greenbone.sh"
+fi
+
+echo "Pronto: https://$DOMINIO"
+echo "Faça o primeiro backup e guarde a chave fora deste servidor: bash $DESTINO/app/infra/backup.sh"

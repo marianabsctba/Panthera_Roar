@@ -41,6 +41,9 @@ export const AJUDA = [
     { id: "panorama", vista: "panorama", titulo: "Panorama", blocos: [
       "A visão geral do período escolhido: alertas por dia e por severidade, as pessoas com maior risco agora, os sinais de comportamento e as principais origens de alertas.",
       "Use os botões de 7, 30 ou 90 dias. Em Ver dados, os números do gráfico aparecem em tabela.",
+      { h: "Volume recebido" },
+      "Mostra quantos eventos por segundo (EPS) chegam agora, a média e o minuto mais cheio do período, quanto isso dá por dia e quanto já ocupa em disco. Em De onde vem o volume, veja quais ativos e tipos de log mais mandam, para decidir o que filtrar.",
+      { aviso: "O pico é medido por minuto, e o tamanho por dia é estimado. Para dimensionar servidores, olhe o pico, não a média, e deixe folga." },
       "Para decidir o que fazer, vá para a Fila.",
     ] },
     { id: "fila", vista: "fila", titulo: "Fila", blocos: [

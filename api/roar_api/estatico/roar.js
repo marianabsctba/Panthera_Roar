@@ -161,7 +161,7 @@ async function abrirPainel() {
     abrirMfa();
     return;
   }
-  await Promise.all([carregarFila(), carregarPanorama(), avisarSeHouverViolacao(), atualizarAvisos()]);
+  await Promise.all([carregarFila(), carregarPanorama(), carregarVolume().catch(() => {}), avisarSeHouverViolacao(), atualizarAvisos()]);
 }
 
 function pode(permissao) {
@@ -2036,6 +2036,51 @@ $("form-senha").addEventListener("submit", async (evento) => {
   $("janela-senha").close();
   if (obrigatoria) await abrirPainel();
 });
+
+// ------------------------------------------------------------------ volume recebido
+
+function tamanhoLegivel(bytes) {
+  if (bytes === null || bytes === undefined) return "-";
+  const unidades = ["B", "KB", "MB", "GB", "TB"];
+  let valor = bytes;
+  let i = 0;
+  while (valor >= 1024 && i < unidades.length - 1) {
+    valor /= 1024;
+    i += 1;
+  }
+  return `${valor.toLocaleString("pt-BR", { maximumFractionDigits: valor < 10 && i ? 1 : 0 })} ${unidades[i]}`;
+}
+
+async function carregarVolume() {
+  const r = await pedir(`/api/volume?dias=${$("volume-dias").value}`);
+  if (!r.ok) {
+    $("volume-numeros").replaceChildren();
+    $("volume-nota").textContent = await detalheDoErro(r, "Não foi possível medir o volume agora.");
+    return;
+  }
+  const d = await r.json();
+  if (!d.logs) {
+    $("volume-numeros").replaceChildren();
+    $("volume-nota").textContent = "Nenhuma fonte conectada ainda.";
+    return;
+  }
+  const { logs, alertas } = d;
+  const porDia = logs.por_dia.reduce((t, x) => t + x.bytes_estimados, 0) / d.dias;
+  const numero = (rotulo, valor) => {
+    const n = el("div", "numero");
+    n.append(el("b", null, valor), el("span", null, rotulo));
+    return n;
+  };
+  const eps = (v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+  $("volume-numeros").replaceChildren(numero("EPS agora", eps(logs.eps_agora)), numero("EPS médio", eps(logs.eps_medio)), numero("EPS no pico", eps(logs.eps_pico)),
+    numero("Por dia, estimado", tamanhoLegivel(porDia)), numero("Ocupado em disco", tamanhoLegivel(d.ocupado_bytes)), numero("Eventos no período", logs.total.toLocaleString("pt-BR")), numero("Alertas no período", alertas.total.toLocaleString("pt-BR")));
+  $("volume-nota").textContent = `EPS é evento por segundo. O pico é o minuto mais cheio${logs.pico_em ? `, em ${quando(logs.pico_em)}` : ""}: um estouro de poucos segundos pode ter sido maior. O tamanho por dia é uma estimativa pelo log original dos ${logs.total > 500 ? "500 eventos mais recentes" : "eventos do período"}.`;
+  const lista = (titulo, itens) => montarTabela([[titulo], ["Eventos"]], itens.map((x) => [el("td", null, x.nome), el("td", null, x.eventos.toLocaleString("pt-BR"))]));
+  $("volume-detalhe").replaceChildren(lista("Ativo", logs.ativos), lista("Tipo de log", logs.origens),
+    montarTabela([["Dia"], ["Eventos"], ["Tamanho estimado"]], logs.por_dia.map((x) => [el("td", null, x.dia), el("td", null, x.eventos.toLocaleString("pt-BR")), el("td", null, tamanhoLegivel(x.bytes_estimados))])));
+}
+
+$("volume-dias").addEventListener("change", () => carregarVolume());
 
 // ------------------------------------------------------------------ auditoria e avisos
 

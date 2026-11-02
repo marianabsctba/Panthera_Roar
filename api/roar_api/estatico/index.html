@@ -169,6 +169,22 @@
         <button type="button" data-dias="30" aria-pressed="true">30 dias</button>
         <button type="button" data-dias="90">90 dias</button>
       </div>
+      <section class="volume" aria-label="Volume recebido">
+        <div class="titulo-com-acao">
+          <h2 class="titulo-secao">Volume recebido</h2>
+          <select id="volume-dias" aria-label="Período do volume">
+            <option value="1">Último dia</option>
+            <option value="7" selected>7 dias</option>
+            <option value="30">30 dias</option>
+          </select>
+        </div>
+        <div id="volume-numeros" class="fim-numeros"></div>
+        <p id="volume-nota" class="texto-secao"></p>
+        <details>
+          <summary>De onde vem o volume</summary>
+          <div id="volume-detalhe" class="tabela-rolagem"></div>
+        </details>
+      </section>
       <div class="graficos">
         <figure class="grafico grafico-largo">
           <figcaption>Alertas por dia</figcaption>
@@ -382,7 +398,7 @@
             <label>Modelo <select id="alvo-modelo"></select></label>
             <label>Repetir a cada (dias, 0 só sob demanda) <input id="alvo-dias" type="number" min="0" max="365" value="30"></label>
           </div>
-          <label>Alvos, separados por vírgula ou espaço: endereços e redes, endereços web ou imagens, conforme o modelo <input id="alvo-hosts" type="text" spellcheck="false" placeholder="10.0.0.5, https://exemplo.test, nginx:1.27"></label>
+          <label>Alvos, separados por vírgula ou espaço: endereços e redes, endereços web completos ou imagens, conforme o modelo <input id="alvo-hosts" type="text" spellcheck="false" placeholder="10.0.0.5, 10.0.1.0/24, nginx:1.27"></label>
           <div class="linha-campos">
             <label>Credencial <select id="alvo-cred-tipo"><option value="">Sem credencial</option><option value="ssh">SSH (Linux, equipamentos)</option><option value="smb">SMB (Windows)</option><option value="snmp">SNMP (rede)</option></select></label>
             <label>Usuário <input id="alvo-cred-usuario" type="text" maxlength="120" autocomplete="off"></label>

@@ -1,0 +1,5 @@
+psycopg[binary]>=3.2,<3.3
+tzdata
+shuffle-sdk==0.0.41
+uncurl
+cryptography>=43,<47

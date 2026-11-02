@@ -97,7 +97,20 @@ services:
     networks:
       - roar
 
+  # A única porta aberta para fora. Com um domínio, tira o certificado sozinha; sem domínio, usa um próprio.
+  borda:
+    image: caddy:2.10-alpine
+    container_name: roar-borda
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - roar-borda-dados:/data
+      - roar-borda-config:/config
+    restart: unless-stopped
+
 volumes:
+  roar-borda-dados:
+  roar-borda-config:
   roar-banco:
   roar-postgresql:
 

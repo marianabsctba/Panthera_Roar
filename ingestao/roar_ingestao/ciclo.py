@@ -67,8 +67,8 @@ def ler_env(caminho):
     return valores
 
 
-def conexoes(caminho_env="/opt/panthera-roar/.env"):
-    env = ler_env(caminho_env)
+def conexoes(caminho_env=None):
+    env = ler_env(caminho_env or os.getenv("ROAR_ENV", "/opt/panthera-roar/.env"))
     indexer = Indexer(
         os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200"),
         "roar_leitor",

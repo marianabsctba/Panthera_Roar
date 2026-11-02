@@ -127,7 +127,7 @@ def preparar():
 
     _pedir(indexer, "PUT", f"_plugins/_security/api/roles/{LEITOR}", {
         "cluster_permissions": ["cluster_monitor"],
-        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "allowed_actions": ["read"]}],
+        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "allowed_actions": ["read", "indices:monitor/stats"]}],
     })
     _pedir(indexer, "PUT", f"_plugins/_security/api/internalusers/{LEITOR}",
            {"password": env["ROAR_LEITOR_SENHA"], "opendistro_security_roles": [LEITOR]})
@@ -218,6 +218,7 @@ def criar(nome, endereco_portas="127.0.0.1"):
     (pasta / ".env").chmod(0o600)
 
     _compose(pasta, gerenciador_id, "up", "-d")
+    _worker_do_cliente(cliente, ["enable", "--now"])
     return {"id": gerenciador_id, "cliente": cliente, "porta_eventos": porta, "porta_inscricao": porta + 1,
             "porta_api": porta + 2, "senha_inscricao": senha_inscricao, "senha_api": senha_api,
             "indexer_usuario": usuario, "indexer_senha": senha_indexer,
@@ -426,16 +427,54 @@ def remover(gerenciador_id, apagar_dados=True):
             restantes = cliente and banco.execute("SELECT count(*) FROM gerenciadores WHERE cliente_id = %s",
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
+                _worker_do_cliente(cliente[0], ["disable", "--now"])
+                for tabela in ("vuln_historico", "vuln_achados", "vuln_ativos", "vuln_varreduras", "vuln_alvos", "vuln_modelos"):
+                    banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
                 for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
                                "auditoria", "aprovacoes", "execucoes", "playbooks", "soar_cursor", "segredos"):
                     banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))
 
 
+def _worker_do_cliente(cliente, acao):
+    """Em ambiente sem o serviço instalado, como nos testes, não há o que ligar."""
+    try:
+        subprocess.run(["systemctl", *acao, f"roar-worker@{cliente}"], capture_output=True, check=False, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def primeiro_acesso(organizacao, email):
+    """Sem isto, uma instalação nova não tem como entrar. Só age se ainda não há ninguém."""
+    from argon2 import PasswordHasher
+
+    env = ler_env(DESTINO / ".env")
+    with banco_admin(env) as banco:
+        if banco.execute("SELECT count(*) FROM usuarios").fetchone()[0]:
+            return None
+        cliente = banco.execute("SELECT id FROM clientes ORDER BY criado_em LIMIT 1").fetchone()
+    if cliente is None:
+        criar(organizacao)
+    senha = secrets.token_urlsafe(18)
+    with banco_admin(env) as banco:
+        cliente = banco.execute("SELECT id FROM clientes ORDER BY criado_em LIMIT 1").fetchone()[0]
+        banco.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil, trocar_senha) VALUES (%s, %s, 'Administração', %s, 'administrador', true)",
+                      (cliente, email.strip().lower(), PasswordHasher().hash(senha)))
+    # Em arquivo só do root, e nunca na tela: terminal fica em histórico e em log de instalação.
+    arquivo = DESTINO / "primeiro-acesso.txt"
+    descritor = os.open(arquivo, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descritor, "w") as f:
+        f.write(f"{email}\n{senha}\n")
+    return arquivo
+
+
 def main():
     args = argparse.ArgumentParser()
     comandos = args.add_subparsers(dest="comando", required=True)
     comandos.add_parser("preparar")
+    p = comandos.add_parser("primeiro-acesso")
+    p.add_argument("--organizacao", required=True)
+    p.add_argument("--email", required=True)
     c = comandos.add_parser("criar")
     c.add_argument("--nome", required=True)
     c.add_argument("--endereco-portas", default="127.0.0.1")
@@ -445,6 +484,9 @@ def main():
 
     if a.comando == "preparar":
         preparar()
+    elif a.comando == "primeiro-acesso":
+        arquivo = primeiro_acesso(a.organizacao, a.email)
+        print(f"Primeiro acesso em {arquivo}. A senha é temporária: apague o arquivo depois de entrar." if arquivo else "Já existem usuários: nada a fazer.")
     elif a.comando == "criar":
         g = criar(a.nome, a.endereco_portas)
         print(f"Gerenciador {g['id']} criado. Eventos na porta {g['porta_eventos']}, inscrição na {g['porta_inscricao']}.")

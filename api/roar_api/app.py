@@ -220,6 +220,17 @@ def _registrar_recusa_de_login(banco, email, origem):
         log.warning("login recusado para e-mail desconhecido %r de %s", email[:80], origem)
 
 
+@app.get("/api/saude")
+def saude(request: Request):
+    """Para quem monitora: diz se está de pé e nada além disso, porque não exige sessão."""
+    try:
+        with request.app.state.banco.connection() as con:
+            con.execute("SELECT 1")
+    except Exception:
+        return JSONResponse({"estado": "fora"}, status_code=503)
+    return {"estado": "ok"}
+
+
 @app.post("/api/entrar", status_code=204, response_model=None)
 def entrar(dados: Entrada, request: Request):
     email = dados.email.strip().lower()
@@ -1244,6 +1255,65 @@ def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(e
     except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=409, detail="Este alvo já tem uma varredura em andamento.")
     return {"id": linha["id"]}
+
+
+AMOSTRA_DE_TAMANHO = 500
+
+
+def _volume_do_indice(indexer, indices, dias):
+    """EPS, pico e tamanho. O pico sai de contagens por minuto: um estouro de segundos fica diluído, e a tela diz isso."""
+    corpo = {"size": AMOSTRA_DE_TAMANHO, "_source": ["full_log"], "sort": [{"timestamp": "desc"}], "track_total_hits": True,
+             "query": {"range": {"timestamp": {"gte": f"now-{dias}d"}}},
+             "aggs": {"por_minuto": {"date_histogram": {"field": "timestamp", "fixed_interval": "1m", "min_doc_count": 1}},
+                      "por_dia": {"date_histogram": {"field": "timestamp", "calendar_interval": "1d", "min_doc_count": 0}},
+                      "ativos": {"terms": {"field": "agent.name", "size": 15}},
+                      "origens": {"terms": {"field": "decoder.name", "size": 15}},
+                      "agora": {"filter": {"range": {"timestamp": {"gte": "now-6m", "lt": "now-1m"}}}}}}
+    r = indexer.post(f"{INDEXER_URL}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true", json=corpo, timeout=60)
+    r.raise_for_status()
+    d = r.json()
+    a = d.get("aggregations") or {}
+    amostra = [len(str(h["_source"].get("full_log", "")).encode()) for h in d["hits"]["hits"]]
+    tamanho_medio = sum(amostra) / len(amostra) if amostra else 0
+    total = d["hits"]["total"]["value"]
+    minutos = a.get("por_minuto", {}).get("buckets", [])
+    pico = max(minutos, key=lambda b: b["doc_count"], default=None)
+    return {
+        "total": total,
+        "eps_agora": round(a.get("agora", {}).get("doc_count", 0) / 300, 2),
+        "eps_medio": round(total / (dias * 86400), 3),
+        "eps_pico": round(pico["doc_count"] / 60, 2) if pico else 0,
+        "pico_em": pico["key_as_string"] if pico else None,
+        "bytes_por_evento": round(tamanho_medio),
+        "por_dia": [{"dia": b["key_as_string"][:10], "eventos": b["doc_count"], "bytes_estimados": round(b["doc_count"] * tamanho_medio)} for b in a.get("por_dia", {}).get("buckets", [])],
+        "ativos": [{"nome": b["key"], "eventos": b["doc_count"]} for b in a.get("ativos", {}).get("buckets", [])],
+        "origens": [{"nome": b["key"], "eventos": b["doc_count"]} for b in a.get("origens", {}).get("buckets", [])],
+    }
+
+
+def _ocupado_no_indice(indexer, indices):
+    r = indexer.get(f"{INDEXER_URL}/{indices}/_stats/store?allow_no_indices=true&ignore_unavailable=true", timeout=30)
+    if not r.ok:
+        return None
+    return sum(i["primaries"]["store"]["size_in_bytes"] for i in r.json().get("indices", {}).values())
+
+
+@app.get("/api/volume")
+def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 7):
+    """O quanto este cliente manda. Tudo vem dos índices dele, escolhidos pelo banco sob o RLS, nunca pela requisição."""
+    dias = max(1, min(dias, 90))
+    with do_cliente(request, sessao) as con:
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+    if not gerenciadores:
+        return {"logs": None, "alertas": None, "dias": dias}
+    logs = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
+    alertas = ",".join(f"wazuh-alerts-4.x-{g}-*" for g in gerenciadores)
+    try:
+        resposta = {"logs": _volume_do_indice(request.app.state.indexer, logs, dias), "alertas": _volume_do_indice(request.app.state.indexer, alertas, dias), "dias": dias}
+    except (requests.RequestException, KeyError, ValueError):
+        raise HTTPException(status_code=503, detail="Não foi possível medir o volume agora.")
+    resposta["ocupado_bytes"] = _ocupado_no_indice(request.app.state.indexer, f"{logs},{alertas}")
+    return resposta
 
 
 @app.get("/api/cves")

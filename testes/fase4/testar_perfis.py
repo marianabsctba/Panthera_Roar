@@ -27,7 +27,7 @@ RESULTADOS = []
 ENV = dict(l.strip().split("=", 1) for l in open("/opt/panthera-roar/.env", encoding="utf-8") if "=" in l and not l.startswith("#"))
 SUFIXO = uuid.uuid4().hex[:8]
 SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/eu"), ("POST", "/api/minha-senha"), ("POST", "/api/entrada/webhook"),
-                 ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar")}
+                 ("GET", "/api/saude"), ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
     "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
@@ -58,7 +58,7 @@ ROTAS = {
     ("POST", "/api/vuln/achados/{identificador}/estado"): "gerir_vulnerabilidades", ("GET", "/api/vuln/ativos"): "ver", ("PUT", "/api/vuln/ativos/{identificador}"): "gerir_vulnerabilidades",
     ("GET", "/api/vuln/modelos"): "ver", ("POST", "/api/vuln/modelos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/alvos"): "ver", ("POST", "/api/vuln/alvos"): "gerir_vulnerabilidades",
     ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",
-    ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
+    ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
