@@ -140,6 +140,8 @@ def main():
             registrar("dia em formato estranho é ignorado", http.get("/api/eventos", params={"dia": "ontem; DROP"}).status_code == 200)
             registrar("origem sem evento vem vazia", http.get("/api/eventos", params={"origem": "1.2.3.4"}).json()["eventos"] == [])
             registrar("sinal sem evento vem vazio", http.get("/api/eventos", params={"sinal": "viagem_impossivel"}).json()["eventos"] == [])
+            registrar("regra exata", len(http.get("/api/eventos", params={"regra": "5712"}).json()["eventos"]) == 9 and http.get("/api/eventos", params={"regra": "571"}).json()["eventos"] == [])
+            registrar("ativo exato", len(http.get("/api/eventos", params={"agente": "001"}).json()["eventos"]) == 9 and http.get("/api/eventos", params={"agente": "999"}).json()["eventos"] == [])
             registrar("pessoa sem evento vem vazia", http.get("/api/eventos", params={"entidade": "ninguem"}).json()["eventos"] == [])
             registrar("filtro de mudança em arquivos responde", http.get("/api/arquivos", params={"mudanca": "added"}).status_code == 200 and http.get("/api/arquivos", params={"mudanca": "x'--"}).status_code == 200)
 

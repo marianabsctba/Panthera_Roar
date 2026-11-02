@@ -657,7 +657,7 @@ def _sem_curinga(texto):
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
             dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
-            sinal: str = "", entidade: str = "", alertas: bool = False):
+            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -697,6 +697,12 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if entidade:
         condicoes.append("(usuario = %s OR agente_nome = %s)")
         parametros += [entidade[:200], entidade[:200]]
+    if regra:
+        condicoes.append("regra_id = %s")
+        parametros.append(regra[:16])
+    if agente:
+        condicoes.append("agente_id = %s")
+        parametros.append(agente[:16])
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
