@@ -17,6 +17,14 @@
       <p id="erro-entrada" class="erro" role="alert" hidden></p>
       <button type="submit" class="botao-primario">Entrar</button>
     </form>
+    <form id="form-codigo" class="cartao-entrada" novalidate hidden>
+      <img src="/estatico/pantera.webp" alt="" width="96" height="96">
+      <h1>Panthera <span>Roar</span></h1>
+      <label>Código do autenticador ou de recuperação <input id="codigo-entrada" type="text" inputmode="text" autocomplete="one-time-code" maxlength="32"></label>
+      <p id="erro-codigo" class="erro" role="alert" hidden></p>
+      <button type="submit" class="botao-primario">Confirmar</button>
+      <button id="voltar-entrada" type="button" class="botao-discreto">Voltar</button>
+    </form>
   </main>
 
   <div id="painel" class="painel" hidden>
@@ -28,6 +36,7 @@
       <div class="sessao">
         <span id="cliente" class="cliente"></span>
         <span id="usuario"></span>
+        <button id="abrir-mfa" type="button" class="botao-discreto">Autenticador</button>
         <button id="abrir-senha" type="button" class="botao-discreto">Trocar senha</button>
         <button id="sair" type="button" class="botao-discreto">Sair</button>
       </div>
@@ -63,6 +72,7 @@
         <button id="novo-usuario" type="button" class="botao-primario">Novo usuário</button>
       </div>
       <p class="texto-secao">Mudar o perfil ou desativar encerra as sessões abertas daquela pessoa na hora.</p>
+      <label class="caixa politica-mfa"><input id="politica-mfa" type="checkbox"> Exigir o autenticador de todas as pessoas desta organização</label>
       <form id="form-usuario" class="formulario-regra" hidden novalidate autocomplete="off">
         <div class="linha-campos">
           <label>Nome <input id="usuario-nome" type="text" maxlength="120"></label>
@@ -604,6 +614,46 @@
       <label>Nova senha, com pelo menos 12 caracteres <input id="senha-nova" type="password" autocomplete="new-password" minlength="12"></label>
       <p id="senha-erro" class="erro" role="alert" hidden></p>
       <div class="acoes-regra"><button type="submit" class="botao-primario">Trocar</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="janela-mfa" class="janela" aria-labelledby="titulo-mfa">
+    <div class="janela-topo">
+      <h2 id="titulo-mfa">Autenticador</h2>
+      <button id="fechar-mfa" type="button" class="botao-discreto">Fechar</button>
+    </div>
+    <p id="aviso-mfa" class="texto-secao" hidden>Sua organização exige o autenticador. Configure-o para continuar.</p>
+    <form id="mfa-inicio" class="formulario-regra" novalidate>
+      <p class="texto-secao">Além da senha, o acesso passa a pedir um código de 6 dígitos gerado por um aplicativo no seu celular. Confirme a senha para começar.</p>
+      <label>Senha <input id="mfa-senha" type="password" autocomplete="current-password"></label>
+      <p id="mfa-inicio-erro" class="erro" role="alert" hidden></p>
+      <div class="acoes-regra"><button type="submit" class="botao-primario">Continuar</button></div>
+    </form>
+    <form id="mfa-leitura" class="formulario-regra" novalidate hidden>
+      <p class="texto-secao">Leia o QR com o aplicativo autenticador. Se preferir, digite a chave.</p>
+      <div id="mfa-qr" class="qr-mfa"></div>
+      <pre id="mfa-chave" class="bruto"></pre>
+      <label>Código que o aplicativo mostra <input id="mfa-codigo" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label>
+      <p id="mfa-leitura-erro" class="erro" role="alert" hidden></p>
+      <div class="acoes-regra"><button type="submit" class="botao-primario">Ligar</button></div>
+    </form>
+    <div id="mfa-recuperacao" class="formulario-regra" hidden>
+      <div class="simulacao"><strong>Guarde estes códigos.</strong> Cada um entra uma vez, se você ficar sem o celular, e eles não aparecem de novo.</div>
+      <pre id="mfa-codigos" class="bruto"></pre>
+      <div class="acoes-regra">
+        <button id="mfa-copiar" type="button" class="botao-discreto">Copiar</button>
+        <button id="mfa-guardei" type="button" class="botao-primario">Já guardei</button>
+      </div>
+    </div>
+    <form id="mfa-ligado" class="formulario-regra" novalidate hidden>
+      <p id="mfa-situacao" class="texto-secao"></p>
+      <label>Senha <input id="mfa-ligado-senha" type="password" autocomplete="current-password"></label>
+      <label>Código do aplicativo <input id="mfa-ligado-codigo" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label>
+      <p id="mfa-ligado-erro" class="erro" role="alert" hidden></p>
+      <div class="acoes-regra">
+        <button id="mfa-novos" type="button" class="botao-discreto">Gerar novos códigos</button>
+        <button id="mfa-desligar" type="button" class="botao-discreto">Desligar</button>
+      </div>
     </form>
   </dialog>
 

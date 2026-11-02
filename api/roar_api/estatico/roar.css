@@ -403,6 +403,8 @@ th.numero-celula { text-align: right; }
 .ramo-titulo { margin: 4px 0 0; color: var(--texto-2); font-size: .85rem; }
 .ramo-topo { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .adicionar-bloco { border-style: dashed !important; }
+.qr-mfa { justify-self: start; width: fit-content; padding: 8px; background: #fff; border-radius: 10px; line-height: 0; }
+.politica-mfa { margin-bottom: 12px; }
 .simulacao { padding: 12px; background: var(--rosa-fundo); border: 1px solid var(--rosa); border-radius: 10px; }
 .simulacao .texto-secao { margin: 4px 0 0; }
 .simulacao table { margin-top: 8px; }

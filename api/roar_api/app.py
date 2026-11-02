@@ -27,7 +27,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -38,7 +38,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import permissoes, relatorios  # noqa: E402
+from roar_api import mfa, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, fim  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
@@ -49,6 +49,7 @@ ESTATICO = Path(__file__).parent / "estatico"
 COOKIE = "roar_sessao"
 HORAS_DE_SESSAO = 12
 SENHA_MINIMA = 12
+MINUTOS_PARA_O_CODIGO = 10
 TENTATIVAS = 5
 JANELA_TENTATIVAS = 900
 # Abaixo disso são acontecimentos normais, como login: alimentam o UEBA, mas não pedem atenção.
@@ -158,12 +159,21 @@ def sessao_atual(request: Request):
     return linha
 
 
+def _sessao_liberada(sessao):
+    """Passou da senha não basta: nada de dado até confirmar o segundo fator e cumprir o que a organização exige."""
+    if sessao["mfa_pendente"]:
+        raise HTTPException(status_code=403, detail="Confirme o código do autenticador para continuar.")
+    # Senha gerada por outra pessoa é temporária: até trocar, ela só serve para trocar.
+    if sessao["trocar_senha"]:
+        raise HTTPException(status_code=403, detail="Troque a senha temporária para continuar.")
+    if sessao["mfa_obrigatorio"] and not sessao["mfa_ativo"]:
+        raise HTTPException(status_code=403, detail="Sua organização exige o autenticador: configure-o para continuar.")
+
+
 def exige(permissao):
     """Toda rota com dado declara o que pede. O teste de perfis confere cada uma contra a tabela esperada."""
     def verificar(sessao=Depends(sessao_atual)):
-        # Senha gerada por outra pessoa é temporária: até trocar, ela só serve para trocar.
-        if sessao["trocar_senha"]:
-            raise HTTPException(status_code=403, detail="Troque a senha temporária para continuar.")
+        _sessao_liberada(sessao)
         if not permissoes.pode(sessao["perfil"], permissao):
             raise HTTPException(status_code=403, detail="Seu perfil não permite esta ação.")
         return sessao
@@ -191,8 +201,8 @@ def _bloqueado(chave):
     return len(falhas_de_login[chave]) >= TENTATIVAS
 
 
-@app.post("/api/entrar", status_code=204)
-def entrar(dados: Entrada, request: Request, response: Response):
+@app.post("/api/entrar", status_code=204, response_model=None)
+def entrar(dados: Entrada, request: Request):
     email = dados.email.strip().lower()
     if _bloqueado(email):
         raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
@@ -211,9 +221,15 @@ def entrar(dados: Entrada, request: Request, response: Response):
     falhas_de_login.pop(email, None)
     token = secrets.token_urlsafe(32)
     with request.app.state.banco.connection() as con:
-        con.execute("SELECT roar_criar_sessao(%s, %s, %s)", (_hash_do_token(token), usuario["id"], HORAS_DE_SESSAO))
-    response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/",
-                        secure=os.getenv("ROAR_COOKIE_SEGURO", "1") == "1", max_age=HORAS_DE_SESSAO * 3600)
+        precisa_de_codigo = con.execute("SELECT roar_mfa_ativo(%s) AS a", (usuario["id"],)).fetchone()["a"]
+        if precisa_de_codigo:
+            con.execute("SELECT roar_criar_sessao_mfa(%s, %s, %s)", (_hash_do_token(token), usuario["id"], MINUTOS_PARA_O_CODIGO))
+        else:
+            con.execute("SELECT roar_criar_sessao(%s, %s, %s)", (_hash_do_token(token), usuario["id"], HORAS_DE_SESSAO))
+    saida = JSONResponse({"mfa": True}) if precisa_de_codigo else Response(status_code=204)
+    saida.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/", secure=os.getenv("ROAR_COOKIE_SEGURO", "1") == "1",
+                     max_age=MINUTOS_PARA_O_CODIGO * 60 if precisa_de_codigo else HORAS_DE_SESSAO * 3600)
+    return saida
 
 
 @app.post("/api/sair", status_code=204)
@@ -226,9 +242,168 @@ def sair(request: Request, response: Response):
 
 
 @app.get("/api/eu")
-def eu(sessao=Depends(sessao_atual)):
+def eu(request: Request, sessao=Depends(sessao_atual)):
+    restantes = 0
+    if sessao["mfa_ativo"] and not sessao["mfa_pendente"]:
+        with request.app.state.banco.connection() as con:
+            restantes = con.execute("SELECT roar_mfa_codigos_restantes(%s) AS n", (sessao["usuario_id"],)).fetchone()["n"]
     return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"],
-            "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ()))}
+            "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ())),
+            "mfa_pendente": sessao["mfa_pendente"], "mfa_ativo": sessao["mfa_ativo"], "mfa_obrigatorio": sessao["mfa_obrigatorio"],
+            "mfa_codigos_restantes": restantes}
+
+
+class CodigoDeMfa(BaseModel):
+    codigo: str = Field(max_length=32)
+
+
+class SenhaAtual(BaseModel):
+    senha: str = Field(max_length=256)
+
+
+class DesligarMfa(BaseModel):
+    senha: str = Field(max_length=256)
+    codigo: str = Field(max_length=32)
+
+
+class PoliticaDeMfa(BaseModel):
+    obrigatorio: bool
+
+
+def _chave_de_mfa():
+    return _ler_env()["ROAR_MFA_CHAVE"]
+
+
+def _codigo_confere(con, usuario, codigo):
+    """Aceita o código do aplicativo, uma vez por janela de tempo."""
+    selado = con.execute("SELECT roar_mfa_segredo(%s) AS s", (usuario,)).fetchone()["s"]
+    if not selado:
+        return False
+    try:
+        segredo = mfa.abrir(_chave_de_mfa(), usuario, selado)
+    except mfa.SegredoInvalido:
+        return False
+    passo = mfa.passo_do_codigo(segredo, codigo)
+    return passo is not None and con.execute("SELECT roar_mfa_usar_passo(%s, %s) AS ok", (usuario, passo)).fetchone()["ok"]
+
+
+@app.post("/api/mfa/verificar", status_code=204)
+def verificar_mfa(dados: CodigoDeMfa, request: Request, sessao=Depends(sessao_atual)):
+    """Depois da senha. Errar demais derruba esta sessão, e a pessoa volta a provar a senha."""
+    if not sessao["mfa_pendente"]:
+        raise HTTPException(status_code=409, detail="Esta sessão já está confirmada.")
+    chave = f"mfa:{sessao['usuario_id']}"
+    token = _hash_do_token(request.cookies[COOKIE])
+    if _bloqueado(chave):
+        # Em bloco próprio: um erro levantado dentro da conexão desfaria o encerramento.
+        with request.app.state.banco.connection() as con:
+            con.execute("SELECT roar_encerrar_sessao(%s)", (token,))
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    with request.app.state.banco.connection() as con:
+        valido = _codigo_confere(con, sessao["usuario_id"], dados.codigo)
+        recuperacao = False
+        if not valido:
+            valido = recuperacao = con.execute("SELECT roar_mfa_usar_recuperacao(%s, %s) AS ok",
+                                               (sessao["usuario_id"], mfa.hash_do_codigo(sessao["usuario_id"], dados.codigo))).fetchone()["ok"]
+        if not valido:
+            falhas_de_login[chave].append(time.monotonic())
+            raise HTTPException(status_code=422, detail="Código incorreto.")
+        falhas_de_login.pop(chave, None)
+        con.execute("SELECT roar_concluir_mfa(%s, %s)", (token, HORAS_DE_SESSAO))
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, '')",
+                    (sessao["cliente_id"], sessao["usuario_id"], "entrar_com_codigo_de_recuperacao" if recuperacao else "entrar_com_mfa"))
+
+
+def _senha_confere(request, usuario, senha):
+    with request.app.state.banco.connection() as con:
+        guardado = con.execute("SELECT roar_hash_da_senha(%s) AS h", (usuario,)).fetchone()["h"]
+    try:
+        hasher.verify(guardado, senha)
+        return True
+    except (VerificationError, InvalidHashError):
+        return False
+
+
+def _antes_de_mexer_no_mfa(sessao):
+    if sessao["mfa_pendente"]:
+        raise HTTPException(status_code=403, detail="Confirme o código do autenticador para continuar.")
+    if sessao["trocar_senha"]:
+        raise HTTPException(status_code=403, detail="Troque a senha temporária para continuar.")
+
+
+@app.post("/api/mfa/iniciar")
+def iniciar_mfa(dados: SenhaAtual, request: Request, sessao=Depends(sessao_atual)):
+    """Pede a senha: uma sessão esquecida aberta não pode trocar o segundo fator de ninguém."""
+    _antes_de_mexer_no_mfa(sessao)
+    chave = f"senha:{sessao['usuario_id']}"
+    if _bloqueado(chave):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    if not _senha_confere(request, sessao["usuario_id"], dados.senha):
+        falhas_de_login[chave].append(time.monotonic())
+        raise HTTPException(status_code=403, detail="A senha não confere.")
+    falhas_de_login.pop(chave, None)
+    segredo = mfa.novo_segredo()
+    with request.app.state.banco.connection() as con:
+        if not con.execute("SELECT roar_mfa_guardar(%s, %s) AS ok", (sessao["usuario_id"], mfa.selar(_chave_de_mfa(), sessao["usuario_id"], segredo))).fetchone()["ok"]:
+            raise HTTPException(status_code=409, detail="O autenticador já está ligado.")
+    endereco = mfa.endereco(segredo, sessao["nome"])
+    return {"segredo": segredo, "qr": mfa.qr_em_svg(endereco)}
+
+
+@app.post("/api/mfa/confirmar")
+def confirmar_mfa(dados: CodigoDeMfa, request: Request, sessao=Depends(sessao_atual)):
+    """Só liga depois de um código certo: ninguém fica trancado por um QR que não leu. Os códigos de recuperação saem uma vez."""
+    _antes_de_mexer_no_mfa(sessao)
+    if sessao["mfa_ativo"]:
+        raise HTTPException(status_code=409, detail="O autenticador já está ligado.")
+    codigos = mfa.novos_codigos_de_recuperacao()
+    with request.app.state.banco.connection() as con:
+        if not _codigo_confere(con, sessao["usuario_id"], dados.codigo):
+            raise HTTPException(status_code=422, detail="Código incorreto. Confira o horário do celular e tente de novo.")
+        con.execute("SELECT roar_mfa_ativar(%s, %s)", (sessao["usuario_id"], [mfa.hash_do_codigo(sessao["usuario_id"], c) for c in codigos]))
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'ligar_mfa', '')", (sessao["cliente_id"], sessao["usuario_id"]))
+    return {"codigos_de_recuperacao": codigos}
+
+
+def _provar_senha_e_codigo(request, sessao, dados):
+    chave = f"senha:{sessao['usuario_id']}"
+    if _bloqueado(chave):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    with request.app.state.banco.connection() as con:
+        confere = _senha_confere(request, sessao["usuario_id"], dados.senha) and _codigo_confere(con, sessao["usuario_id"], dados.codigo)
+    if not confere:
+        falhas_de_login[chave].append(time.monotonic())
+        raise HTTPException(status_code=403, detail="A senha ou o código não confere.")
+    falhas_de_login.pop(chave, None)
+
+
+@app.post("/api/mfa/novos-codigos")
+def novos_codigos_de_mfa(dados: DesligarMfa, request: Request, sessao=Depends(sessao_atual)):
+    """Os antigos deixam de valer. Sem isto, quem gastou os códigos numa organização que exige ficaria sem saída."""
+    _antes_de_mexer_no_mfa(sessao)
+    if not sessao["mfa_ativo"]:
+        raise HTTPException(status_code=409, detail="O autenticador não está ligado.")
+    _provar_senha_e_codigo(request, sessao, dados)
+    codigos = mfa.novos_codigos_de_recuperacao()
+    with request.app.state.banco.connection() as con:
+        con.execute("SELECT roar_mfa_ativar(%s, %s)", (sessao["usuario_id"], [mfa.hash_do_codigo(sessao["usuario_id"], c) for c in codigos]))
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_codigos_de_recuperacao', '')", (sessao["cliente_id"], sessao["usuario_id"]))
+    return {"codigos_de_recuperacao": codigos}
+
+
+@app.post("/api/mfa/desligar", status_code=204)
+def desligar_mfa(dados: DesligarMfa, request: Request, sessao=Depends(sessao_atual)):
+    _antes_de_mexer_no_mfa(sessao)
+    if sessao["mfa_obrigatorio"]:
+        raise HTTPException(status_code=409, detail="Sua organização exige o autenticador.")
+    _provar_senha_e_codigo(request, sessao, dados)
+    with request.app.state.banco.connection() as con:
+        con.execute("SELECT roar_mfa_desligar(%s)", (sessao["usuario_id"],))
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'desligar_mfa', '')", (sessao["cliente_id"], sessao["usuario_id"]))
 
 
 class TrocaDeSenha(BaseModel):
@@ -239,6 +414,8 @@ class TrocaDeSenha(BaseModel):
 @app.post("/api/minha-senha", status_code=204)
 def trocar_minha_senha(dados: TrocaDeSenha, request: Request, sessao=Depends(sessao_atual)):
     """Exige a senha atual: uma sessão esquecida aberta não pode virar posse da conta."""
+    if sessao["mfa_pendente"]:
+        raise HTTPException(status_code=403, detail="Confirme o código do autenticador para continuar.")
     chave = f"senha:{sessao['usuario_id']}"
     if _bloqueado(chave):
         raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
@@ -308,6 +485,30 @@ def alterar_usuario(identificador: uuid.UUID, dados: UsuarioAlterado, request: R
             raise HTTPException(status_code=409, detail="Esta é a última pessoa administradora: defina outra antes.")
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'alterar_usuario', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {dados.perfil} {'ativo' if dados.ativo else 'inativo'}"))
+
+
+@app.post("/api/usuarios/{identificador}/mfa/remover", status_code=204)
+def remover_mfa_de_usuario(identificador: uuid.UUID, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Para quem perdeu o celular e os códigos. É a porta dos fundos do segundo fator, então a auditoria diz quem usou."""
+    # Na própria conta não: quem roubou uma sessão de administrador tiraria o segundo fator sem provar nada.
+    if str(identificador) == str(sessao["usuario_id"]):
+        raise HTTPException(status_code=409, detail="Para a sua conta, use a janela Autenticador.")
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT roar_mfa_remover_de(%s) AS ok", (identificador,)).fetchone()["ok"]:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'remover_mfa_de_usuario', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+@app.put("/api/organizacao/mfa", status_code=204)
+def definir_politica_de_mfa(dados: PoliticaDeMfa, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    # Quem liga a exigência precisa já usar: senão se tranca para fora na mesma hora.
+    if dados.obrigatorio and not sessao["mfa_ativo"]:
+        raise HTTPException(status_code=409, detail="Ligue o autenticador na sua conta antes de exigir de todos.")
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_mfa_obrigatorio(%s)", (dados.obrigatorio,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_mfa_obrigatorio', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(dados.obrigatorio)))
 
 
 @app.post("/api/usuarios/{identificador}/nova-senha")

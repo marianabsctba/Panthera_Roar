@@ -99,7 +99,19 @@ async function pedir(rota, opcoes) {
 function mostrarEntrada() {
   $("painel").hidden = true;
   $("entrada").hidden = false;
+  $("form-codigo").hidden = true;
+  $("form-entrada").hidden = false;
   $("email").focus();
+}
+
+function pedirCodigo() {
+  $("painel").hidden = true;
+  $("entrada").hidden = false;
+  $("form-entrada").hidden = true;
+  $("form-codigo").hidden = false;
+  $("erro-codigo").hidden = true;
+  $("codigo-entrada").value = "";
+  $("codigo-entrada").focus();
 }
 
 async function entrar(evento) {
@@ -124,6 +136,11 @@ async function entrar(evento) {
 async function abrirPainel() {
   const r = await pedir("/api/eu");
   const eu = await r.json();
+  if (eu.mfa_pendente) {
+    pedirCodigo();
+    return;
+  }
+  estado.eu = eu;
   estado.fuso = eu.fuso;
   $("cliente").textContent = eu.cliente;
   $("usuario").textContent = `${eu.nome} (${NOMES_DE_PERFIL[eu.perfil] ?? eu.perfil})`;
@@ -134,6 +151,10 @@ async function abrirPainel() {
   $("painel").hidden = false;
   if (eu.trocar_senha) {
     abrirTrocaDeSenha(true);
+    return;
+  }
+  if (eu.mfa_obrigatorio && !eu.mfa_ativo) {
+    abrirMfa();
     return;
   }
   await Promise.all([carregarFila(), carregarPanorama()]);
@@ -1723,7 +1744,8 @@ async function carregarUsuarios() {
   const r = await pedir("/api/usuarios");
   if (!r.ok) return;
   const { usuarios, eu } = await r.json();
-  $("tabela-usuarios").replaceChildren(montarTabela([["Nome"], ["E-mail"], ["Perfil"], ["Situação"], [""]], usuarios.map((u) => {
+  $("politica-mfa").checked = estado.eu.mfa_obrigatorio;
+  $("tabela-usuarios").replaceChildren(montarTabela([["Nome"], ["E-mail"], ["Perfil"], ["Situação"], ["Autenticador"], [""]], usuarios.map((u) => {
     const perfil = el("td");
     perfil.append(selecao(Object.entries(NOMES_DE_PERFIL), u.perfil, (v) => alterarUsuario(u, { perfil: v })));
     const acoes = el("td");
@@ -1732,7 +1754,15 @@ async function carregarUsuarios() {
         const n = await pedir(`/api/usuarios/${u.id}/nova-senha`, { method: "POST" });
         if (n.ok) mostrarSenhaTemporaria(`Senha temporária de ${u.nome}. Ela não aparece de novo.`, (await n.json()).senha_temporaria);
       }));
-    return [el("td", null, u.id === eu ? `${u.nome} (você)` : u.nome), el("td", "mono", u.email), perfil, el("td", null, u.ativo ? "Ativo" : "Desativado"), acoes];
+    if (u.mfa_ativo && u.id !== eu) {
+      acoes.append(" ", botaoDeTabela("Remover autenticador", "botao-discreto", async () => {
+        if (!window.confirm(`Remover o autenticador de ${u.nome}? As sessões abertas dessa pessoa serão encerradas.`)) return;
+        await pedir(`/api/usuarios/${u.id}/mfa/remover`, { method: "POST" });
+        await carregarUsuarios();
+      }));
+    }
+    return [el("td", null, u.id === eu ? `${u.nome} (você)` : u.nome), el("td", "mono", u.email), perfil, el("td", null, u.ativo ? "Ativo" : "Desativado"),
+      el("td", null, u.mfa_ativo ? "Ligado" : "Desligado"), acoes];
   })));
   $("tabela-perfis").replaceChildren(montarTabela([["Permissão"], ...Object.values(NOMES_DE_PERFIL).map((n) => [n])],
     O_QUE_CADA_UM_FAZ.map(([texto, chave]) => [el("td", null, texto),
@@ -1784,6 +1814,141 @@ $("form-senha").addEventListener("submit", async (evento) => {
   }
   $("janela-senha").close();
   if (obrigatoria) await abrirPainel();
+});
+
+// ------------------------------------------------------------------ segundo fator
+
+const ETAPAS_DO_MFA = ["mfa-inicio", "mfa-leitura", "mfa-recuperacao", "mfa-ligado"];
+
+function etapaDoMfa(etapa) {
+  ETAPAS_DO_MFA.forEach((id) => { $(id).hidden = id !== etapa; });
+  document.querySelectorAll("#janela-mfa .erro").forEach((e) => { e.hidden = true; });
+  // Os códigos só aparecem uma vez: nada de fechar por engano antes de guardar.
+  $("fechar-mfa").hidden = etapa === "mfa-recuperacao" || mfaForcado();
+}
+
+function mfaForcado() {
+  return estado.eu.mfa_obrigatorio && !estado.eu.mfa_ativo;
+}
+
+function abrirMfa() {
+  $("aviso-mfa").hidden = !mfaForcado();
+  ["mfa-senha", "mfa-codigo", "mfa-ligado-senha", "mfa-ligado-codigo"].forEach((id) => { $(id).value = ""; });
+  if (estado.eu.mfa_ativo) {
+    const n = estado.eu.mfa_codigos_restantes;
+    $("mfa-situacao").textContent = `Ligado, com ${n} ${n === 1 ? "código" : "códigos"} de recuperação. Para mudar, confirme a senha e o código do aplicativo.`;
+    $("mfa-desligar").hidden = estado.eu.mfa_obrigatorio;
+    etapaDoMfa("mfa-ligado");
+  } else {
+    etapaDoMfa("mfa-inicio");
+  }
+  $("janela-mfa").showModal();
+  $(estado.eu.mfa_ativo ? "mfa-ligado-senha" : "mfa-senha").focus();
+}
+
+function mostrarCodigosDeRecuperacao(codigos) {
+  $("mfa-codigos").textContent = codigos.join("\n");
+  $("mfa-copiar").textContent = "Copiar";
+  etapaDoMfa("mfa-recuperacao");
+}
+
+$("form-codigo").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const r = await postarJson("/api/mfa/verificar", { codigo: $("codigo-entrada").value });
+  $("codigo-entrada").value = "";
+  if (r.status === 429) {
+    $("erro-entrada").textContent = await detalheDoErro(r, "Muitas tentativas.");
+    $("erro-entrada").hidden = false;
+    mostrarEntrada();
+    return;
+  }
+  if (!r.ok) {
+    $("erro-codigo").textContent = await detalheDoErro(r, "Código incorreto.");
+    $("erro-codigo").hidden = false;
+    return;
+  }
+  await abrirPainel();
+});
+$("voltar-entrada").addEventListener("click", async () => {
+  await pedir("/api/sair", { method: "POST" });
+  mostrarEntrada();
+});
+$("abrir-mfa").addEventListener("click", abrirMfa);
+$("fechar-mfa").addEventListener("click", () => $("janela-mfa").close());
+$("janela-mfa").addEventListener("cancel", (e) => { if ($("fechar-mfa").hidden) e.preventDefault(); });
+$("mfa-inicio").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const r = await postarJson("/api/mfa/iniciar", { senha: $("mfa-senha").value });
+  $("mfa-senha").value = "";
+  if (!r.ok) {
+    $("mfa-inicio-erro").textContent = await detalheDoErro(r, "Não foi possível começar.");
+    $("mfa-inicio-erro").hidden = false;
+    return;
+  }
+  const { segredo, qr } = await r.json();
+  // Vem da nossa API e entra como nó, não como texto interpretado.
+  $("mfa-qr").replaceChildren(document.importNode(new DOMParser().parseFromString(qr, "image/svg+xml").documentElement, true));
+  $("mfa-chave").textContent = segredo;
+  etapaDoMfa("mfa-leitura");
+  $("mfa-codigo").focus();
+});
+$("mfa-leitura").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const r = await postarJson("/api/mfa/confirmar", { codigo: $("mfa-codigo").value });
+  $("mfa-codigo").value = "";
+  if (!r.ok) {
+    $("mfa-leitura-erro").textContent = await detalheDoErro(r, "Código incorreto.");
+    $("mfa-leitura-erro").hidden = false;
+    return;
+  }
+  mostrarCodigosDeRecuperacao((await r.json()).codigos_de_recuperacao);
+  $("mfa-qr").replaceChildren();
+  $("mfa-chave").textContent = "";
+});
+$("mfa-copiar").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("mfa-codigos").textContent);
+  $("mfa-copiar").textContent = "Copiado";
+});
+$("mfa-guardei").addEventListener("click", async () => {
+  $("mfa-codigos").textContent = "";
+  $("janela-mfa").close();
+  await abrirPainel();
+});
+
+async function mudarMfaLigado(rota) {
+  const r = await postarJson(rota, { senha: $("mfa-ligado-senha").value, codigo: $("mfa-ligado-codigo").value });
+  $("mfa-ligado-senha").value = "";
+  $("mfa-ligado-codigo").value = "";
+  if (!r.ok) {
+    $("mfa-ligado-erro").textContent = await detalheDoErro(r, "A senha ou o código não confere.");
+    $("mfa-ligado-erro").hidden = false;
+    return null;
+  }
+  return r;
+}
+
+$("mfa-ligado").addEventListener("submit", (evento) => evento.preventDefault());
+$("mfa-novos").addEventListener("click", async () => {
+  const r = await mudarMfaLigado("/api/mfa/novos-codigos");
+  if (r) mostrarCodigosDeRecuperacao((await r.json()).codigos_de_recuperacao);
+});
+$("mfa-desligar").addEventListener("click", async () => {
+  if (!await mudarMfaLigado("/api/mfa/desligar")) return;
+  $("janela-mfa").close();
+  await abrirPainel();
+});
+$("politica-mfa").addEventListener("change", async (evento) => {
+  const pedido = evento.target.checked;
+  $("usuario-erro").hidden = true;
+  const r = await postarJson("/api/organizacao/mfa", { obrigatorio: pedido }, "PUT");
+  if (!r.ok) {
+    evento.target.checked = !pedido;
+    $("usuario-erro").textContent = await detalheDoErro(r, "Não foi possível mudar.");
+    $("usuario-erro").hidden = false;
+    $("form-usuario").hidden = false;
+    return;
+  }
+  estado.eu.mfa_obrigatorio = pedido;
 });
 
 // ------------------------------------------------------------------ catálogo de conectores

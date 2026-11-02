@@ -26,7 +26,8 @@ from roar_api.app import app  # noqa: E402
 RESULTADOS = []
 ENV = dict(l.strip().split("=", 1) for l in open("/opt/panthera-roar/.env", encoding="utf-8") if "=" in l and not l.startswith("#"))
 SUFIXO = uuid.uuid4().hex[:8]
-SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/eu"), ("POST", "/api/minha-senha"), ("POST", "/api/entrada/webhook")}
+SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/eu"), ("POST", "/api/minha-senha"), ("POST", "/api/entrada/webhook"),
+                 ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
     "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios"},
@@ -52,6 +53,7 @@ ROTAS = {
     ("POST", "/api/automacao/para-codigo"): "ver", ("POST", "/api/automacao/de-codigo"): "ver", ("POST", "/api/automacao/simular"): "gerir_playbooks",
     ("POST", "/api/automacao/aprovacoes/{identificador}/aprovar"): "aprovar", ("POST", "/api/automacao/aprovacoes/{identificador}/recusar"): "aprovar",
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
+    ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
 VALORES = {"identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
