@@ -159,7 +159,7 @@ async function abrirPainel() {
     abrirMfa();
     return;
   }
-  await Promise.all([carregarFila(), carregarPanorama()]);
+  await Promise.all([carregarFila(), carregarPanorama(), avisarSeHouverViolacao()]);
 }
 
 function pode(permissao) {
@@ -496,6 +496,7 @@ async function abrirBruto(evento) {
   $("meta-bruto").textContent = `Recebido em ${quando(dados.recebido_em)} · identificador ${dados.origem_id}`
     + (dados.bruto?.roar_truncado ? " · conteúdo grande: guardamos só o resumo e o hash" : "");
   $("conteudo-bruto").textContent = JSON.stringify(dados.bruto, null, 2);
+  botaoDaCesta($("evidencia-bruto"), "alertas", dados.origem_id, `${quando(dados.ocorrido_em)} · ${dados.bruto?.rule?.description ?? "Alerta"}`);
   $("janela-bruto").showModal();
 }
 
@@ -718,6 +719,10 @@ function abrirLog(item) {
   const campos = achatar(item.bruto);
   const corpo = [];
   corpo.push(el("p", "texto-secao", `${quando(item.bruto.timestamp)} · identificador ${item.id}`));
+  const incluir = el("button", "botao-discreto");
+  incluir.type = "button";
+  botaoDaCesta(incluir, "logs", item.id, `${quando(item.bruto.timestamp)} · ${item.bruto.agent?.name ?? ""} ${String(item.bruto.full_log ?? "").slice(0, 80)}`);
+  corpo.push(incluir);
   const tabela = el("table", "campos-do-log");
   const tbody = el("tbody");
   Object.keys(campos).sort().forEach((campo) => {
@@ -1818,6 +1823,98 @@ $("form-senha").addEventListener("submit", async (evento) => {
   if (obrigatoria) await abrirPainel();
 });
 
+// ------------------------------------------------------------------ prova e evidência
+
+const cesta = { fonte: null, itens: new Map() };
+const ACHADOS = {
+  evento_alterado: "Evento alterado depois da selagem", evento_apagado: "Evento apagado depois da selagem", evento_sem_selo: "Evento que entrou sem selo",
+  selo_faltando: "Selo faltando na sequência", selo_alterado: "Selo alterado", cadeia_quebrada: "Sequência de selos quebrada", assinatura_invalida: "Assinatura inválida",
+  chave_desconhecida: "Selo feito com outra chave", folhas_alteradas: "Dados do selo alterados", folhas_faltando: "Dados do selo faltando",
+};
+
+function botaoDaCesta(botao, fonte, id, resumo) {
+  const rotular = () => { botao.textContent = cesta.itens.has(id) ? "Tirar da evidência" : "Incluir na evidência"; };
+  rotular();
+  botao.onclick = () => {
+    if (cesta.itens.has(id)) {
+      cesta.itens.delete(id);
+    } else if (cesta.itens.size && cesta.fonte !== fonte) {
+      botao.textContent = `O pacote já tem ${cesta.fonte}: gere ou esvazie antes`;
+      return;
+    } else {
+      cesta.fonte = fonte;
+      cesta.itens.set(id, resumo);
+    }
+    rotular();
+    desenharCesta();
+  };
+}
+
+function desenharCesta() {
+  $("prova-gerar").disabled = !cesta.itens.size;
+  $("prova-cesta").replaceChildren(cesta.itens.size
+    ? montarTabela([["Evento"], ["Identificador"], [""]], [...cesta.itens].map(([id, resumo]) => [el("td", null, resumo), el("td", "mono", id),
+      el("td", null, botaoDeTabela("Tirar", "botao-discreto", () => { cesta.itens.delete(id); desenharCesta(); }))]))
+    : el("p", "texto-secao", "Nenhum evento escolhido."));
+}
+
+async function carregarProva() {
+  const r = await pedir("/api/integridade");
+  if (!r.ok) return;
+  const d = await r.json();
+  const v = d.verificacao;
+  $("prova-estado").textContent = !d.selos.selos ? "Ainda sem selos: os primeiros saem em até 30 minutos depois da chegada dos eventos."
+    : !v ? "A cadeia está sendo selada e ainda não passou pela primeira conferência."
+    : v.estado === "violada" ? `Violação encontrada na conferência de ${quando(v.quando)}. Preserve o ambiente e trate como incidente.`
+    : `Tudo confere. Última conferência em ${quando(v.quando)}: ${v.selos_conferidos.toLocaleString("pt-BR")} selos e ${v.eventos_conferidos.toLocaleString("pt-BR")} eventos.`;
+  $("prova-numeros").replaceChildren(...[["Eventos selados", d.selos.eventos.toLocaleString("pt-BR")], ["Selos na cadeia", d.selos.selos.toLocaleString("pt-BR")], ["Selado até", quando(d.selos.coberto_ate)],
+    ["Chegaram depois da janela", d.selos.tardios.toLocaleString("pt-BR")], ["Âncoras públicas", d.ancoras.total.toLocaleString("pt-BR")]].map(([rotulo, valor]) => {
+    const n = el("div", "numero");
+    n.append(el("b", null, valor), el("span", null, rotulo));
+    return n;
+  }));
+  const achados = v?.achados ?? [];
+  $("prova-achados").hidden = !achados.length;
+  if (achados.length) {
+    $("prova-achados").replaceChildren(montarTabela([["O que foi achado"], ["Selo"], ["Evento"]],
+      achados.map((a) => [el("td", null, ACHADOS[a.tipo] ?? a.tipo), el("td", null, String(a.n ?? "-")), el("td", "mono", a.evento ?? "-")])));
+  }
+  desenharCesta();
+}
+
+async function avisarSeHouverViolacao() {
+  const r = await pedir("/api/integridade");
+  if (!r.ok) return;
+  const { verificacao } = await r.json();
+  $("aviso-integridade").hidden = verificacao?.estado !== "violada";
+  $("aviso-integridade").textContent = "A conferência dos selos encontrou registros alterados. Veja em Prova e evidência.";
+}
+
+$("prova-gerar").addEventListener("click", async () => {
+  const botao = $("prova-gerar");
+  $("prova-erro").hidden = true;
+  botao.disabled = true;
+  botao.textContent = "Gerando...";
+  try {
+    const r = await postarJson("/api/integridade/evidencia", { fonte: cesta.fonte, ids: [...cesta.itens.keys()] });
+    if (!r.ok) {
+      $("prova-erro").textContent = await detalheDoErro(r, "Não foi possível gerar o pacote.");
+      $("prova-erro").hidden = false;
+      return;
+    }
+    const endereco = URL.createObjectURL(await r.blob());
+    const a = el("a");
+    a.href = endereco;
+    a.download = "evidencia-roar.zip";
+    a.click();
+    URL.revokeObjectURL(endereco);
+    cesta.itens.clear();
+  } finally {
+    botao.textContent = "Gerar pacote";
+    desenharCesta();
+  }
+});
+
 // ------------------------------------------------------------------ segundo fator
 
 const ETAPAS_DO_MFA = ["mfa-inicio", "mfa-leitura", "mfa-recuperacao", "mfa-ligado"];
@@ -2844,12 +2941,13 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "relatorios", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios", "ajuda", "prova"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
   // O "?" abre o artigo da tela de onde a pessoa veio.
   if (vista !== "ajuda") vistaAtual = vista;
   if (vista === "ajuda") abrirArtigo(artigoAberto);
+  if (vista === "prova") carregarProva();
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
   if (vista === "vulnerabilidades") carregarCves();

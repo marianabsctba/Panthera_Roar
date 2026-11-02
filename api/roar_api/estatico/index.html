@@ -43,6 +43,8 @@
       </div>
     </header>
 
+    <p id="aviso-integridade" class="erro aviso-integridade" role="alert" hidden></p>
+
     <section class="resumo" aria-label="Resumo">
       <div class="numero"><b id="n-criticos">0</b><span>riscos críticos</span></div>
       <div class="numero"><b id="n-altos">0</b><span>riscos altos</span></div>
@@ -60,6 +62,7 @@
       <button type="button" data-vista="fontes">Fontes de dados</button>
       <button type="button" data-vista="ativos">Ativos</button>
       <button type="button" data-vista="arquivos">Integridade</button>
+      <button type="button" data-vista="prova">Prova e evidência</button>
       <button type="button" data-vista="normas">Normas</button>
       <button type="button" data-vista="regras">Regras</button>
       <button type="button" data-vista="relatorios">Relatórios</button>
@@ -67,6 +70,21 @@
       <button type="button" data-vista="usuarios" data-permissao="gerir_usuarios">Usuários</button>
       <button type="button" data-vista="ajuda">Ajuda</button>
     </nav>
+
+    <section id="vista-prova" class="pagina" aria-label="Prova e evidência" hidden>
+      <h2 class="titulo-secao">Prova e evidência</h2>
+      <p class="texto-secao">Cada janela de logs e alertas é selada em uma cadeia assinada. Quem mexer em um evento depois quebra a prova. O selo mostra que o registro não mudou desde a selagem, não que o conteúdo do log é verdadeiro.</p>
+      <div id="prova-estado" class="simulacao"></div>
+      <div id="prova-numeros" class="fim-numeros"></div>
+      <div id="prova-achados" class="tabela-rolagem" hidden></div>
+      <div data-permissao="ver_bruto">
+        <h2 class="titulo-secao">Pacote de evidência</h2>
+        <p class="texto-secao">Em Logs brutos ou no alerta bruto, use "Incluir na evidência". O pacote leva só esses eventos, com a prova de cada um, um laudo em PDF e um programa para qualquer pessoa conferir sem o Roar. Os outros eventos da janela aparecem apenas como resumos. Um pacote leva só um tipo: logs ou alertas.</p>
+        <div id="prova-cesta" class="tabela-rolagem"></div>
+        <p id="prova-erro" class="erro" role="alert" hidden></p>
+        <div class="acoes-regra"><button id="prova-gerar" type="button" class="botao-primario" disabled>Gerar pacote</button></div>
+      </div>
+    </section>
 
     <section id="vista-ajuda" class="pagina" aria-label="Ajuda" hidden>
       <div class="ajuda">
@@ -465,6 +483,7 @@
     <div class="janela-topo">
       <h2 id="titulo-bruto">Alerta bruto</h2>
       <div>
+        <button id="evidencia-bruto" type="button" class="botao-discreto"></button>
         <button id="copiar-bruto" type="button" class="botao-discreto">Copiar</button>
         <button id="fechar-bruto" type="button" class="botao-discreto">Fechar</button>
       </div>

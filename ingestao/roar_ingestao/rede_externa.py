@@ -48,7 +48,8 @@ def resolver(endereco):
     ips = [ipaddress.ip_address(e.split("%")[0]) for e in encontrados]
     if not _rede_interna_liberada() and not all(e_publico(ip) for ip in ips):
         raise DestinoRecusado("O endereço não pode apontar para uma rede interna.")
-    return partes, str(ips[0])
+    # IPv4 primeiro: a conexão fica presa a um IP só, e muita rede resolve IPv6 sem ter rota para ele.
+    return partes, str(min(ips, key=lambda ip: (ip.version, int(ip))))
 
 
 class _PresoAoIp(HTTPAdapter):

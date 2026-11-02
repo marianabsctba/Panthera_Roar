@@ -38,8 +38,9 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import mfa, permissoes, relatorios  # noqa: E402
+from roar_api import evidencia, mfa, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, fim  # noqa: E402
+from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import sigma, xml_proprio  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
@@ -860,6 +861,48 @@ def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER)), dia
                     (sessao["cliente_id"], sessao["usuario_id"], f"{tipo} {dias}d {extensao} sha256:{resumo}"))
     nome = f"relatorio-{tipo}-{datetime.now(timezone.utc):%Y%m%d}.{extensao}"
     return Response(conteudo, media_type=tipo_midia, headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo})
+
+
+class PedidoDeEvidencia(BaseModel):
+    fonte: str = Field(pattern="^(alertas|logs)$")
+    ids: list[str] = Field(min_length=1, max_length=evidencia.LIMITE_DE_EVENTOS)
+
+
+@app.get("/api/integridade")
+def integridade(request: Request, sessao=Depends(exige(permissoes.VER))):
+    """Se a cadeia está de pé. Mostra identificador de evento, nunca o conteúdo: quem vê isto pode não ter acesso ao log."""
+    with do_cliente(request, sessao) as con:
+        selos = con.execute("""SELECT count(*) AS selos, coalesce(sum(total), 0) AS eventos, count(*) FILTER (WHERE tardio) AS tardios,
+                                      max(selado_em) AS ultimo, max(fim) AS coberto_ate FROM selos""").fetchone()
+        ultima = con.execute("SELECT quando, completa, selos_conferidos, eventos_conferidos, estado, achados FROM selo_verificacoes ORDER BY quando DESC, id DESC LIMIT 1").fetchone()
+        ancoras = con.execute("SELECT count(*) AS total, max(criada_em) AS ultima FROM selo_ancoras").fetchone()
+    try:
+        publica = selagem.ler_chave_publica()
+    except OSError:
+        publica = None
+    return {"selos": selos, "verificacao": ultima, "ancoras": ancoras, "impressao": selagem.impressao_da_chave(publica) if publica else None}
+
+
+@app.post("/api/integridade/evidencia")
+def gerar_evidencia(dados: PedidoDeEvidencia, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    """Sai do sistema com dado pessoal: quem gerou, quais eventos e o resumo do arquivo ficam na auditoria."""
+    ids = list(dict.fromkeys(dados.ids))
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", i) for i in ids):
+        raise HTTPException(status_code=422, detail="Identificador de evento inválido.")
+    try:
+        with do_cliente(request, sessao) as con:
+            gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+            if not gerenciadores:
+                raise HTTPException(status_code=404)
+            pacote, ancoras = evidencia.montar_pacote(con, request.app.state.indexer, INDEXER_URL, gerenciadores, dados.fonte, ids, selagem.ler_chave_publica())
+        conteudo = evidencia.gerar_zip(pacote, ancoras, sessao, relatorios.gerar_pdf)
+    except evidencia.EvidenciaRecusada as erro:
+        raise HTTPException(status_code=409, detail=str(erro))
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_evidencia', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.fonte} {' '.join(ids)[:600]} sha256:{resumo}"))
+    return Response(conteudo, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="evidencia-roar.zip"', "X-Resumo-SHA256": resumo})
 
 
 @app.get("/api/cves")

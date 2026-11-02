@@ -53,6 +53,7 @@ ROTAS = {
     ("POST", "/api/automacao/para-codigo"): "ver", ("POST", "/api/automacao/de-codigo"): "ver", ("POST", "/api/automacao/simular"): "gerir_playbooks",
     ("POST", "/api/automacao/aprovacoes/{identificador}/aprovar"): "aprovar", ("POST", "/api/automacao/aprovacoes/{identificador}/recusar"): "aprovar",
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
+    ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }

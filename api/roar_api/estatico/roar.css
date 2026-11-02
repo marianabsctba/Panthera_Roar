@@ -403,6 +403,8 @@ th.numero-celula { text-align: right; }
 .ramo-titulo { margin: 4px 0 0; color: var(--texto-2); font-size: .85rem; }
 .ramo-topo { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .adicionar-bloco { border-style: dashed !important; }
+.aviso-integridade { margin: 0; padding: 10px 16px; background: var(--rosa-fundo); font-weight: 600; }
+#prova-estado, #prova-numeros, #prova-achados { margin-bottom: 12px; }
 .ajuda { display: grid; grid-template-columns: 240px minmax(0, 720px); gap: 24px; align-items: start; }
 .ajuda-indice { display: grid; gap: 4px; }
 .ajuda-indice h3 { margin: 14px 0 4px; color: var(--rosa-claro); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }

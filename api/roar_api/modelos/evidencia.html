@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Laudo de integridade - {{ cliente }}</title>
+<style>
+  @page { size: A4; margin: 22mm 16mm 20mm;
+    @top-left { content: "Panthera Roar"; font: 600 8pt "DejaVu Sans"; color: #c2185b; }
+    @bottom-left { content: "Confidencial: contém dados pessoais"; font: 7pt "DejaVu Sans"; color: #888; }
+    @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt "DejaVu Sans"; color: #666; }
+  }
+  body { font: 9.5pt/1.5 "DejaVu Sans", sans-serif; color: #1a1a1a; }
+  h1 { font-size: 18pt; margin: 0 0 4pt; }
+  h2 { font-size: 12pt; margin: 18pt 0 6pt; color: #c2185b; }
+  .sub { color: #555; margin: 0 0 14pt; }
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 10pt; }
+  th, td { padding: 4pt 6pt; border-bottom: .5pt solid #ccc; text-align: left; vertical-align: top; }
+  th { width: 28%; color: #555; font-weight: 600; }
+  code, pre { font: 7.5pt/1.4 "DejaVu Sans Mono", monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+  pre { padding: 6pt; background: #f4f4f4; border-radius: 3pt; }
+  .aviso { padding: 8pt; border-left: 3pt solid #c2185b; background: #fbeef3; }
+  .evento { break-inside: auto; }
+</style>
+</head>
+<body>
+<h1>Laudo de integridade de eventos</h1>
+<p class="sub">{{ cliente }} · gerado por {{ autor }} em {{ agora }}</p>
+
+<h2>Conclusão técnica</h2>
+<p>Os {{ pacote.eventos|length }} evento(s) deste laudo conferem com os selos criptográficos registrados no momento da selagem, e os {{ pacote.selos|length }} selo(s) mostrados formam uma sequência assinada e sem quebras.</p>
+<div class="aviso"><strong>Limite do que se afirma.</strong> Isto mostra que o registro não mudou desde a selagem. Não mostra que o conteúdo do log é verdadeiro: um log forjado antes de chegar ao sistema é selado como qualquer outro. O material apoia a cadeia de custódia, mas não substitui perícia nem a avaliação de quem conduz o caso.</div>
+
+<h2>Como conferir sem depender deste sistema</h2>
+<p>Com Python 3, em qualquer computador: <code>python verificar.py evidencia.json</code>. O programa acompanha o pacote e tem o código aberto. Depois, compare a impressão da chave abaixo com a publicada pela organização.</p>
+<table>
+  <tr><th>Impressão da chave</th><td><code>{{ impressao }}</code></td></tr>
+  <tr><th>Algoritmos</th><td>SHA-256, árvore de Merkle da RFC 9162 com sal por evento, assinatura Ed25519</td></tr>
+  <tr><th>Âncoras públicas</th><td>{% if pacote.ancoras %}{{ pacote.ancoras|length }} carimbo(s) OpenTimestamps do selo {{ pacote.ancoras[0].n }}, no formato aberto, na pasta ancoras/{% else %}Nenhuma âncora pública neste trecho da sequência{% endif %}</td></tr>
+</table>
+
+<h2>Divulgação seletiva</h2>
+<p>Só os eventos abaixo foram entregues. Para os demais eventos da mesma janela, o pacote traz apenas resumos com sal, dos quais não se recupera o conteúdo. Eles mostram que existiam, não o que diziam.</p>
+
+<h2>Eventos</h2>
+{% for evento, texto in documentos %}
+<div class="evento">
+<table>
+  <tr><th>Identificador</th><td><code>{{ evento.id }}</code></td></tr>
+  <tr><th>Selo</th><td>nº {{ evento.selo }}, janela de {{ selos[evento.selo].inicio }} a {{ selos[evento.selo].fim }}, selado em {{ selos[evento.selo].selado_em }}{% if selos[evento.selo].tardio %} (o evento chegou depois da janela e entrou num selo marcado como tardio){% endif %}</td></tr>
+  <tr><th>Posição</th><td>{{ evento.indice + 1 }} de {{ selos[evento.selo].total }} eventos da janela</td></tr>
+</table>
+<pre>{{ texto }}</pre>
+</div>
+{% endfor %}
+
+<h2>Selos</h2>
+<table>
+  <tr><th>Nº</th><td><strong>Resumo do selo</strong></td></tr>
+  {% for s in pacote.selos[:60] %}<tr><th>{{ s.n }}</th><td><code>{{ s.hash }}</code></td></tr>{% endfor %}
+</table>
+{% if pacote.selos|length > 60 %}<p>Os outros {{ pacote.selos|length - 60 }} selos estão em evidencia.json.</p>{% endif %}
+</body>
+</html>

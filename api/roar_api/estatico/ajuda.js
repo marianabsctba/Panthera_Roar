@@ -75,6 +75,20 @@ export const AJUDA = [
       "A matriz de técnicas de ataque, com o que foi observado nos seus alertas. Marque Só o que foi observado para ficar apenas com isso.",
       "Técnica sem alerta não prova que não houve ataque. Pode ser só falta de fonte ou de regra para enxergá-la.",
     ] },
+    { id: "prova", vista: "prova", titulo: "Prova e evidência", blocos: [
+      "A cada 15 minutos, os logs e os alertas da janela são selados: viram um resumo criptográfico, ligado ao selo anterior e assinado. Os selos ficam guardados separados dos eventos.",
+      "De tempos em tempos, o Roar confere tudo de novo e aponta qual evento foi alterado, apagado ou incluído depois da selagem. Se aparecer uma violação, preserve o ambiente e trate como incidente: um aviso também aparece no alto de todas as telas.",
+      { h: "Gerar um pacote de evidência" },
+      { passos: [
+        "Em Logs brutos, abra um log. Ou abra o alerta bruto, em Fila ou Eventos.",
+        "Clique em Incluir na evidência. Repita para os outros eventos do caso.",
+        "Volte a esta tela e clique em Gerar pacote.",
+      ] },
+      "O pacote leva os eventos escolhidos, a prova de cada um, um laudo em PDF e um programa que confere tudo em qualquer computador, sem o Roar. Os outros eventos da janela vão só como resumos com sal, dos quais não se recupera o conteúdo. A geração fica na auditoria.",
+      { h: "Âncora pública" },
+      "Uma vez por dia, só o resumo da cadeia é registrado em calendários públicos do OpenTimestamps. Isso protege até contra quem tivesse a chave de assinatura. O carimbo definitivo leva algumas horas para sair.",
+      { aviso: "O selo mostra que o registro não mudou desde a selagem. Não mostra que o conteúdo é verdadeiro: um log forjado antes de chegar aqui é selado como qualquer outro. O material apoia a cadeia de custódia, mas não substitui perícia." },
+    ] },
     { id: "normas", vista: "normas", titulo: "Normas", blocos: [
       "Organiza os alertas pelos controles de cada norma, para ajudar a preparar uma auditoria.",
       { aviso: "É um apoio para a conformidade, não um atestado: o que está sem alerta pode só não estar sendo observado." },
