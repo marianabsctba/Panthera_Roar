@@ -1565,6 +1565,92 @@ $("copiar-bruto").addEventListener("click", async () => {
   setTimeout(() => { $("copiar-bruto").textContent = "Copiar"; }, 1500);
 });
 
+// ------------------------------------------------------------------ vulnerabilidades
+
+function dataComAno(dia) {
+  const [ano, mes, d] = String(dia).slice(0, 10).split("-");
+  return `${d}/${mes}/${ano}`;
+}
+
+const PRIORIDADES_DE_CVE = {
+  agora: { texto: "Agora", classe: "critica", explica: "Exploração confirmada no catálogo KEV da CISA." },
+  alta: { texto: "Alta", classe: "alta", explica: "EPSS a partir de 50%, ou CVSS a partir de 9." },
+  media: { texto: "Média", classe: "media", explica: "EPSS a partir de 5%, ou CVSS a partir de 7." },
+  baixa: { texto: "Baixa", classe: "baixa", explica: "Tem nota, e está abaixo desses limites." },
+  sem_dados: { texto: "Sem nota", classe: "baixa", explica: "O registro não traz CVSS: falta de nota não é nota baixa." },
+};
+
+function seloDePrioridade(p) {
+  const d = PRIORIDADES_DE_CVE[p] ?? PRIORIDADES_DE_CVE.sem_dados;
+  return el("span", `selo selo-${d.classe}`, d.texto);
+}
+
+function porcentoDeEpss(e) {
+  return e === null || e === undefined ? "-" : `${(e * 100).toLocaleString("pt-BR", { maximumFractionDigits: e < 0.01 ? 2 : 1 })}%`;
+}
+
+async function abrirCve(cve) {
+  const r = await pedir(`/api/cves/${encodeURIComponent(cve)}`);
+  if (!r.ok) return;
+  const c = await r.json();
+  $("titulo-tecnica").textContent = c.cve;
+  const cab = el("h2");
+  cab.append(el("span", null, c.titulo ?? c.produto ?? c.cve), seloDePrioridade(c.prioridade));
+  const fatos = el("div", "fatos");
+  fatos.append(fato("CVSS", c.cvss ?? "Sem nota"), fato("EPSS", porcentoDeEpss(c.epss)),
+    fato("Exploração confirmada", c.kev_desde ? `Desde ${dataComAno(c.kev_desde)}` : "Não confirmada"),
+    fato("Ransomware", c.kev_ransomware ? "Já usada" : "Sem registro"), fato("Publicada", quando(c.publicado_em)));
+  const partes = [cab, fatos, el("p", "texto-secao", PRIORIDADES_DE_CVE[c.prioridade]?.explica ?? "")];
+  if (c.rejeitado) partes.push(el("p", "erro", "O próprio programa CVE rejeitou este registro."));
+  if (c.kev_prazo) partes.push(el("p", "texto-secao", `A CISA pede correção até ${dataComAno(c.kev_prazo)} para os órgãos dela.`));
+  if (c.produto) partes.push(el("h3", null, "Produto"), el("p", "texto-secao", c.produto));
+  if (c.descricao) partes.push(el("h3", null, "Descrição, como publicada"), el("p", "texto-secao", c.descricao));
+  if (c.vetor) partes.push(el("h3", null, "Vetor"), el("p", "mono", c.vetor));
+  $("conteudo-tecnica").replaceChildren(...partes);
+  if (!$("janela-tecnica").open) $("janela-tecnica").showModal();
+}
+
+async function carregarCves() {
+  const consulta = new URLSearchParams({ busca: $("busca-cves").value, prioridade: $("prioridade-cves").value });
+  const r = await pedir(`/api/cves?${consulta}`);
+  const { cves, carga, contagem } = await r.json();
+  $("resumo-cves").textContent = carga
+    ? `${Number(carga.total).toLocaleString("pt-BR")} registros, carregados em ${quando(carga.carregada_em)}. EPSS de ${dataComAno(carga.epss_data)}.`
+    : "A base de CVEs ainda não foi carregada.";
+  if (contagem.length) {
+    $("numeros-cves").replaceChildren(...Object.entries(PRIORIDADES_DE_CVE).map(([chave, d]) => {
+      const n = el("button", "numero numero-botao");
+      n.type = "button";
+      const achado = contagem.find((c) => c.prioridade === chave);
+      n.append(el("b", null, Number(achado?.total ?? 0).toLocaleString("pt-BR")), el("span", null, d.texto));
+      n.title = d.explica;
+      n.addEventListener("click", () => {
+        $("prioridade-cves").value = chave;
+        carregarCves();
+      });
+      return n;
+    }));
+  }
+  if (!cves.length) {
+    $("tabela-cves").replaceChildren(el("p", "vazio", "Nenhuma CVE encontrada."));
+    return;
+  }
+  const tabela = montarTabela([["CVE"], ["Prioridade"], ["O que é"], ["CVSS", "numero-celula"], ["EPSS", "numero-celula"], ["Explorada desde"]], cves.map((c) => {
+    const prioridade = el("td");
+    prioridade.append(seloDePrioridade(c.prioridade));
+    return [el("td", "mono", c.cve), prioridade, el("td", null, c.titulo ?? c.produto ?? "-"), el("td", "numero-celula", c.cvss ?? "-"),
+      el("td", "numero-celula", porcentoDeEpss(c.epss)), el("td", null, c.kev_desde ? dataComAno(c.kev_desde) : "-")];
+  }));
+  [...tabela.tBodies[0].rows].forEach((linha, i) => {
+    linha.classList.add("linha-clicavel");
+    linha.addEventListener("click", () => abrirCve(cves[i].cve));
+  });
+  $("tabela-cves").replaceChildren(tabela);
+}
+
+$("form-cves").addEventListener("submit", (ev) => { ev.preventDefault(); carregarCves(); });
+$("prioridade-cves").addEventListener("change", () => carregarCves());
+
 // ------------------------------------------------------------------ usuários
 
 const O_QUE_CADA_UM_FAZ = [
@@ -2496,11 +2582,12 @@ function trocarVista(vista) {
     else b.removeAttribute("aria-current");
   });
   esconderDica();
-  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
+  for (const nome of ["panorama", "fila", "eventos", "logs", "ataques", "vulnerabilidades", "fontes", "ativos", "arquivos", "normas", "regras", "automacao", "usuarios"]) {
     $(`vista-${nome}`).hidden = vista !== nome;
   }
   if (vista === "usuarios") carregarUsuarios();
   if (vista === "fontes") carregarFontes();
+  if (vista === "vulnerabilidades") carregarCves();
   if (vista === "automacao") carregarAutomacao();
   if (vista === "logs" && !estado.logs.length) carregarLogs();
   if (vista === "ataques") carregarAtaques();

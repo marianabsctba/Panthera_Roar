@@ -641,6 +641,46 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
     return {"arquivos": linhas}
 
 
+@app.get("/api/cves")
+def consultar_cves(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", prioridade: str = "", deslocamento: int = 0):
+    """A base é pública e igual para todos: nada aqui depende do cliente, nem revela o que ele tem."""
+    condicoes, parametros = ["NOT rejeitado"], []
+    busca = busca.strip()[:200]
+    if busca:
+        if re.fullmatch(r"(?i)CVE-\d{4}-\d+", busca):
+            condicoes = ["cve = %s"]
+            parametros.append(busca.upper())
+        else:
+            condicoes.append("busca @@ plainto_tsquery('simple', %s)")
+            parametros.append(busca)
+    if prioridade in ("agora", "alta", "media", "baixa", "sem_dados"):
+        condicoes.append("prioridade = %s")
+        parametros.append(prioridade)
+    deslocamento = max(0, min(deslocamento, 10_000))
+    onde = " AND ".join(condicoes)
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""SELECT cve, publicado_em, rejeitado, coalesce(titulo, left(descricao, 160)) AS titulo, produto, cvss, epss, kev_desde, kev_ransomware, prioridade FROM cves
+                WHERE {onde} ORDER BY kev_desde DESC NULLS LAST, epss DESC NULLS LAST, cve DESC LIMIT %s OFFSET %s""",
+            (*parametros, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
+        carga = con.execute("SELECT total, versao, epss_data, carregada_em FROM cves_carga").fetchone()
+        contagem = con.execute("SELECT prioridade, count(*) AS total FROM cves WHERE NOT rejeitado GROUP BY 1").fetchall() if not busca and not prioridade else []
+    return {"cves": linhas, "carga": carga, "contagem": contagem}
+
+
+@app.get("/api/cves/{cve}")
+def detalhe_de_cve(cve: str, request: Request, sessao=Depends(exige(permissoes.VER))):
+    if not re.fullmatch(r"(?i)CVE-\d{4}-\d+", cve):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            """SELECT cve, publicado_em, rejeitado, titulo, descricao, produto, cvss, vetor, kev_desde, kev_ransomware, kev_prazo, epss, epss_percentil, prioridade
+               FROM cves WHERE cve = %s""", (cve.upper(),)).fetchone()
+    if not linha:
+        raise HTTPException(status_code=404)
+    return linha
+
+
 class CaminhoDeFim(BaseModel):
     caminho: str = Field(max_length=400)
     sistema: str

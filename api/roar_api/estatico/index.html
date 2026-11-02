@@ -46,6 +46,7 @@
       <button type="button" data-vista="eventos">Eventos</button>
       <button type="button" data-vista="logs">Logs brutos</button>
       <button type="button" data-vista="ataques">Ataque e defesa</button>
+      <button type="button" data-vista="vulnerabilidades">Vulnerabilidades</button>
       <button type="button" data-vista="fontes">Fontes de dados</button>
       <button type="button" data-vista="ativos">Ativos</button>
       <button type="button" data-vista="arquivos">Integridade</button>
@@ -210,6 +211,26 @@
       <div id="legenda-ataques" class="legenda"></div>
       <div id="matriz-ataques" class="matriz" tabindex="0" aria-label="Matriz de técnicas de ataque"></div>
       <p id="credito-attack" class="credito"></p>
+    </section>
+
+    <section id="vista-vulnerabilidades" class="pagina" aria-label="Vulnerabilidades" hidden>
+      <h2 class="titulo-secao">Base de CVEs</h2>
+      <p id="resumo-cves" class="texto-secao"></p>
+      <div id="numeros-cves" class="fim-numeros"></div>
+      <form id="form-cves" class="filtros" role="search">
+        <input id="busca-cves" type="search" spellcheck="false" placeholder="CVE-2021-44228, ou uma palavra como log4j" aria-label="Buscar CVE">
+        <select id="prioridade-cves" aria-label="Prioridade">
+          <option value="">Todas as prioridades</option>
+          <option value="agora">Agora: exploração confirmada</option>
+          <option value="alta">Alta</option>
+          <option value="media">Média</option>
+          <option value="baixa">Baixa</option>
+          <option value="sem_dados">Sem nota</option>
+        </select>
+        <button type="submit" class="botao-primario">Buscar</button>
+      </form>
+      <div id="tabela-cves" class="tabela-rolagem"></div>
+      <p class="credito">Dados do registro CVE, do catálogo KEV da CISA e do EPSS, atualizados por eles.</p>
     </section>
 
     <section id="vista-fontes" class="pagina" aria-label="Fontes de dados" hidden>

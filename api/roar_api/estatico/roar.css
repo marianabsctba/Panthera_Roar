@@ -420,3 +420,5 @@ th.numero-celula { text-align: right; }
   .lista { max-height: 45vh; }
   .detalhe { padding: 16px; }
 }
+.numero-botao { color: var(--texto); font: inherit; text-align: left; cursor: pointer; display: grid; gap: 2px; }
+.numero-botao:hover { border-color: var(--rosa); }
