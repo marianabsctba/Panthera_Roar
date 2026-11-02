@@ -58,7 +58,8 @@ def main():
         with TestClient(app, base_url="https://testserver") as anonimo:
             print("== Quem pode", flush=True)
             registrar("lista exige sessão", anonimo.get("/api/organizacoes").status_code == 401)
-            comum, dono = entrar(conta(base)), entrar(conta(base, plataforma=True))
+            credenciais_do_dono = conta(base, plataforma=True)
+            comum, dono = entrar(conta(base)), entrar(credenciais_do_dono)
             registrar("administrador comum não é da plataforma", comum.get("/api/eu").json()["plataforma"] is False)
             registrar("quem administra a instalação é", dono.get("/api/eu").json()["plataforma"] is True)
             registrar("administrador comum não lista", comum.get("/api/organizacoes").status_code == 403)
@@ -106,6 +107,43 @@ def main():
             linha = next(o for o in dono.get("/api/organizacoes").json()["organizacoes"] if o["id"] == str(novo))
             registrar("a lista traz a nova, removível", linha["removivel"] is True and linha["usuarios"] == 1)
 
+            print("== Trocar de organização", flush=True)
+            gerenciador_novo = um("SELECT id FROM gerenciadores WHERE cliente_id = %s", novo)
+            ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, estado) VALUES (%s, %s, '001', 'so-da-nova', 'active')", (novo, gerenciador_novo))
+            nomes_de = lambda h: [a["nome"] for a in h.get("/api/ativos").json()["ativos"]]  # noqa: E731
+            registrar("antes de entrar não vê nada da outra", "so-da-nova" not in nomes_de(dono))
+            registrar("administrador comum não entra", comum.post(f"/api/organizacoes/{novo}/entrar").status_code == 403)
+            registrar("administrador da outra não entra", nova.post(f"/api/organizacoes/{base}/entrar").status_code == 403)
+            registrar("sem sessão não entra", anonimo.post(f"/api/organizacoes/{novo}/entrar").status_code == 401)
+            registrar("organização inexistente é recusada", dono.post(f"/api/organizacoes/{uuid.uuid4()}/entrar").status_code == 404)
+            outra_sessao = entrar(credenciais_do_dono)
+            registrar("entrar responde", dono.post(f"/api/organizacoes/{novo}/entrar").json().get("cliente") == nome_novo)
+            eu = dono.get("/api/eu").json()
+            registrar("a sessão diz onde está", eu["cliente"] == nome_novo and eu["em_outra_organizacao"] is True and eu["cliente_proprio"] == nome_base)
+            registrar("vê os dados de lá", nomes_de(dono) == ["so-da-nova"])
+            registrar("vê as pessoas de lá", [u["email"] for u in dono.get("/api/usuarios").json()["usuarios"]] == [email.lower()])
+            registrar("a outra sessão da mesma pessoa não muda", outra_sessao.get("/api/eu").json()["cliente"] == nome_base and "so-da-nova" not in nomes_de(outra_sessao))
+            registrar("quem é de lá não é afetado", nova.get("/api/eu").json()["cliente"] == nome_novo)
+            registrar("a entrada fica na auditoria de lá", um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'entrar_na_organizacao'", novo) == 1)
+            registrar("a entrada fica na auditoria de cá", um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'entrar_em_outra_organizacao' AND alvo = %s", base, nome_novo) == 1)
+            registrar("entrar de novo não repete o registro", dono.post(f"/api/organizacoes/{novo}/entrar").status_code == 200 and um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'entrar_na_organizacao'", novo) == 1)
+            linha = next(l for l in nova.get("/api/auditoria").json()["linhas"] if l["acao"] == "entrar_na_organizacao")
+            registrar("a organização vê o nome de quem entrou", "administração da instalação" in (linha["pessoa"] or ""), str(linha["pessoa"]))
+            dono.post("/api/usuarios", json={"email": f"feito-la-{SUFIXO}@exemplo.test", "nome": "Feita lá", "perfil": "analista_n1"})
+            registrar("o que faz lá nasce lá", um("SELECT cliente_id FROM usuarios WHERE email = %s", f"feito-la-{SUFIXO}@exemplo.test") == novo)
+            registrar("e fica na auditoria de lá", um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'criar_usuario'", novo) == 1)
+            registrar("lá dentro continua sem remover a própria", dono.post(f"/api/organizacoes/{base}/remover", json={"confirmacao": nome_base}).status_code == 409)
+            registrar("a saída responde", dono.post("/api/organizacoes/voltar").json().get("cliente") == nome_base)
+            eu = dono.get("/api/eu").json()
+            registrar("voltou para a própria", eu["cliente"] == nome_base and eu["em_outra_organizacao"] is False and "so-da-nova" not in nomes_de(dono))
+            registrar("a saída fica na auditoria de lá", um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'sair_da_organizacao'", novo) == 1)
+            dono.post(f"/api/organizacoes/{novo}/entrar")
+            ADMIN.execute("UPDATE usuarios SET plataforma = false WHERE email = %s", (credenciais_do_dono["email"],))
+            registrar("perdeu o poder, volta na hora", dono.get("/api/eu").json()["cliente"] == nome_base and "so-da-nova" not in nomes_de(dono))
+            registrar("e não entra mais", dono.post(f"/api/organizacoes/{novo}/entrar").status_code == 403)
+            ADMIN.execute("UPDATE usuarios SET plataforma = true WHERE email = %s", (credenciais_do_dono["email"],))
+            dono.post("/api/organizacoes/voltar")
+
             print("== Remoção", flush=True)
             propria = next(o for o in dono.get("/api/organizacoes").json()["organizacoes"] if o["id"] == str(base))
             registrar("a própria não é removível", propria["removivel"] is False)
@@ -124,6 +162,7 @@ def main():
             registrar("a organização sumiu", um("SELECT count(*) FROM clientes WHERE id = %s", novo) == 0)
             registrar("o gerenciador sumiu", not (provisao.DESTINO / "gerenciadores" / gerenciador).exists())
             registrar("a sessão morreu", nova.get("/api/eu").status_code == 401)
+            registrar("quem estava dentro dela volta para a própria", outra_sessao.post(f"/api/organizacoes/{novo}/entrar").status_code == 404 and outra_sessao.get("/api/eu").json()["cliente"] == nome_base)
             registrar("a conta não entra mais", anonimo.post("/api/entrar", json={"email": email, "senha": definitiva}).status_code == 401)
             registrar("a outra organização continua", um("SELECT count(*) FROM clientes WHERE id = %s", base) == 1)
             novo = None
@@ -141,6 +180,26 @@ def main():
             pedido = next(p for p in dono.get("/api/organizacoes").json()["pedidos"] if p["nome"] == nome_falho)
             registrar("falha aparece sem detalhe interno", pedido["estado"] == "falhou" and "segredo-interno" not in (pedido["mensagem"] or ""))
             registrar("falha apaga a senha do pedido", um("SELECT senha_hash FROM organizacoes_pedidos WHERE nome = %s", nome_falho) is None)
+
+            print("== Falha no meio", flush=True)
+            copia = provisao.shutil.copy
+            nome_meio = f"Meio {SUFIXO}"
+
+            def quebrada(*_):
+                raise FileNotFoundError("modelo sumiu")
+
+            provisao.shutil.copy = quebrada
+            try:
+                dono.post("/api/organizacoes", json={"nome": nome_meio, "email": f"meio-{SUFIXO}@exemplo.test"})
+                while organizacoes.processar_um(ENV):
+                    pass
+            finally:
+                provisao.shutil.copy = copia
+            registrar("falhou de verdade no meio", um("SELECT estado FROM organizacoes_pedidos WHERE nome = %s", nome_meio) == "falhou")
+            registrar("não fica organização pela metade", um("SELECT count(*) FROM clientes WHERE nome = %s", nome_meio) == 0)
+            registrar("o nome fica livre para tentar de novo", dono.post("/api/organizacoes", json={"nome": nome_meio, "email": f"meio2-{SUFIXO}@exemplo.test"}).status_code == 201)
+            ADMIN.execute("DELETE FROM organizacoes_pedidos WHERE nome = %s AND estado = 'pendente'", (nome_meio,))
+            registrar("a instalação leva o modelo do gerenciador", (provisao.DESTINO / "app/infra/wazuh/gerenciador/docker-compose.yml").is_file())
     finally:
         for g in ADMIN.execute("SELECT id FROM gerenciadores WHERE cliente_id = %s", (novo,)).fetchall() if novo else []:
             provisao.remover(g[0])

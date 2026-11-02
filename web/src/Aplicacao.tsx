@@ -1,7 +1,7 @@
-import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
-  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
+  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconCheck, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
   IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -9,6 +9,7 @@ import { Component, useEffect, useState, type ComponentType, type ReactNode } fr
 import { ContextoEu, enviar, ler, type Eu } from "./api";
 import { Autenticador, TrocaDeSenha } from "./Conta";
 import { Entrada } from "./Entrada";
+import { trocarDeOrganizacao } from "./trocarDeOrganizacao";
 import { Ajuda } from "./telas/Ajuda";
 import { Ataques } from "./telas/Ataques";
 import { Ativos } from "./telas/Ativos";
@@ -85,6 +86,29 @@ class ProtecaoDaTela extends Component<{ children: ReactNode; chave: string }, {
   }
 }
 
+function SeletorDeOrganizacao({ eu }: { eu: Eu }) {
+  const [lista, setLista] = useState<{ id: string; nome: string }[] | null>(null);
+  return (
+    <Menu position="bottom-start" shadow="md" onOpen={() => { ler<{ organizacoes: { id: string; nome: string }[] }>("/api/organizacoes").then((d) => setLista(d.organizacoes)).catch(() => {}); }}>
+      <Menu.Target>
+        <UnstyledButton aria-label="Trocar de organização">
+          <Group gap={4} wrap="nowrap">
+            <Text size="sm" truncate maw={220}>{eu.cliente}</Text>
+            <IconChevronDown size={14} />
+          </Group>
+        </UnstyledButton>
+      </Menu.Target>
+      <Menu.Dropdown mah={360} style={{ overflowY: "auto" }}>
+        <Menu.Label>Organizações</Menu.Label>
+        {!lista && <Menu.Item fz="sm" disabled>Carregando</Menu.Item>}
+        {lista?.map((o) => (
+          <Menu.Item key={o.id} fz="sm" rightSection={o.id === eu.cliente_id ? <IconCheck size={14} /> : undefined} onClick={() => { if (o.id !== eu.cliente_id) trocarDeOrganizacao(`/api/organizacoes/${o.id}/entrar`); }}>{o.nome}</Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 const vistaDaUrl = () => window.location.pathname.split("/")[1] || "panorama";
 
 export function Aplicacao() {
@@ -148,7 +172,7 @@ export function Aplicacao() {
               <Burger opened={aberto} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Abrir o menu" />
               <Avatar src="/estatico/pantera.webp" size={24} radius="sm" alt="" />
               <Text fw={600} size="sm">Panthera Roar</Text>
-              <Text size="sm" visibleFrom="sm" style={{ opacity: 0.85 }}>{eu.cliente}</Text>
+              {eu.plataforma ? <SeletorDeOrganizacao eu={eu} /> : <Text size="sm" visibleFrom="sm" style={{ opacity: 0.85 }}>{eu.cliente}</Text>}
             </Group>
             <Group gap="sm" wrap="nowrap">
             {eu.permissoes.includes("ver_auditoria") && (
@@ -204,6 +228,14 @@ export function Aplicacao() {
         <Autenticador aberto={verMfa || (!eu.trocar_senha && eu.mfa_obrigatorio && !eu.mfa_ativo)} eu={eu} aoFechar={() => setVerMfa(false)} aoMudar={abrir} />
         <AppShell.Main style={{ background: "var(--mantine-color-dark-8)" }}>
           <Box maw={1400} mx="auto">
+            {eu.em_outra_organizacao && (
+              <Alert color="pink" variant="light" mb="md" p="xs">
+                <Group justify="space-between" gap="sm">
+                  <Text size="sm">Você está atuando em <b>{eu.cliente}</b>. O que fizer aqui fica na auditoria desta organização.</Text>
+                  <Button size="xs" variant="default" onClick={() => trocarDeOrganizacao("/api/organizacoes/voltar")}>Voltar para {eu.cliente_proprio}</Button>
+                </Group>
+              </Alert>
+            )}
             {violada && <Alert color="red" variant="filled" mb="md" p="xs" title="">A conferência dos selos encontrou registros alterados. Veja em Prova e evidência.</Alert>}
             {eu.trocar_senha || (eu.mfa_obrigatorio && !eu.mfa_ativo) || !Tela ? null : <ProtecaoDaTela chave={atual!.id}><Tela /></ProtecaoDaTela>}
           </Box>

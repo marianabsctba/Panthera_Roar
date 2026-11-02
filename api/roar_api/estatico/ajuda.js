@@ -204,6 +204,8 @@ export const AJUDA = [
   { grupo: "Administrar", artigos: [
     { id: "organizacoes", vista: "organizacoes", titulo: "Organizações", blocos: [
       "As empresas atendidas por esta instalação. Os dados de cada uma ficam isolados das outras, e quem entra em uma não vê as demais. Esta tela aparece só para quem administra a instalação, não para os administradores de cada organização.",
+      { h: "Trocar de organização" },
+      "Clique no nome da organização, no alto da tela, e escolha outra. Também dá para clicar na linha da tabela. Uma faixa mostra onde você está e leva de volta. Cada entrada e cada saída ficam na auditoria das duas organizações, com o seu nome, e o que você fizer lá fica na auditoria de lá.",
       { h: "Criar uma organização" },
       { passos: [
         "Clique em Nova organização e informe o nome e o e-mail de quem vai administrá-la.",

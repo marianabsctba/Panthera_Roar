@@ -20,15 +20,35 @@ def _so_vulnerabilidades():
     return arquivo.is_file() and arquivo.read_text().strip() == "vulnerabilidades"
 
 
-def criar(env, pedido):
-    if _so_vulnerabilidades():
-        with provisao.banco_admin(env) as b:
-            cliente = b.execute("INSERT INTO clientes (nome) VALUES (%s) RETURNING id", (pedido["nome"],)).fetchone()[0]
-    else:
-        cliente = provisao.criar(pedido["nome"])["cliente"]
+def _desfazer(env, nome):
+    """Organização pela metade não tem quem entre nela, e ainda prende o nome. Quem pediu pode tentar de novo."""
     with provisao.banco_admin(env) as b:
-        b.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil, trocar_senha) VALUES (%s, %s, 'Administração', %s, 'administrador', true)",
-                  (cliente, pedido["email"], pedido["senha_hash"]))
+        linha = b.execute("SELECT id FROM clientes c WHERE nome = %s AND NOT EXISTS (SELECT 1 FROM usuarios u WHERE u.cliente_id = c.id)", (nome,)).fetchone()
+        if not linha:
+            return
+        gerenciadores = [l[0] for l in b.execute("SELECT id FROM gerenciadores WHERE cliente_id = %s", (linha[0],)).fetchall()]
+    for gerenciador in gerenciadores:
+        provisao.remover(gerenciador)
+    with provisao.banco_admin(env) as b:
+        b.execute("DELETE FROM clientes WHERE id = %s", (linha[0],))
+
+
+def criar(env, pedido):
+    try:
+        if _so_vulnerabilidades():
+            with provisao.banco_admin(env) as b:
+                cliente = b.execute("INSERT INTO clientes (nome) VALUES (%s) RETURNING id", (pedido["nome"],)).fetchone()[0]
+        else:
+            cliente = provisao.criar(pedido["nome"])["cliente"]
+        with provisao.banco_admin(env) as b:
+            b.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil, trocar_senha) VALUES (%s, %s, 'Administração', %s, 'administrador', true)",
+                      (cliente, pedido["email"], pedido["senha_hash"]))
+    except Exception:
+        try:
+            _desfazer(env, pedido["nome"])
+        except Exception:
+            log.exception("não deu para desfazer a organização %s", pedido["nome"])
+        raise
     return cliente
 
 

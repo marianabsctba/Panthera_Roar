@@ -129,7 +129,10 @@ RandomizedDelaySec=900
 [Install]
 WantedBy=timers.target
 UNIDADE
-mkdir -p "$APP/infra"
+mkdir -p "$APP/infra/wazuh"
+# O modelo de que cada organização nova nasce: sem ele, só dá para criar organização de dentro do repositório.
+rm -rf "$APP/infra/wazuh/gerenciador"
+cp -a "$RAIZ/infra/wazuh/gerenciador" "$APP/infra/wazuh/gerenciador"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in

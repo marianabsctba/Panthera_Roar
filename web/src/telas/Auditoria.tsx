@@ -18,6 +18,7 @@ const NOMES_DA_TRILHA: Record<string, string> = {
   criar_fonte: "Criou fonte de dados", desativar_fonte: "Desativou fonte de dados", criar_regra: "Criou regra", editar_regra: "Editou regra", desativar_regra: "Desativou regra",
   importar_regras: "Importou regras", exportar_regras: "Exportou regras", criar_playbook: "Criou playbook", alterar_playbook: "Alterou playbook",
   criar_regra_yara: "Criou regra YARA", desativar_regra_yara: "Tirou regra YARA", mudar_biblioteca_yara: "Mudou o uso da biblioteca YARA", atualizar_biblioteca_yara: "Atualizou a biblioteca YARA", tirar_regra_yara: "Tirou regra da biblioteca YARA", usar_regra_yara: "Voltou a usar regra da biblioteca YARA",
+  entrar_na_organizacao: "Administração da instalação entrou nesta organização", sair_da_organizacao: "Administração da instalação saiu desta organização", entrar_em_outra_organizacao: "Entrou em outra organização", voltar_para_a_organizacao: "Voltou para a própria organização",
   pedir_organizacao: "Pediu uma organização nova", remover_organizacao: "Pediu a remoção de uma organização", ver_instalacao_de_agente: "Viu o comando de instalação de agente", criar_caminho_fim: "Incluiu caminho na integridade", desativar_caminho_fim: "Tirou caminho da integridade", pedir_varredura_fim: "Pediu varredura de integridade",
 };
 const nomeDaAcao = (acao: string) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");

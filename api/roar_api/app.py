@@ -298,6 +298,7 @@ def eu(request: Request, sessao=Depends(sessao_atual)):
     with request.app.state.banco.connection() as con:
         plataforma = con.execute("SELECT roar_e_plataforma(%s) AS p", (sessao["usuario_id"],)).fetchone()["p"]
     return {"nome": sessao["nome"], "cliente": sessao["cliente_nome"], "fuso": sessao["fuso"], "perfil": sessao["perfil"], "plataforma": plataforma,
+            "cliente_id": str(sessao["cliente_id"]), "cliente_proprio": sessao["cliente_proprio_nome"], "em_outra_organizacao": sessao["cliente_id"] != sessao["cliente_proprio"],
             "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ())),
             "mfa_pendente": sessao["mfa_pendente"], "mfa_ativo": sessao["mfa_ativo"], "mfa_obrigatorio": sessao["mfa_obrigatorio"],
             "mfa_codigos_restantes": restantes, "modulos": sorted(MODULOS)}
@@ -615,6 +616,25 @@ def pedir_organizacao(dados: OrganizacaoNova, request: Request, sessao=Depends(e
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_organizacao', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], nome))
     return {"id": novo, "senha_temporaria": temporaria}
+
+
+def _usar_organizacao(request, sessao, cliente):
+    with request.app.state.banco.connection() as con:
+        return con.execute("SELECT roar_usar_organizacao(%s, %s, %s, %s) AS nome",
+                           (_hash_do_token(request.cookies.get(COOKIE, "")), sessao["usuario_id"], cliente, _origem(request))).fetchone()["nome"]
+
+
+@app.post("/api/organizacoes/voltar")
+def voltar_para_a_organizacao(request: Request, sessao=Depends(exige_plataforma)):
+    return {"cliente": _usar_organizacao(request, sessao, sessao["cliente_proprio"])}
+
+
+@app.post("/api/organizacoes/{cliente}/entrar")
+def entrar_na_organizacao(cliente: uuid.UUID, request: Request, sessao=Depends(exige_plataforma)):
+    nome = _usar_organizacao(request, sessao, cliente)
+    if nome is None:
+        raise HTTPException(status_code=404)
+    return {"cliente": nome}
 
 
 @app.post("/api/organizacoes/{cliente}/remover", status_code=202)
@@ -1136,7 +1156,9 @@ def _consultar_trilha(con, dias, acao, pessoa, antes_de, limite):
 
 
 def _nomes_das_pessoas(con):
-    return {u["id"]: u["nome"] for u in con.execute("SELECT id, nome FROM roar_listar_usuarios()").fetchall()}
+    nomes = {u["id"]: u["nome"] for u in con.execute("SELECT id, nome FROM roar_listar_usuarios()").fetchall()}
+    nomes.update({u["id"]: f"{u['nome']} (administração da instalação)" for u in con.execute("SELECT id, nome FROM roar_pessoas_de_fora()").fetchall()})
+    return nomes
 
 
 @app.get("/api/auditoria")

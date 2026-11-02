@@ -29,7 +29,8 @@ SUFIXO = uuid.uuid4().hex[:8]
 SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/eu"), ("POST", "/api/minha-senha"), ("POST", "/api/entrada/webhook"),
                  ("GET", "/api/saude"), ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar"),
                  # Não dependem do perfil, e sim de administrar a instalação: testar_organizacoes.py cobra quem pode.
-                 ("GET", "/api/organizacoes"), ("POST", "/api/organizacoes"), ("POST", "/api/organizacoes/{cliente}/remover")}
+                 ("GET", "/api/organizacoes"), ("POST", "/api/organizacoes"), ("POST", "/api/organizacoes/{cliente}/remover"),
+                 ("POST", "/api/organizacoes/{cliente}/entrar"), ("POST", "/api/organizacoes/voltar")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
     "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},

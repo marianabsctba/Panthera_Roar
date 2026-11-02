@@ -2,7 +2,8 @@ import { Alert, Button, Group, Modal, SimpleGrid, Stack, Text, TextInput } from 
 import { IconPlus } from "@tabler/icons-react";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { detalhe, enviar, useDados } from "../api";
+import { detalhe, enviar, useDados, useEu } from "../api";
+import { trocarDeOrganizacao } from "../trocarDeOrganizacao";
 import { AcoesDaLinha, BlocoDeComando, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela } from "../componentes";
 import { numero } from "../formato";
 
@@ -94,6 +95,8 @@ function RemoverOrganizacao({ org, aoFechar, aoRemover }: { org: Organizacao | n
 }
 
 export function Organizacoes() {
+  const eu = useEu();
+  const entrar = (o: Organizacao) => trocarDeOrganizacao(`/api/organizacoes/${o.id}/entrar`);
   const { dados, erro, recarregar } = useDados<Visao>("/api/organizacoes");
   const [nova, setNova] = useState(false);
   const [remover, setRemover] = useState<Organizacao | null>(null);
@@ -122,14 +125,18 @@ export function Organizacoes() {
               linhas={dados.organizacoes}
               chave={(o) => o.id}
               vazio="Nenhuma organização."
+              aoClicarLinha={(o) => { if (o.id !== eu.cliente_id) entrar(o); }}
               colunas={[
-                { titulo: "Organização", celula: (o) => <Text size="sm" fw={500}>{o.nome}</Text> },
+                { titulo: "Organização", celula: (o) => <Group gap="xs" wrap="nowrap"><Text size="sm" fw={500}>{o.nome}</Text>{o.id === eu.cliente_id && <Estado tipo="ativo">Você está aqui</Estado>}</Group> },
                 { titulo: "Pessoas", alinhar: "right", largura: 80, celula: (o) => numero(o.usuarios) },
                 { titulo: "Ativos", alinhar: "right", largura: 80, celula: (o) => numero(o.ativos) },
                 { titulo: "Eventos em 24 h", alinhar: "right", largura: 120, celula: (o) => numero(o.eventos_24h) },
                 { titulo: "Último evento", largura: 150, celula: (o) => <Data valor={o.ultimo_evento} /> },
                 { titulo: "Criada em", largura: 150, celula: (o) => <Data valor={o.criado_em} /> },
-                { titulo: "", largura: 40, celula: (o) => <AcoesDaLinha rotulo={`Ações de ${o.nome}`} itens={o.removivel ? [{ texto: "Remover", perigo: true, aoClicar: () => setRemover(o) }] : []} /> },
+                { titulo: "", largura: 40, celula: (o) => <AcoesDaLinha rotulo={`Ações de ${o.nome}`} itens={[
+                  ...(o.id === eu.cliente_id ? [] : [{ texto: "Entrar", aoClicar: () => entrar(o) }]),
+                  ...(o.removivel ? [{ texto: "Remover", perigo: true, aoClicar: () => setRemover(o) }] : []),
+                ]} /> },
               ]}
             />
           </Painel>
