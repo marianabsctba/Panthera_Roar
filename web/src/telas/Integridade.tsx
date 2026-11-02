@@ -11,7 +11,7 @@ import { numero, quando, tamanho } from "../formato";
 const MUDANCAS: Record<string, string> = { added: "Criado", modified: "Alterado", deleted: "Apagado" };
 interface VisaoFim {
   caminhos: { id: number; caminho: string; sistema: string; modo: string; estado: string; mensagem: string | null }[];
-  ativos: { agente_id: string; nome: string | null; sistema: string | null; estado: string; fim_inicio: string | null; fim_fim: string | null; arquivos: number }[];
+  ativos: { gerenciador_id: string; agente_id: string; nome: string | null; sistema: string | null; estado: string; fim_inicio: string | null; fim_fim: string | null; arquivos: number }[];
   por_dia: { mudanca: string; total: number }[];
 }
 interface Mudanca { id: number; ocorrido_em: string; ativo: string | null; regra_descricao: string | null; caminho: string | null; mudanca: string | null; dono: string | null }
@@ -124,7 +124,7 @@ interface ArquivoDaBase { caminho: string; tamanho: number | null; modificado_em
 
 function ArquivosDoServidor({ ativo, aoFechar }: { ativo: VisaoFim["ativos"][number] | null; aoFechar: () => void }) {
   const [busca, setBusca] = useState("");
-  const { dados } = useDados<{ arquivos: ArquivoDaBase[]; total: number }>(ativo ? `/api/fim/ativos/${encodeURIComponent(ativo.agente_id)}/arquivos?${new URLSearchParams({ busca })}` : null);
+  const { dados } = useDados<{ arquivos: ArquivoDaBase[]; total: number }>(ativo ? `/api/fim/ativos/${encodeURIComponent(ativo.agente_id)}/arquivos?${new URLSearchParams({ busca, gerenciador: ativo.gerenciador_id })}` : null);
   return (
     <Drawer opened={ativo !== null} onClose={aoFechar} title={`Arquivos de ${ativo?.nome ?? ativo?.agente_id ?? ""}`} size="60%">
       <Stack gap="sm">
@@ -158,18 +158,18 @@ function Servidores({ visao }: { visao: VisaoFim }) {
     <Painel p={0}>
       <Tabela
         linhas={visao.ativos}
-        chave={(a) => a.agente_id}
+        chave={(a) => `${a.gerenciador_id}/${a.agente_id}`}
         vazio="Nenhum servidor inscrito ainda."
         aoClicarLinha={setAberto}
         colunas={[
           { titulo: "Servidor", celula: (a) => <Text size="sm" fw={500}>{a.nome ?? a.agente_id}</Text> },
           { titulo: "Sistema", celula: (a) => <Text size="sm" c="dimmed">{a.sistema ?? "-"}</Text> },
-          { titulo: "Última varredura", largura: 150, celula: (a) => (pedidos[a.agente_id] ? "Pedida agora" : <Data valor={a.fim_fim ?? a.fim_inicio} />) },
+          { titulo: "Última varredura", largura: 150, celula: (a) => (pedidos[`${a.gerenciador_id}/${a.agente_id}`] ? "Pedida agora" : <Data valor={a.fim_fim ?? a.fim_inicio} />) },
           { titulo: "Arquivos", alinhar: "right", largura: 90, celula: (a) => numero(a.arquivos) },
           { titulo: "", largura: 40, celula: (a) => (
             <AcoesDaLinha rotulo={`Ações de ${a.nome ?? a.agente_id}`} itens={[
               { texto: "Ver arquivos", aoClicar: () => setAberto(a) },
-              ...(pode("gerir_fontes") ? [{ texto: "Varrer agora", aoClicar: async () => { const r = await enviar("/api/fim/varreduras", { agente_id: a.agente_id }); if (r.ok) setPedidos((p) => ({ ...p, [a.agente_id]: true })); } }] : []),
+              ...(pode("gerir_fontes") ? [{ texto: "Varrer agora", aoClicar: async () => { const r = await enviar("/api/fim/varreduras", { agente_id: a.agente_id, gerenciador_id: a.gerenciador_id }); if (r.ok) setPedidos((p) => ({ ...p, [`${a.gerenciador_id}/${a.agente_id}`]: true })); } }] : []),
             ]} />
           ) },
         ]}
@@ -183,7 +183,7 @@ function Servidores({ visao }: { visao: VisaoFim }) {
 
 interface VisaoYara {
   regras: { id: number; nome: string; identificadores: string[]; estado: string; mensagem: string | null }[];
-  servidores: { agente_id: string; nome: string | null; sistema: string | null; pronto_em: string | null; erro_em: string | null }[];
+  servidores: { gerenciador_id: string; agente_id: string; nome: string | null; sistema: string | null; pronto_em: string | null; erro_em: string | null }[];
   achados: { id: number; ocorrido_em: string; ativo: string | null; regra: string | null; arquivo: string | null; autor: string | null; repositorio: string | null }[];
   comando: string;
   comando_windows: string;
@@ -326,7 +326,7 @@ function BuscaDeMalware() {
         <Painel titulo="Servidores" acao={emUso && <Button leftSection={<IconTerminal2 size={14} />} size="xs" onClick={() => setPreparar(true)}>Preparar servidor</Button>}>
           <Tabela
             linhas={emUso ? dados.servidores : []}
-            chave={(s) => s.agente_id}
+            chave={(s) => `${s.gerenciador_id}/${s.agente_id}`}
             vazio="Ative a biblioteca ou adicione uma regra para preparar os servidores."
             aoClicarLinha={(s) => { if (!s.pronto_em) setPreparar(true); }}
             colunas={[

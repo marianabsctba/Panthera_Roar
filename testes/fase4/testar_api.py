@@ -203,6 +203,14 @@ def main():
             ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, estado, sca_nota) VALUES (%s, %s, %s, %s, 'active', 70)",
                           (cliente["id"], cliente["ger"], agente, nome))
         registrar("ativos só do cliente", [x["nome"] for x in http.get("/api/ativos").json()["ativos"]] == ["servidor-a"])
+        # Dois gerenciadores da mesma organização numeram os agentes por conta própria.
+        ADMIN.execute("INSERT INTO gerenciadores (id, cliente_id, porta_base) VALUES ('gersegundo', %s, 64000)", (a["id"],))
+        ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, estado) VALUES (%s, 'gersegundo', '001', 'servidor-a2', 'disconnected')", (a["id"],))
+        lista = http.get("/api/ativos").json()["ativos"]
+        registrar("mesmo número em dois gerenciadores se distingue", len({(x["gerenciador_id"], x["agente_id"]) for x in lista}) == 2)
+        registrar("eventos de um agente não misturam gerenciadores", http.get("/api/eventos", params={"agente": "001", "gerenciador": "gersegundo"}).json()["eventos"] == [])
+        ADMIN.execute("DELETE FROM ativos WHERE gerenciador_id = 'gersegundo'")
+        ADMIN.execute("DELETE FROM gerenciadores WHERE id = 'gersegundo'")
         ADMIN.execute("UPDATE regras SET mitre = '{T1110}' WHERE cliente_id = %s AND regra_id = '5712'", (a["id"],))
         ADMIN.execute("UPDATE eventos SET mitre = '{T1110.001}', regra_grupos = '{syscheck}', bruto = bruto || %s WHERE cliente_id = %s",
                       (Jsonb({"rule": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},

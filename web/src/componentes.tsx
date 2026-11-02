@@ -99,6 +99,14 @@ export interface Coluna<T> {
 
 export function Tabela<T>({ colunas, linhas, chave, vazio, aoClicarLinha }: { colunas: Coluna<T>[]; linhas: T[]; chave: (linha: T) => string | number; vazio: string; aoClicarLinha?: (linha: T) => void }) {
   if (!linhas.length) return <Vazio>{vazio}</Vazio>;
+  // Chave repetida faz o React reaproveitar a linha errada, e a tabela passa a mostrar o que o filtro já tirou.
+  const vistas = new Map<string | number, number>();
+  const chaveUnica = (l: T) => {
+    const c = chave(l);
+    const vezes = vistas.get(c) ?? 0;
+    vistas.set(c, vezes + 1);
+    return vezes ? `${c}#${vezes}` : c;
+  };
   return (
     <ScrollArea type="auto">
       <Table miw={560}>
@@ -108,7 +116,7 @@ export function Tabela<T>({ colunas, linhas, chave, vazio, aoClicarLinha }: { co
         <Table.Tbody>
           {linhas.map((l) => (
             <Table.Tr
-              key={chave(l)}
+              key={chaveUnica(l)}
               className={aoClicarLinha ? "linha-clicavel" : undefined}
               {...(aoClicarLinha ? { tabIndex: 0, onClick: () => aoClicarLinha(l), onKeyDown: (e: KeyboardEvent) => { if (e.key === "Enter") aoClicarLinha(l); } } : {})}
             >{colunas.map((c, i) => <Table.Td key={i} ta={c.alinhar} className={c.alinhar ? "numero" : undefined}>{c.celula(l)}</Table.Td>)}</Table.Tr>

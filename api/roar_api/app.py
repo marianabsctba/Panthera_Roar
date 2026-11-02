@@ -664,7 +664,7 @@ def _sem_curinga(texto):
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
             dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
-            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = "", operadora: str = ""):
+            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = "", gerenciador: str = "", operadora: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -713,6 +713,10 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if agente:
         condicoes.append("agente_id = %s")
         parametros.append(agente[:16])
+    # O número do agente só é único dentro do gerenciador: dois servidores da mesma organização podem ter o mesmo.
+    if gerenciador:
+        condicoes.append("gerenciador_id = %s")
+        parametros.append(gerenciador[:64])
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
@@ -884,7 +888,7 @@ def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: s
 def ativos(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
-            """SELECT a.agente_id, a.nome, a.ip, a.sistema, a.versao, a.estado, a.grupos, a.ultima_conexao, a.sca_politica,
+            """SELECT a.gerenciador_id, a.agente_id, a.nome, a.ip, a.sistema, a.versao, a.estado, a.grupos, a.ultima_conexao, a.sca_politica,
                       a.sca_nota, a.sca_aprovados, a.sca_reprovados,
                       (SELECT count(*) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id
                         AND e.nivel >= %s AND e.ocorrido_em >= now() - interval '7 days') AS alertas_7_dias
@@ -1609,6 +1613,7 @@ class CaminhoDeFim(BaseModel):
 
 class PedidoDeVarredura(BaseModel):
     agente_id: str = Field(pattern=r"^[0-9]{3,8}$")
+    gerenciador_id: str | None = Field(default=None, max_length=64)
 
 
 @app.get("/api/fim")
@@ -1617,7 +1622,7 @@ def visao_de_fim(request: Request, sessao=Depends(exige(permissoes.VER))):
         caminhos = con.execute(
             "SELECT id, caminho, sistema, modo, estado, mensagem, criado_em FROM fim_caminhos WHERE estado <> 'desativado' ORDER BY sistema, caminho").fetchall()
         ativos_ = con.execute(
-            """SELECT a.agente_id, a.nome, a.sistema, a.estado, a.fim_inicio, a.fim_fim,
+            """SELECT a.gerenciador_id, a.agente_id, a.nome, a.sistema, a.estado, a.fim_inicio, a.fim_fim,
                       (SELECT count(*) FROM fim_base b WHERE b.gerenciador_id = a.gerenciador_id AND b.agente_id = a.agente_id) AS arquivos
                FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""").fetchall()
         por_dia = con.execute(
@@ -1627,15 +1632,15 @@ def visao_de_fim(request: Request, sessao=Depends(exige(permissoes.VER))):
 
 
 @app.get("/api/fim/ativos/{agente}/arquivos")
-def base_de_arquivos(agente: str, request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", deslocamento: int = 0):
+def base_de_arquivos(agente: str, request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", deslocamento: int = 0, gerenciador: str = ""):
     if not re.fullmatch(r"[0-9]{3,8}", agente):
         raise HTTPException(status_code=404)
     termo = f"%{_sem_curinga(busca.strip()[:200])}%"
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             """SELECT caminho, tamanho, modificado_em, sha256, dono, permissao, count(*) OVER () AS total FROM fim_base
-               WHERE agente_id = %s AND caminho ILIKE %s ORDER BY caminho LIMIT %s OFFSET %s""",
-            (agente, termo, TAMANHO_DA_PAGINA, max(0, deslocamento))).fetchall()
+               WHERE agente_id = %s AND (%s = '' OR gerenciador_id = %s) AND caminho ILIKE %s ORDER BY caminho LIMIT %s OFFSET %s""",
+            (agente, gerenciador, gerenciador, termo, TAMANHO_DA_PAGINA, max(0, deslocamento))).fetchall()
     return {"arquivos": linhas, "total": linhas[0]["total"] if linhas else 0}
 
 
@@ -1675,7 +1680,8 @@ def desativar_caminho_de_fim(identificador: int, request: Request, sessao=Depend
 def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     """Só aceita ativo do próprio cliente: o gerenciador vem da linha do ativo, sob o RLS."""
     with do_cliente(request, sessao) as con:
-        ativo = con.execute("SELECT gerenciador_id FROM ativos WHERE agente_id = %s AND agente_id <> '000' ORDER BY atualizado_em DESC LIMIT 1", (dados.agente_id,)).fetchone()
+        ativo = con.execute("SELECT gerenciador_id FROM ativos WHERE agente_id = %s AND agente_id <> '000' AND (%s::text IS NULL OR gerenciador_id = %s) ORDER BY atualizado_em DESC LIMIT 1",
+                            (dados.agente_id, dados.gerenciador_id, dados.gerenciador_id)).fetchone()
         if not ativo:
             raise HTTPException(status_code=404)
         con.execute("INSERT INTO fim_varreduras (cliente_id, gerenciador_id, agente_id, pedida_por) VALUES (%s, %s, %s, %s)",
@@ -1702,7 +1708,7 @@ def visao_de_yara(request: Request, sessao=Depends(exige(permissoes.VER))):
         regras = con.execute(
             "SELECT id, nome, identificadores, estado, mensagem, criado_em FROM yara_regras WHERE estado <> 'desativada' ORDER BY nome").fetchall()
         servidores = con.execute(
-            """SELECT a.agente_id, a.nome, a.sistema, a.estado,
+            """SELECT a.gerenciador_id, a.agente_id, a.nome, a.sistema, a.estado,
                       (SELECT max(e.ocorrido_em) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id AND e.regra_id = %s) AS pronto_em,
                       (SELECT max(e.ocorrido_em) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id AND e.regra_id = %s) AS erro_em
                FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (yara_regras.REGRA_PRONTO, yara_regras.REGRA_ERRO)).fetchall()

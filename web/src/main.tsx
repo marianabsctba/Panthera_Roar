@@ -14,12 +14,8 @@ import { tema } from "./tema";
 const chave = document.querySelector<HTMLMetaElement>('meta[name="roar-chave-de-estilo"]')?.content ?? "";
 
 // Sem animações as gavetas abrem na hora: é o que permite testar a tela sem ninguém olhando.
-let semAnimacao = false;
-try {
-  semAnimacao = localStorage.getItem("roar-sem-animacao") === "1";
-} catch {
-  // Sem acesso ao armazenamento, a tela segue normal.
-}
+// Vale só para este carregamento: esse modo também tira as camadas flutuantes, e não pode ficar grudado no navegador de ninguém.
+const semAnimacao = new URLSearchParams(window.location.search).has("sem-animacao");
 
 createRoot(document.getElementById("raiz")!).render(
   <StrictMode>

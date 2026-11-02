@@ -6,6 +6,7 @@ import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDeEvent
 import { numero } from "../formato";
 
 interface Ativo {
+  gerenciador_id: string;
   agente_id: string;
   nome: string | null;
   ip: string | null;
@@ -106,8 +107,8 @@ export function Ativos() {
     if (!a.nome) return;
     setAberto(null);
     setFiltro(soAlertas
-      ? { rotulo: `Alertas de ${a.nome} em 7 dias`, consulta: { alertas: "true", dias: "7", agente: a.agente_id } }
-      : { rotulo: `Eventos de ${a.nome} em 30 dias`, consulta: { dias: "30", agente: a.agente_id } });
+      ? { rotulo: `Alertas de ${a.nome} em 7 dias`, consulta: { alertas: "true", dias: "7", agente: a.agente_id, gerenciador: a.gerenciador_id } }
+      : { rotulo: `Eventos de ${a.nome} em 30 dias`, consulta: { dias: "30", agente: a.agente_id, gerenciador: a.gerenciador_id } });
   };
   const contar = (estado: string) => ativos.filter((a) => a.estado === estado).length;
 
@@ -125,7 +126,7 @@ export function Ativos() {
           <Painel titulo={situacao ? SITUACOES[situacao].plural : "Todos os ativos"} acao={<Busca valor={busca} aoMudar={setBusca} dica="Nome, endereço, sistema ou grupo" />}>
             <Tabela
               linhas={linhas}
-              chave={(a) => a.agente_id}
+              chave={(a) => `${a.gerenciador_id}/${a.agente_id}`}
               vazio={ativos.length ? "Nenhum ativo com esse filtro." : "Nenhum ativo inscrito ainda."}
               aoClicarLinha={setAberto}
               colunas={[
