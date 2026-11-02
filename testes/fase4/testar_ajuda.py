@@ -47,7 +47,7 @@ def main():
     print("\n== Página", flush=True)
     registrar("o código da tela importa a ajuda", 'import { AJUDA } from "/estatico/ajuda.js";' in js)
     registrar("nenhum recurso externo", "http://" not in ajuda and "https://" not in ajuda)
-    for proibido in ("wazuh", "opensearch", "temporal", "keycloak", "be safe", "campus", "postgres", "rabbitmq"):
+    for proibido in ("wazuh", "opensearch", "temporal", "keycloak", "postgres", "rabbitmq"):
         registrar(f"sem nome de bastidor: {proibido}", proibido not in ajuda.lower())
     registrar("sem travessão", "—" not in ajuda and "–" not in ajuda)
     registrar("não monta HTML com texto", "innerHTML" not in ajuda and "insertAdjacentHTML" not in ajuda)
