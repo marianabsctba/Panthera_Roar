@@ -1189,17 +1189,18 @@ def alvos_de_varredura(request: Request, sessao=Depends(exige(permissoes.VER))):
 @app.post("/api/vuln/alvos", status_code=201)
 def criar_alvo_de_varredura(dados: NovoAlvo, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
     """Varrer é tocar em sistema dos outros: a tela avisa, e quem criou o alvo fica na auditoria."""
-    try:
-        hosts = sorted({vulnerabilidades.validar_host(h) for h in dados.hosts})
-    except vulnerabilidades.HostInvalido as erro:
-        raise HTTPException(status_code=422, detail=str(erro))
     if bool(dados.credencial_tipo) != bool(dados.credencial_usuario and dados.credencial_senha):
         raise HTTPException(status_code=422, detail="Para usar credencial, informe o tipo, o usuário e a senha.")
     nome = dados.nome.strip()
     try:
         with do_cliente(request, sessao) as con:
-            if not con.execute("SELECT 1 FROM vuln_modelos WHERE id = %s AND ativo", (dados.modelo_id,)).fetchone():
+            modelo = con.execute("SELECT ferramenta FROM vuln_modelos WHERE id = %s AND ativo", (dados.modelo_id,)).fetchone()
+            if not modelo:
                 raise HTTPException(status_code=422, detail="Modelo de varredura desconhecido.")
+            try:
+                hosts = sorted({vulnerabilidades.validar_alvo(h, modelo["ferramenta"]) for h in dados.hosts})
+            except vulnerabilidades.HostInvalido as erro:
+                raise HTTPException(status_code=422, detail=str(erro))
             segredo = None
             if dados.credencial_tipo:
                 segredo = f"varredura-{secrets.token_hex(8)}"

@@ -154,7 +154,7 @@ export const AJUDA = [
       { h: "Como começar" },
       { passos: [
         "Em Varreduras, crie um modelo: tipo, se é intrusivo e quais portas.",
-        "Crie um alvo com os endereços, a repetição e, se puder, uma credencial de varredura, que encontra bem mais.",
+        "Crie um alvo: endereços e redes, endereços web ou imagens de contêiner, conforme o modelo. Em rede, uma credencial de varredura encontra bem mais.",
         "Clique em Varrer agora, ou espere a agenda. O padrão é a cada 30 dias.",
       ] },
       { h: "Achados" },

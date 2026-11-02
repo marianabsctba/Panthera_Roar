@@ -382,7 +382,7 @@
             <label>Modelo <select id="alvo-modelo"></select></label>
             <label>Repetir a cada (dias, 0 só sob demanda) <input id="alvo-dias" type="number" min="0" max="365" value="30"></label>
           </div>
-          <label>Endereços, redes ou nomes, separados por vírgula ou espaço <input id="alvo-hosts" type="text" spellcheck="false" placeholder="10.0.0.5, 10.0.1.0/24, srv-rh.exemplo.test"></label>
+          <label>Alvos, separados por vírgula ou espaço: endereços e redes, endereços web ou imagens, conforme o modelo <input id="alvo-hosts" type="text" spellcheck="false" placeholder="10.0.0.5, https://exemplo.test, nginx:1.27"></label>
           <div class="linha-campos">
             <label>Credencial <select id="alvo-cred-tipo"><option value="">Sem credencial</option><option value="ssh">SSH (Linux, equipamentos)</option><option value="smb">SMB (Windows)</option><option value="snmp">SNMP (rede)</option></select></label>
             <label>Usuário <input id="alvo-cred-usuario" type="text" maxlength="120" autocomplete="off"></label>

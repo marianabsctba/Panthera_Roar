@@ -7,12 +7,14 @@ deixou de achar: varredura sem credencial não prova que sumiu o que só aparece
 
 import ipaddress
 import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 MAIOR_REDE = 65536
 TAMANHO_DA_EVIDENCIA = 4000
 NOME_DE_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*")
+IMAGEM = re.compile(r"[a-z0-9][a-z0-9._/-]{0,200}(?::[A-Za-z0-9._-]{1,128})?(?:@sha256:[a-f0-9]{64})?")
 # Pontos da exposição: a conta é simples de propósito, para qualquer pessoa conseguir refazer.
 PONTOS = {"critica": 10, "alta": 5, "media": 2, "baixa": 1, "informativa": 0}
 
@@ -40,6 +42,25 @@ def validar_host(texto):
     return texto.lower()
 
 
+def validar_alvo(texto, ferramenta):
+    """Cada tipo de varredura aceita um tipo de alvo. Nada aqui pode virar opção da ferramenta."""
+    texto = str(texto).strip()
+    if ferramenta == "web":
+        partes = urlsplit(texto)
+        if partes.scheme not in ("http", "https") or not partes.hostname or partes.username or re.search(r"[\s\"'<>]", texto):
+            raise HostInvalido(f"{texto[:80]} não é um endereço web completo, como https://exemplo.test.")
+        return texto
+    if ferramenta == "conteiner":
+        if not IMAGEM.fullmatch(texto):
+            raise HostInvalido(f"{texto[:80]} não é uma imagem de contêiner, como nginx:1.27.")
+        return texto
+    if ferramenta == "nuvem":
+        if texto.lower() not in ("aws", "azure", "gcp"):
+            raise HostInvalido("Informe o provedor: aws, azure ou gcp.")
+        return texto.lower()
+    return validar_host(texto)
+
+
 def severidade_do_cvss(cvss):
     """As quatro faixas da CVSS. Zero ou sem nota é informativo, e fica fora da contagem de risco."""
     if cvss is None or cvss <= 0:
@@ -64,6 +85,8 @@ class Achado:
     evidencia: str = ""
     solucao: str = ""
     nome_do_host: str | None = None
+    # Quando a ferramenta classifica sem dar nota: muito achado de web e de pacote não tem CVSS.
+    severidade: str | None = None
 
     def chave(self, fonte):
         return f"{fonte}|{self.regra}|{self.porta}"
@@ -102,7 +125,7 @@ def gravar_resultado(con, cliente, varredura, resultado):
         respondendo[a.host] = ativo
         chave = a.chave(resultado.fonte)
         existente = con.execute("SELECT id, estado FROM vuln_achados WHERE ativo_id = %s AND chave = %s", (ativo, chave)).fetchone()
-        valores = (a.titulo[:500], sorted({c.upper() for c in a.cves}), a.cvss, severidade_do_cvss(a.cvss), a.porta or None, a.evidencia[:TAMANHO_DA_EVIDENCIA] or None, a.solucao[:TAMANHO_DA_EVIDENCIA] or None)
+        valores = (a.titulo[:500], sorted({c.upper() for c in a.cves}), a.cvss, severidade_do_cvss(a.cvss) if a.cvss is not None else (a.severidade or "informativa"), a.porta or None, a.evidencia[:TAMANHO_DA_EVIDENCIA] or None, a.solucao[:TAMANHO_DA_EVIDENCIA] or None)
         if existente is None:
             achado = con.execute(
                 """INSERT INTO vuln_achados (cliente_id, ativo_id, chave, fonte, titulo, cves, cvss, severidade, porta, evidencia, solucao, autenticada, intrusiva, todas_portas, ultima_varredura)
