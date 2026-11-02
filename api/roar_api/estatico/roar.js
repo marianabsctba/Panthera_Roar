@@ -1238,7 +1238,8 @@ const ESTADOS_DA_YARA = { pendente: "Aplicando...", ativa: "Ativa", recusada: "R
 
 async function carregarYara() {
   const r = await pedir("/api/yara");
-  const { regras, servidores, achados, comando } = await r.json();
+  const { regras, servidores, achados, comando, comando_windows: comandoWindows, biblioteca, assinatura } = await r.json();
+  desenharBibliotecaYara(biblioteca, assinatura);
   $("tabela-yara").replaceChildren(regras.length ? montarTabela([["Nome"], ["Regras"], ["Estado"], [""]], regras.map((x) => {
     const acao = el("td");
     if (pode("gerir_fontes")) {
@@ -1249,17 +1250,84 @@ async function carregarYara() {
     }
     return [el("td", null, x.nome), el("td", "mono", x.identificadores.join(", ")), el("td", null, x.mensagem ?? ESTADOS_DA_YARA[x.estado] ?? x.estado), acao];
   })) : el("p", "vazio", "Nenhuma regra YARA ainda."));
-  $("yara-instalar").hidden = !regras.length;
+  const emUso = regras.length > 0 || assinatura?.ativa;
+  $("yara-instalar").hidden = !emUso;
   $("yara-comando").textContent = comando;
+  $("yara-comando-windows").textContent = comandoWindows;
   const situacao = (s) => {
     if (s.erro_em && (!s.pronto_em || s.erro_em > s.pronto_em)) return `Com problema desde ${quando(s.erro_em)}`;
     return s.pronto_em ? `Pronto desde ${quando(s.pronto_em)}` : "Ainda não confirmou";
   };
-  $("tabela-yara-servidores").replaceChildren(regras.length && servidores.length ? montarTabela([["Servidor"], ["Sistema"], ["Busca de malware"]], servidores.map((s) => [
+  $("tabela-yara-servidores").replaceChildren(emUso && servidores.length ? montarTabela([["Servidor"], ["Sistema"], ["Busca de malware"]], servidores.map((s) => [
     el("td", null, s.nome ?? s.agente_id), el("td", null, s.sistema ?? "-"), el("td", null, situacao(s))])) : "");
-  $("tabela-yara-achados").replaceChildren(achados.length ? montarTabela([["Quando"], ["Servidor"], ["Regra"], ["Arquivo"], [""]], achados.map((a) => [
-    el("td", null, quando(a.ocorrido_em)), el("td", null, a.ativo ?? "-"), el("td", "mono", a.regra ?? "-"), el("td", "mono", a.arquivo ?? "-"), celula(botaoBruto(a.id))])) : "");
+  $("tabela-yara-achados").replaceChildren(achados.length ? montarTabela([["Quando"], ["Servidor"], ["Regra"], ["Autoria"], ["Arquivo"], [""]], achados.map((a) => [
+    el("td", null, quando(a.ocorrido_em)), el("td", null, a.ativo ?? "-"), el("td", "mono", a.regra ?? "-"),
+    el("td", null, a.autor ? `${a.autor}${a.repositorio ? `, via ${a.repositorio}` : ""}` : "Regra da organização"), el("td", "mono", a.arquivo ?? "-"), celula(botaoBruto(a.id))])) : "");
 }
+
+function desenharBibliotecaYara(biblioteca, assinatura) {
+  const destino = $("yara-biblioteca");
+  const ativa = Boolean(assinatura?.ativa);
+  $("yara-biblioteca-regras").hidden = !biblioteca?.versao;
+  if (!biblioteca?.versao) {
+    destino.replaceChildren(el("p", "texto-secao", biblioteca?.erro ?? "A biblioteca da comunidade ainda está sendo baixada."));
+    return;
+  }
+  const total = Number(biblioteca.regras ?? 0).toLocaleString("pt-BR");
+  const partes = [el("p", "texto-secao", ativa
+    ? `Biblioteca da comunidade em uso: versão ${assinatura.versao ?? biblioteca.versao}${assinatura.excluidas ? `, sem ${assinatura.excluidas} regras que você tirou` : ""}. A versão disponível é de ${quando(biblioteca.atualizada_em)}.`
+    : `A biblioteca da comunidade tem ${total} regras de dezenas de fontes públicas, versão de ${quando(biblioteca.atualizada_em)}. Cada regra mostra autor, origem e licença.`)];
+  if (assinatura?.mensagem) partes.push(el("p", "erro", assinatura.mensagem));
+  if (biblioteca.erro) partes.push(el("p", "texto-secao", biblioteca.erro));
+  if (pode("gerir_fontes")) {
+    const mudar = (novo) => async () => {
+      const r = await postarJson("/api/yara/biblioteca", novo);
+      if (r.ok) carregarYara();
+    };
+    const acoes = el("div", "escolha-mapa");
+    acoes.append(botaoDeTabela(ativa ? "Parar de usar a biblioteca" : "Usar a biblioteca", ativa ? "botao-discreto" : "botao-primario", mudar({ ativa: !ativa, automatica: assinatura?.automatica ?? true })));
+    if (ativa) {
+      acoes.append(botaoDeTabela(assinatura.automatica ? "Desligar a atualização automática" : "Ligar a atualização automática", "botao-discreto", mudar({ ativa, automatica: !assinatura.automatica })));
+      if (!assinatura.automatica && assinatura.versao !== biblioteca.versao) {
+        acoes.append(botaoDeTabela("Atualizar agora", "botao-discreto", async () => {
+          await pedir("/api/yara/biblioteca/atualizar", { method: "POST" });
+          carregarYara();
+        }));
+      }
+    }
+    partes.push(acoes);
+  }
+  destino.replaceChildren(...partes);
+}
+
+let regrasDaBibliotecaYara = [];
+
+async function carregarRegrasDaBibliotecaYara(continuar = false) {
+  const consulta = new URLSearchParams({ busca: $("busca-yara-biblioteca").value, deslocamento: continuar ? regrasDaBibliotecaYara.length : 0 });
+  const r = await pedir(`/api/yara/biblioteca/regras?${consulta}`);
+  const dados = await r.json();
+  regrasDaBibliotecaYara = continuar ? [...regrasDaBibliotecaYara, ...dados.regras] : dados.regras;
+  $("total-yara-biblioteca").textContent = `${Number(dados.total).toLocaleString("pt-BR")} regras encontradas.`;
+  $("mais-yara-biblioteca").hidden = regrasDaBibliotecaYara.length >= dados.total;
+  $("tabela-yara-biblioteca").replaceChildren(regrasDaBibliotecaYara.length ? montarTabela([["Regra"], ["O que procura"], ["Autoria e origem"], ["Licença"], [""]], regrasDaBibliotecaYara.map((x) => {
+    const acao = el("td");
+    if (pode("gerir_fontes") && !x.privada) {
+      acao.append(botaoDeTabela(x.em_uso ? "Não usar" : "Usar de novo", "botao-discreto", async () => {
+        const v = await pedir(`/api/yara/biblioteca/regras/${encodeURIComponent(x.nome)}/${x.em_uso ? "nao-usar" : "usar"}`, { method: "POST" });
+        if (v.ok) {
+          x.em_uso = !x.em_uso;
+          carregarRegrasDaBibliotecaYara();
+          carregarYara();
+        }
+      }));
+    }
+    return [el("td", "mono", x.nome), el("td", null, x.descricao ?? "-"), el("td", null, [x.autor, x.repositorio].filter(Boolean).join(", ") || "-"), el("td", null, x.licenca ?? "Veja a origem"), acao];
+  })) : el("p", "vazio", "Nenhuma regra encontrada."));
+}
+
+$("form-yara-biblioteca").addEventListener("submit", (ev) => { ev.preventDefault(); carregarRegrasDaBibliotecaYara(); });
+$("mais-yara-biblioteca").addEventListener("click", () => carregarRegrasDaBibliotecaYara(true));
+$("yara-biblioteca-regras").addEventListener("toggle", (ev) => { if (ev.target.open && !regrasDaBibliotecaYara.length) carregarRegrasDaBibliotecaYara(); });
 
 $("nova-yara").addEventListener("click", () => {
   $("form-yara").hidden = false;
@@ -2401,7 +2469,7 @@ const NOMES_DA_TRILHA = {
   buscar_logs: "Buscou nos logs", ver_bruto: "Viu alerta bruto", gerar_relatorio: "Gerou relatório", gerar_evidencia: "Gerou pacote de evidência", exportar_auditoria: "Exportou a trilha",
   criar_fonte: "Criou fonte de dados", desativar_fonte: "Desativou fonte de dados", criar_regra: "Criou regra", editar_regra: "Editou regra", desativar_regra: "Desativou regra",
   importar_regras: "Importou regras", exportar_regras: "Exportou regras", criar_playbook: "Criou playbook", alterar_playbook: "Alterou playbook",
-  criar_regra_yara: "Criou regra YARA", desativar_regra_yara: "Tirou regra YARA",
+  criar_regra_yara: "Criou regra YARA", desativar_regra_yara: "Tirou regra YARA", mudar_biblioteca_yara: "Mudou o uso da biblioteca YARA", atualizar_biblioteca_yara: "Atualizou a biblioteca YARA", tirar_regra_yara: "Tirou regra da biblioteca YARA", usar_regra_yara: "Voltou a usar regra da biblioteca YARA",
   ver_instalacao_de_agente: "Viu o comando de instalação de agente", criar_caminho_fim: "Incluiu caminho na integridade", desativar_caminho_fim: "Tirou caminho da integridade", pedir_varredura_fim: "Pediu varredura de integridade",
 };
 const nomeDaAcao = (acao) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");
@@ -2712,7 +2780,7 @@ $("politica-mfa").addEventListener("change", async (evento) => {
 const SEM_CONTA_REAL = "Ainda não testado com uma conta real";
 const CATALOGO = [
   { grupo: "Ativos e rede", itens: [
-    { id: "agente", rotulo: "Agente", logo: "linux", resumo: "Linux, Windows e macOS: logs, integridade de arquivos, inventário e resposta a incidentes.", prova: "Testado em Linux. Windows e macOS ainda não",
+    { id: "agente", rotulo: "Agente", logo: "linux", resumo: "Linux, Windows e macOS: logs, integridade de arquivos, inventário e resposta a incidentes.", prova: "Testado em Linux e Windows Server. macOS ainda não",
       passos: ["Abra o comando do sistema do ativo, logo abaixo.", "Rode o comando no ativo como administrador.", "Em alguns minutos o ativo aparece conectado em Ativos."],
       cuidado: "O comando traz a senha de inscrição da sua organização: não o publique. Para bloquear endereços, o ativo precisa ter firewall.", abrir: "agente", permissao: "instalar_agente" },
     { id: "syslog", rotulo: "Syslog", sigla: "SYS", resumo: "Firewall, switch e outros equipamentos que não aceitam agente.", prova: "Testado com envio real",

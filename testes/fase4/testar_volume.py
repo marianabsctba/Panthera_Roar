@@ -87,6 +87,8 @@ def main():
             registrar("mostra o tipo de log", logs["origens"][0]["nome"] == "sshd")
             registrar("alertas à parte", d["alertas"]["total"] == 5)
             registrar("mostra o espaço ocupado", d["ocupado_bytes"] and d["ocupado_bytes"] > 0, str(d["ocupado_bytes"]))
+            registrar("logs e alertas somam o total", d["ocupado"]["logs"] + d["ocupado"]["alertas"] == d["ocupado_bytes"], str(d["ocupado"])[:160])
+            registrar("o disco vem por dia", sum(x["logs"] + x["alertas"] for x in d["ocupado"]["por_dia"]) == d["ocupado_bytes"] and d["ocupado"]["retencao_dias"] > 0)
             registrar("período inválido não quebra", http.get("/api/volume", params={"dias": 99999}).json()["dias"] == 90 and http.get("/api/volume", params={"dias": -1}).json()["dias"] == 1)
 
             print("\n== Clientes", flush=True)

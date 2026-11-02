@@ -37,7 +37,7 @@ escrever_env() {
   install -m 640 -o root -g "$grupo" "$temporario" "$arquivo"
   rm -f "$temporario"
 }
-escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE
+escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS
 escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
@@ -100,6 +100,7 @@ unidade inteligencia root .env ingestao "$PY -u -m roar_ingestao.inteligencia"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
+unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.biblioteca"
 unidade selo roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.selo" "ReadWritePaths=$DESTINO/selo"
 unidade ueba roar-svc servicos.env ueba "$PY -u -m roar_ueba.motor" "Environment=PYTHONPATH=$APP/ueba:$APP/ingestao"
 unidade disparo roar-svc servicos.env motor "$PY -u -m roar_motor.disparo"
@@ -130,9 +131,9 @@ mkdir -p "$APP/infra"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia"; DESLIGAR="varredura" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia"; DESLIGAR="" ;;
+  vulnerabilidades) SERVICOS="api varredura cves"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca"; DESLIGAR="varredura" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca"; DESLIGAR="" ;;
 esac
 systemctl daemon-reload
 for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done

@@ -178,11 +178,20 @@ def main():
 
             def com_problema():
                 amb.ciclo(a)
-                return amb.um("SELECT count(*) FROM eventos WHERE cliente_id = %s AND regra_id = %s AND regra_descricao LIKE '%%grande.bin%%'", a["cliente"], yara_regras.REGRA_ERRO)
+                return amb.um("SELECT count(*) FROM eventos WHERE cliente_id = %s AND regra_id = %s AND regra_descricao LIKE '%%grande.bin%%'", a["cliente"], yara_regras.REGRA_NAO_VARRIDO)
 
             registrar("arquivo grande demais avisa em vez de calar", esperar(com_problema, limite=120))
             situacao = next(s for s in http.get("/api/yara").json()["servidores"] if s["agente_id"] == agente)
-            registrar("a tela sabe do problema", situacao["erro_em"], str(situacao["erro_em"]))
+            registrar("um arquivo grande não marca o servidor como com problema", situacao["erro_em"] is None, str(situacao["erro_em"]))
+            sh("docker", "exec", nome, "sh", "-c", "cp /var/ossec/etc/shared/roar_yara.yar /tmp/guardado.yar; mv /usr/bin/yarac /usr/bin/yarac.fora; rm -f /var/ossec/var/roar_yara.yarc")
+            sh("docker", "exec", nome, "sh", "-c", f'echo "{MARCA}" > /srv/yara-teste/sem-programa.bin')
+
+            def servidor_com_problema():
+                amb.ciclo(a)
+                return next(s for s in http.get("/api/yara").json()["servidores"] if s["agente_id"] == agente)["erro_em"]
+
+            registrar("sem o programa, o servidor aparece com problema", esperar(servidor_com_problema, limite=120))
+            sh("docker", "exec", nome, "mv", "/usr/bin/yarac.fora", "/usr/bin/yarac")
             sh("docker", "exec", nome, "rm", "-f", "/srv/yara-teste/grande.bin")
 
             print("\n== Regra nova chega sem reiniciar nada", flush=True)

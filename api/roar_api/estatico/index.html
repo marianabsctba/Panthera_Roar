@@ -614,6 +614,17 @@
         <button id="nova-yara" type="button" class="botao-primario" data-permissao="gerir_fontes">Adicionar regra YARA</button>
       </div>
       <p class="texto-secao">Cada arquivo novo ou alterado nas pastas monitoradas é varrido no próprio servidor, com as suas regras. Quem bate vira alerta.</p>
+      <div id="yara-biblioteca"></div>
+      <details id="yara-biblioteca-regras" hidden>
+        <summary>Ver as regras da biblioteca</summary>
+        <form id="form-yara-biblioteca" class="filtros" role="search">
+          <input id="busca-yara-biblioteca" type="search" placeholder="Nome, descrição, autor ou origem" aria-label="Buscar na biblioteca YARA">
+          <button type="submit" class="botao-primario">Buscar</button>
+        </form>
+        <p id="total-yara-biblioteca" class="texto-secao"></p>
+        <div id="tabela-yara-biblioteca" class="tabela-rolagem"></div>
+        <button id="mais-yara-biblioteca" type="button" class="botao-discreto" hidden>Carregar mais</button>
+      </details>
       <form id="form-yara" class="formulario-regra" hidden novalidate>
         <div class="linha-campos">
           <label>Nome <input id="yara-nome" type="text" maxlength="120" placeholder="Campanha de ransomware"></label>
@@ -627,9 +638,12 @@
       </form>
       <div id="tabela-yara" class="tabela-rolagem"></div>
       <div id="yara-instalar" hidden>
-        <h3>Preparar um servidor Linux</h3>
-        <p class="texto-secao">Rode uma vez em cada servidor Debian ou Ubuntu, depois que a primeira regra estiver ativa. Em outro Linux, instale yara e jq pelo gerenciador de pacotes e rode as duas últimas partes. Windows ainda não é coberto.</p>
+        <h3>Preparar um servidor</h3>
+        <p class="texto-secao">Rode uma vez em cada servidor, depois que a primeira regra estiver ativa. Em Linux que não seja Debian ou Ubuntu, instale yara e jq pelo gerenciador de pacotes e rode as duas últimas partes.</p>
+        <h4>Debian e Ubuntu</h4>
         <pre id="yara-comando" class="bruto" tabindex="0"></pre>
+        <h4>Windows, no PowerShell como administrador</h4>
+        <pre id="yara-comando-windows" class="bruto" tabindex="0"></pre>
       </div>
       <div id="tabela-yara-servidores" class="tabela-rolagem"></div>
       <div id="tabela-yara-achados" class="tabela-rolagem"></div>

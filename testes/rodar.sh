@@ -7,7 +7,7 @@
 set -uo pipefail
 
 PY="${ROAR_PYTHON:-/opt/panthera-roar/venv/bin/python}"
-SERVICOS="roar-ingestao roar-fontes roar-selo roar-ueba roar-disparo roar-varredura roar-inteligencia"
+SERVICOS="roar-ingestao roar-fontes roar-selo roar-ueba roar-disparo roar-varredura roar-inteligencia roar-biblioteca"
 retomar() { systemctl start $SERVICOS 2>/dev/null || true; }
 trap retomar EXIT
 systemctl stop $SERVICOS 2>/dev/null || true

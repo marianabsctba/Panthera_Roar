@@ -137,9 +137,10 @@ export const AJUDA = [
       "Abra um ativo para ver o estado atual dos arquivos, e peça uma varredura quando precisar.",
       { aviso: "\"Com quem alterou\" precisa do serviço de auditoria no ativo: auditd no Linux ou auditoria habilitada no Windows." },
       { h: "Busca de malware" },
-      "Cole suas regras YARA em Busca de malware. Cada arquivo novo ou alterado nas pastas monitoradas é varrido no próprio servidor, e o que bater vira alerta alto, que pode disparar um playbook.",
-      "Depois da primeira regra ativa, rode uma vez em cada servidor Linux o comando que aparece na tela. O servidor passa para Pronto quando confirma. Regras novas chegam sozinhas, em alguns minutos.",
-      { aviso: "Só olha arquivos novos ou alterados: o que já estava no disco não é varrido. Arquivos acima de 256 MB não são lidos e geram um aviso. Windows ainda não é coberto." },
+      "Use a biblioteca da comunidade, com milhares de regras revisadas, ou cole as suas em Busca de malware. Cada arquivo novo ou alterado nas pastas monitoradas é varrido no próprio servidor, e o que bater vira alerta alto, que pode disparar um playbook.",
+      "A biblioteca confere sozinha se há versão nova e só publica depois de conferir que ela compila e não acusa programas comuns do sistema. Se quiser decidir quando atualizar, desligue a atualização automática. A regra que incomodar pode ser tirada em Ver as regras da biblioteca, onde também aparecem autor, origem e licença.",
+      "Depois de ativar, rode uma vez em cada servidor o comando que aparece na tela, um para Linux e outro para Windows. O servidor passa para Pronto quando confirma. Regras novas chegam sozinhas, em alguns minutos.",
+      { aviso: "Só olha arquivos novos ou alterados: o que já estava no disco não é varrido. Arquivos acima de 256 MB não são lidos e geram um aviso." },
     ] },
   ] },
   { grupo: "Detectar e responder", artigos: [

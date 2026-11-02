@@ -151,6 +151,12 @@ async def cabecalhos(request: Request, chamada):
         return resposta
     resposta = await chamada(request)
     resposta.headers.update(SEGURANCA)
+    chave = getattr(request.state, "chave_de_estilo", None)
+    if chave:
+        # A nova tela injeta uma tag de estilo: só aceita a que traz a chave desta resposta.
+        resposta.headers["Content-Security-Policy"] = (
+            f"default-src 'self'; style-src 'self' 'nonce-{chave}'; img-src 'self' data:; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
     # Dado de alerta nunca fica guardado; a tela sempre confere se há versão nova.
     resposta.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
     return resposta
@@ -650,7 +656,8 @@ def _sem_curinga(texto):
 
 @app.get("/api/eventos")
 def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
-            dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = ""):
+            dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
+            sinal: str = "", entidade: str = "", alertas: bool = False):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
     dias = max(1, min(dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
@@ -670,6 +677,26 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
     if cidade:
         condicoes.append("cidade = %s")
         parametros.append(cidade[:100])
+    # Cada número do panorama abre os eventos que ele conta: os filtros precisam contar do mesmo jeito.
+    if alertas:
+        condicoes.append("nivel >= %s")
+        parametros.append(NIVEL_MINIMO_NA_FILA)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", dia):
+        condicoes.append("(ocorrido_em AT TIME ZONE %s)::date = %s::date")
+        parametros += [sessao["fuso"], dia]
+    lista = [s for s in severidades.split(",") if s in ("baixa", "media", "alta", "critica")]
+    if lista:
+        condicoes.append("severidade = ANY(%s)")
+        parametros.append(lista)
+    if origem:
+        condicoes.append("host(ip_origem) = %s")
+        parametros.append(origem[:64])
+    if sinal:
+        condicoes.append("id IN (SELECT evento_id FROM sinais WHERE tipo = %s AND ocorrido_em >= now() - make_interval(days => %s))")
+        parametros += [sinal[:64], dias]
+    if entidade:
+        condicoes.append("(usuario = %s OR agente_nome = %s)")
+        parametros += [entidade[:200], entidade[:200]]
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
@@ -891,7 +918,7 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
 
 
 @app.get("/api/arquivos")
-def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, busca: str = ""):
+def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, busca: str = "", mudanca: str = ""):
     """Mudanças em arquivos monitorados."""
     dias = max(1, min(dias, 90))
     condicao, parametros = "", [dias]
@@ -900,6 +927,9 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
         condicao = "AND (bruto #>> '{syscheck,path}' ILIKE %s OR agente_nome ILIKE %s)"
         termo = f"%{_sem_curinga(busca)}%"
         parametros += [termo, termo]
+    if mudanca in ("added", "modified", "deleted"):
+        condicao += " AND bruto #>> '{syscheck,event}' = %s"
+        parametros.append(mudanca)
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             f"""SELECT id, ocorrido_em, severidade, agente_nome AS ativo, regra_descricao,
@@ -1306,6 +1336,7 @@ def pedir_varredura(dados: PedidoDeVarredura, request: Request, sessao=Depends(e
 
 
 AMOSTRA_DE_TAMANHO = 500
+HORAS_DE_EPS = 72
 
 
 def _volume_do_indice(indexer, indices, dias):
@@ -1326,8 +1357,16 @@ def _volume_do_indice(indexer, indices, dias):
     total = d["hits"]["total"]["value"]
     minutos = a.get("por_minuto", {}).get("buckets", [])
     pico = max(minutos, key=lambda b: b["doc_count"], default=None)
+    por_hora = {}
+    for b in minutos:
+        hora = b["key_as_string"][:13]
+        contagem = por_hora.setdefault(hora, {"hora": hora, "eventos": 0, "maior_minuto": 0})
+        contagem["eventos"] += b["doc_count"]
+        contagem["maior_minuto"] = max(contagem["maior_minuto"], b["doc_count"])
     return {
         "total": total,
+        # Hora sem evento não vem no histograma: a tela completa com zero, para o buraco aparecer.
+        "eps_por_hora": [{"hora": h["hora"], "medio": round(h["eventos"] / 3600, 3), "pico": round(h["maior_minuto"] / 60, 2)} for h in list(por_hora.values())[-HORAS_DE_EPS:]],
         "eps_agora": round(a.get("agora", {}).get("doc_count", 0) / 300, 2),
         "eps_medio": round(total / (dias * 86400), 3),
         "eps_pico": round(pico["doc_count"] / 60, 2) if pico else 0,
@@ -1346,6 +1385,23 @@ def _ocupado_no_indice(indexer, indices):
     return sum(i["primaries"]["store"]["size_in_bytes"] for i in r.json().get("indices", {}).values())
 
 
+def _ocupado_por_dia(indexer, logs, alertas):
+    """Cada índice é um dia: o nome diz qual, e o prefixo diz se é log ou alerta."""
+    r = indexer.get(f"{INDEXER_URL}/{logs},{alertas}/_stats/store?allow_no_indices=true&ignore_unavailable=true", timeout=30)
+    if not r.ok:
+        return None
+    dias, total = {}, {"logs": 0, "alertas": 0}
+    for nome, dados in r.json().get("indices", {}).items():
+        tipo = "logs" if nome.startswith("wazuh-archives-") else "alertas"
+        tamanho = dados["primaries"]["store"]["size_in_bytes"]
+        total[tipo] += tamanho
+        achado = re.search(r"(\d{4})\.(\d{2})\.(\d{2})$", nome)
+        if achado:
+            dia = dias.setdefault("-".join(achado.groups()), {"logs": 0, "alertas": 0})
+            dia[tipo] += tamanho
+    return {**total, "por_dia": [{"dia": d, **v} for d, v in sorted(dias.items())], "retencao_dias": int(_ler_env().get("RETENCAO_DIAS", 90))}
+
+
 @app.get("/api/volume")
 def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 7):
     """O quanto este cliente manda. Tudo vem dos índices dele, escolhidos pelo banco sob o RLS, nunca pela requisição."""
@@ -1361,6 +1417,7 @@ def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 
     except (requests.RequestException, KeyError, ValueError):
         raise HTTPException(status_code=503, detail="Não foi possível medir o volume agora.")
     resposta["ocupado_bytes"] = _ocupado_no_indice(request.app.state.indexer, f"{logs},{alertas}")
+    resposta["ocupado"] = _ocupado_por_dia(request.app.state.indexer, logs, alertas)
     return resposta
 
 
@@ -1566,6 +1623,11 @@ class RegraYara(BaseModel):
     fonte: str = Field(max_length=300000)
 
 
+class AssinaturaDeYara(BaseModel):
+    ativa: bool
+    automatica: bool = True
+
+
 @app.get("/api/yara")
 def visao_de_yara(request: Request, sessao=Depends(exige(permissoes.VER))):
     """O servidor só aparece como pronto depois de avisar: o gerenciador não tem como saber se o script foi instalado."""
@@ -1578,9 +1640,80 @@ def visao_de_yara(request: Request, sessao=Depends(exige(permissoes.VER))):
                       (SELECT max(e.ocorrido_em) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id AND e.regra_id = %s) AS erro_em
                FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (yara_regras.REGRA_PRONTO, yara_regras.REGRA_ERRO)).fetchall()
         achados = con.execute(
-            """SELECT id, ocorrido_em, agente_nome AS ativo, bruto #>> '{data,yara_regra}' AS regra, bruto #>> '{data,yara_arquivo}' AS arquivo FROM eventos
-               WHERE regra_id = %s AND ocorrido_em >= now() - interval '30 days' ORDER BY ocorrido_em DESC LIMIT 100""", (yara_regras.REGRA_ACHADO,)).fetchall()
-    return {"regras": regras, "servidores": servidores, "achados": achados, "comando": yara_regras.COMANDO_DE_INSTALACAO}
+            """SELECT e.id, e.ocorrido_em, e.agente_nome AS ativo, e.bruto #>> '{data,yara_regra}' AS regra, e.bruto #>> '{data,yara_arquivo}' AS arquivo,
+                      b.autor, b.repositorio, b.licenca, b.endereco
+               FROM eventos e LEFT JOIN yara_biblioteca b ON b.nome = e.bruto #>> '{data,yara_regra}'
+               WHERE e.regra_id = %s AND e.ocorrido_em >= now() - interval '30 days' ORDER BY e.ocorrido_em DESC LIMIT 100""", (yara_regras.REGRA_ACHADO,)).fetchall()
+        assinatura = con.execute("SELECT ativa, automatica, versao, cardinality(excluidas) AS excluidas, estado, mensagem FROM yara_assinatura").fetchone()
+        estado = con.execute(
+            """SELECT b.versao, b.atualizada_em, b.erro, (SELECT regras FROM yara_pacotes p WHERE p.versao = b.versao) AS regras
+               FROM bibliotecas_estado b WHERE b.nome = 'yara'""").fetchone()
+    return {"regras": regras, "servidores": servidores, "achados": achados, "comando": yara_regras.COMANDO_DE_INSTALACAO,
+            "comando_windows": yara_regras.COMANDO_DE_INSTALACAO_WINDOWS, "biblioteca": estado, "assinatura": assinatura}
+
+
+@app.post("/api/yara/biblioteca")
+def assinar_biblioteca_yara(dados: AssinaturaDeYara, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        if dados.ativa and not con.execute("SELECT 1 FROM bibliotecas_estado WHERE nome = 'yara' AND versao IS NOT NULL").fetchone():
+            raise HTTPException(status_code=409, detail="A biblioteca ainda não foi baixada. Tente de novo em alguns minutos.")
+        con.execute(
+            """INSERT INTO yara_assinatura (cliente_id, gerenciador_id, ativa, automatica) VALUES (%s, %s, %s, %s)
+               ON CONFLICT (cliente_id) DO UPDATE SET ativa = EXCLUDED.ativa, automatica = EXCLUDED.automatica, estado = 'pendente', mensagem = NULL, atualizada_em = now()""",
+            (sessao["cliente_id"], gerenciador["id"], dados.ativa, dados.automatica))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_biblioteca_yara', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"ativa={dados.ativa} automatica={dados.automatica}"))
+    return {"estado": "pendente"}
+
+
+@app.post("/api/yara/biblioteca/atualizar", status_code=202)
+def atualizar_biblioteca_yara(request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Para quem desligou a atualização sozinha: passa para a versão mais nova, uma vez."""
+    with do_cliente(request, sessao) as con:
+        atual = con.execute("SELECT versao FROM bibliotecas_estado WHERE nome = 'yara'").fetchone()
+        linha = con.execute(
+            "UPDATE yara_assinatura SET versao = %s, estado = 'pendente', mensagem = NULL, atualizada_em = now() WHERE ativa RETURNING cliente_id",
+            (atual["versao"] if atual else None,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=409, detail="A biblioteca não está em uso.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'atualizar_biblioteca_yara', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], atual["versao"]))
+    return {"estado": "pendente"}
+
+
+@app.get("/api/yara/biblioteca/regras")
+def regras_da_biblioteca_yara(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", deslocamento: int = 0):
+    deslocamento = max(0, min(deslocamento, 100000))
+    termo = f"%{_sem_curinga(busca.strip()[:200])}%"
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            """SELECT nome, privada, descricao, autor, repositorio, licenca, endereco, pontuacao, count(*) OVER () AS total
+               FROM yara_biblioteca WHERE nome ILIKE %s OR descricao ILIKE %s OR autor ILIKE %s OR repositorio ILIKE %s
+               ORDER BY nome LIMIT %s OFFSET %s""", (termo, termo, termo, termo, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
+        linha = con.execute("SELECT excluidas FROM yara_assinatura").fetchone()
+    excluidas = set(linha["excluidas"]) if linha else set()
+    return {"regras": [{**l, "em_uso": l["nome"] not in excluidas} for l in linhas], "total": linhas[0]["total"] if linhas else 0}
+
+
+@app.post("/api/yara/biblioteca/regras/{nome}/{acao}", status_code=204)
+def escolher_regra_da_biblioteca(nome: str, acao: str, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    if acao not in ("usar", "nao-usar") or not re.fullmatch(r"\w{1,128}", nome):
+        raise HTTPException(status_code=404)
+    with do_cliente(request, sessao) as con:
+        regra = con.execute("SELECT privada FROM yara_biblioteca WHERE nome = %s", (nome,)).fetchone()
+        if not regra:
+            raise HTTPException(status_code=404)
+        if regra["privada"] and acao == "nao-usar":
+            raise HTTPException(status_code=422, detail="Esta regra serve de base para outras e não pode sair sozinha.")
+        conta = """array(SELECT DISTINCT x FROM unnest(excluidas) AS x WHERE x <> %s)""" if acao == "usar" else "array(SELECT DISTINCT x FROM unnest(excluidas || %s::text) AS x)"
+        linha = con.execute(f"UPDATE yara_assinatura SET excluidas = {conta}, estado = 'pendente', mensagem = NULL, atualizada_em = now() RETURNING cliente_id", (nome,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=409, detail="Ative a biblioteca antes de escolher as regras.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], "usar_regra_yara" if acao == "usar" else "tirar_regra_yara", nome))
 
 
 @app.post("/api/yara/regras", status_code=201)
@@ -1592,6 +1725,9 @@ def criar_regra_yara(dados: RegraYara, request: Request, sessao=Depends(exige(pe
             if not gerenciador:
                 raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
             outras = [l["fonte"] for l in con.execute("SELECT fonte FROM yara_regras WHERE estado IN ('pendente', 'ativa')").fetchall()]
+            # Com a biblioteca em uso, um nome repetido quebraria o conjunto todo nos servidores.
+            outras += [l["conteudo"] for l in con.execute(
+                "SELECT p.conteudo FROM yara_assinatura a JOIN yara_pacotes p ON p.versao = a.versao WHERE a.ativa").fetchall()]
             try:
                 identificadores = yara_regras.validar(dados.fonte, outras)
             except yara_regras.RegraInvalida as erro:
@@ -1814,7 +1950,8 @@ def biblioteca(request: Request, sessao=Depends(exige(permissoes.VER)), busca: s
                 FROM biblioteca_regras WHERE {' AND '.join(condicoes)} ORDER BY titulo LIMIT %s OFFSET %s""",
             (*parametros, TAMANHO_DA_PAGINA, deslocamento)).fetchall()
         total = con.execute("SELECT count(*) AS total, count(*) FILTER (WHERE convertivel) AS convertiveis FROM biblioteca_regras").fetchone()
-    return {"regras": linhas, "total_filtrado": linhas[0]["total_filtrado"] if linhas else 0, **total}
+        estado = con.execute("SELECT versao, atualizada_em, erro FROM bibliotecas_estado WHERE nome = 'sigma'").fetchone()
+    return {"regras": linhas, "total_filtrado": linhas[0]["total_filtrado"] if linhas else 0, "estado": estado, **total}
 
 
 @app.post("/api/regras/biblioteca/{identificador}/ativar", status_code=201)
@@ -2192,8 +2329,8 @@ def instalacao_de_agente(request: Request, sessao=Depends(exige(permissoes.INSTA
         {"nome": "Linux, Red Hat e derivados", "provado": False, "comando":
             f"curl -so agente.rpm https://packages.wazuh.com/4.x/yum/wazuh-agent-{VERSAO_DO_AGENTE}-1.x86_64.rpm && "
             f"sudo {unix} rpm -ihv agente.rpm && sudo systemctl enable --now wazuh-agent"},
-        {"nome": "Windows (PowerShell como administrador)", "provado": False, "comando":
-            f"Invoke-WebRequest -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-{VERSAO_DO_AGENTE}-1.msi -OutFile agente.msi; "
+        {"nome": "Windows (PowerShell como administrador)", "provado": True, "comando":
+            f"Invoke-WebRequest -UseBasicParsing -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-{VERSAO_DO_AGENTE}-1.msi -OutFile agente.msi; "
             f"msiexec.exe /i agente.msi /q {janelas}; Start-Sleep 20; NET START WazuhSvc"},
     ]}
 
@@ -2421,6 +2558,17 @@ def grupo(identificador: int, request: Request, sessao=Depends(exige(permissoes.
 
 
 app.mount("/estatico", StaticFiles(directory=ESTATICO), name="estatico")
+
+
+@app.get("/novo", include_in_schema=False)
+@app.get("/novo/{resto:path}", include_in_schema=False)
+def nova_tela(request: Request, resto: str = ""):
+    """A console nova, por enquanto ao lado da atual. Toda rota dela devolve a mesma página."""
+    pagina = ESTATICO / "novo" / "index.html"
+    if not pagina.exists():
+        raise HTTPException(status_code=404)
+    request.state.chave_de_estilo = secrets.token_urlsafe(18)
+    return Response(pagina.read_text(encoding="utf-8").replace("__CHAVE__", request.state.chave_de_estilo), media_type="text/html")
 
 
 @app.get("/", include_in_schema=False)

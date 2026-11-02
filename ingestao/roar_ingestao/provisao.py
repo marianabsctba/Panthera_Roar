@@ -162,6 +162,9 @@ def configuracao_do_gerenciador(conf):
     conf = conf.replace("<logall_json>no</logall_json>", "<logall_json>yes</logall_json>")
     for bloco in ("vulnerability-detection", "indexer"):
         conf = re.sub(rf"(<{bloco}>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
+    # O inventário do Wazuh liga mesmo com o bloco desligado e pediria, sem parar, para criar modelos de índice.
+    # Essa permissão afetaria todos os clientes: sem endereço válido, ele desiste em silêncio.
+    conf = re.sub(r"(<indexer>.*?<host>)[^<]*(</host>)", r"\g<1>https://127.0.0.1:1\g<2>", conf, count=1, flags=re.S)
     return conf + _RESPOSTAS_COM_PRAZO
 
 
@@ -311,26 +314,27 @@ def aplicar_agent_conf(gerenciador_id, conteudo, grupo="default"):
     return True, {"status": "OK", "saida": ""}
 
 
-def aplicar_yara(gerenciador_id, regras, script, decodificadores, deteccoes, nome_das_deteccoes, grupo="default"):
+def aplicar_yara(gerenciador_id, regras, scripts, decodificadores, deteccoes, nome_das_deteccoes, grupo="default"):
     """Decodificador e detecção ficam mesmo sem regras: sozinhos não fazem nada. Sem regras, a pasta dos agentes esvazia."""
     pasta = DESTINO / "gerenciadores" / gerenciador_id
     compartilhada = f"/var/ossec/etc/shared/{grupo}"
     copia = pasta / "yara.tmp"
 
     def copiar(conteudo, caminho):
-        copia.write_text(conteudo, encoding="utf-8")
+        copia.write_bytes(conteudo.encode("utf-8"))
         _compose(pasta, gerenciador_id, "cp", str(copia), f"gerenciador:{caminho}")
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "wazuh:wazuh", caminho)
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
 
     if not regras:
-        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", f"{compartilhada}/roar_yara.yar", f"{compartilhada}/roar_yara.sh")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", f"{compartilhada}/roar_yara.yar", *(f"{compartilhada}/{nome}" for nome in scripts))
         return True, {"status": "OK", "saida": ""}
     copiar(decodificadores, "/var/ossec/etc/decoders/roar_yara.xml")
     ok, detalhe = aplicar_regras(gerenciador_id, nome_das_deteccoes, deteccoes, reiniciar=False)
     if ok:
         copiar(regras, f"{compartilhada}/roar_yara.yar")
-        copiar(script, f"{compartilhada}/roar_yara.sh")
+        for nome, conteudo in scripts.items():
+            copiar(conteudo, f"{compartilhada}/{nome}")
     else:
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", "/var/ossec/etc/decoders/roar_yara.xml")
     copia.unlink(missing_ok=True)

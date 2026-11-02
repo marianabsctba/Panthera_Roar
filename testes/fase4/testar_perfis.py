@@ -44,6 +44,8 @@ ROTAS = {
     ("GET", "/api/normas"): "ver", ("GET", "/api/arquivos"): "ver", ("GET", "/api/regras"): "ver", ("POST", "/api/regras/converter"): "gerir_regras",
     ("GET", "/api/regras/proprias"): "ver", ("POST", "/api/regras/proprias"): "gerir_regras", ("PUT", "/api/regras/proprias/{identificador}"): "gerir_regras",
     ("POST", "/api/regras/proprias/{identificador}/desativar"): "gerir_regras", ("POST", "/api/regras/importar"): "gerir_regras", ("GET", "/api/regras/exportar"): "ver",
+    ("GET", "/api/yara"): "ver", ("POST", "/api/yara/regras"): "gerir_fontes", ("POST", "/api/yara/regras/{identificador}/desativar"): "gerir_fontes",
+    ("POST", "/api/yara/biblioteca"): "gerir_fontes", ("POST", "/api/yara/biblioteca/atualizar"): "gerir_fontes", ("GET", "/api/yara/biblioteca/regras"): "ver", ("POST", "/api/yara/biblioteca/regras/{nome}/{acao}"): "gerir_fontes",
     ("GET", "/api/regras/biblioteca"): "ver", ("POST", "/api/regras/biblioteca/{identificador}/ativar"): "gerir_regras", ("GET", "/api/regras/arquivos/{arquivo}"): "ver",
     ("GET", "/api/regras/{regra_id}"): "ver", ("PUT", "/api/regras/{regra_id}/versao"): "gerir_regras", ("POST", "/api/regras/{regra_id}/desligar"): "gerir_regras",
     ("POST", "/api/regras/{regra_id}/restaurar"): "gerir_regras", ("GET", "/api/fontes"): "ver", ("POST", "/api/fontes"): "gerir_fontes", ("POST", "/api/fontes/nuvem"): "gerir_fontes",
@@ -63,7 +65,7 @@ ROTAS = {
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
-VALORES = {"identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
+VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
 
 
 def registrar(nome, passou, detalhe=""):

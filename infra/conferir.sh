@@ -28,8 +28,8 @@ echo "== Serviços"
 PERFIL="$(cat "$DESTINO/perfil" 2>/dev/null || echo completo)"
 case "$PERFIL" in
   vulnerabilidades) SERVICOS="api varredura cves" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca" ;;
 esac
 echo "Perfil: $PERFIL"
 for nome in $SERVICOS; do

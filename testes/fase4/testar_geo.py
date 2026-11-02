@@ -130,6 +130,19 @@ def main():
             registrar("a automação não lê a cidade", not admin.execute("SELECT has_column_privilege('roar_soar', 'eventos', 'cidade', 'SELECT') OR has_column_privilege('roar_soar', 'eventos', 'regiao', 'SELECT')").fetchone()[0])
             admin.execute("DELETE FROM eventos WHERE cidade IS NOT NULL AND cliente_id = ANY(%s)", (clientes,))
 
+            print("\n== O que cada número do panorama abre", flush=True)
+            hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            registrar("só alertas conta como o panorama", len(http.get("/api/eventos", params={"alertas": True}).json()["eventos"]) == 8)
+            registrar("altos e críticos", all(x["severidade"] in ("alta", "critica") for x in http.get("/api/eventos", params={"severidades": "alta,critica"}).json()["eventos"]) and len(http.get("/api/eventos", params={"severidades": "alta,critica"}).json()["eventos"]) == 6)
+            registrar("severidade inventada não filtra nem quebra", http.get("/api/eventos", params={"severidades": "x'; DROP TABLE eventos; --"}).status_code == 200)
+            registrar("o dia de hoje traz os eventos", len(http.get("/api/eventos", params={"dia": hoje}).json()["eventos"]) >= 7)
+            registrar("outro dia não traz", http.get("/api/eventos", params={"dia": "2001-01-01"}).json()["eventos"] == [])
+            registrar("dia em formato estranho é ignorado", http.get("/api/eventos", params={"dia": "ontem; DROP"}).status_code == 200)
+            registrar("origem sem evento vem vazia", http.get("/api/eventos", params={"origem": "1.2.3.4"}).json()["eventos"] == [])
+            registrar("sinal sem evento vem vazio", http.get("/api/eventos", params={"sinal": "viagem_impossivel"}).json()["eventos"] == [])
+            registrar("pessoa sem evento vem vazia", http.get("/api/eventos", params={"entidade": "ninguem"}).json()["eventos"] == [])
+            registrar("filtro de mudança em arquivos responde", http.get("/api/arquivos", params={"mudanca": "added"}).status_code == 200 and http.get("/api/arquivos", params={"mudanca": "x'--"}).status_code == 200)
+
             print("\n== Eventos", flush=True)
             e = http.get("/api/eventos", params={"pais": "Russia"}).json()["eventos"]
             registrar("filtra por país", len(e) == 5 and all(x["pais"] == "Russia" for x in e), str(len(e)))
