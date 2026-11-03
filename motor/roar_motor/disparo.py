@@ -14,11 +14,11 @@ import time
 
 import psycopg
 from psycopg.rows import dict_row
-from temporalio.client import Client
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from . import blocos, fatos
+from .conexao import conectar
 from .playbook import fila_do_cliente
 
 EVENTOS_POR_CICLO = 2000
@@ -182,7 +182,7 @@ def garantir_workers(clientes, workers):
 
 
 async def rodar():
-    temporal = await Client.connect(os.getenv("ROAR_TEMPORAL", "127.0.0.1:7233"), namespace="roar")
+    temporal = await conectar()
     url, workers = url_do_banco(), {}
     while True:
         inicio = time.monotonic()

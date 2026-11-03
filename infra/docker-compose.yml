@@ -69,10 +69,21 @@ services:
       - POSTGRES_SEEDS=postgresql
       - BIND_ON_IP=0.0.0.0
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/roar.yaml
+      # Só entra quem apresenta certificado da autoridade do Roar (infra/temporal_tls.sh).
+      - TEMPORAL_TLS_REQUIRE_CLIENT_AUTH=true
+      - TEMPORAL_TLS_SERVER_CA_CERT=/etc/temporal/tls/ca.pem
+      - TEMPORAL_TLS_SERVER_CERT=/etc/temporal/tls/servidor.pem
+      - TEMPORAL_TLS_SERVER_KEY=/etc/temporal/tls/servidor.key
+      - TEMPORAL_TLS_INTERNODE_SERVER_NAME=temporal
+      - TEMPORAL_TLS_FRONTEND_CERT=/etc/temporal/tls/servidor.pem
+      - TEMPORAL_TLS_FRONTEND_KEY=/etc/temporal/tls/servidor.key
+      - TEMPORAL_TLS_CLIENT1_CA_CERT=/etc/temporal/tls/ca.pem
+      - TEMPORAL_TLS_FRONTEND_SERVER_NAME=temporal
     ports:
       - "127.0.0.1:7233:7233"
     volumes:
       - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+      - ./temporal-tls/servidor:/etc/temporal/tls:ro
     networks:
       - roar
     healthcheck:
@@ -93,6 +104,7 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
     volumes:
       - ./temporal/namespace.sh:/namespace.sh:ro
+      - ./temporal-tls/servidor:/etc/temporal/tls:ro
     entrypoint: ["/bin/sh", "/namespace.sh"]
     networks:
       - roar

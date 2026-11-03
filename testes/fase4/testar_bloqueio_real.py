@@ -19,7 +19,6 @@ from pathlib import Path
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
-from temporalio.client import Client
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "ingestao"), str(RAIZ / "api"), str(RAIZ / "motor"), str(RAIZ / "testes/fase1")]
@@ -27,6 +26,7 @@ sys.path[:0] = [str(RAIZ / "ingestao"), str(RAIZ / "api"), str(RAIZ / "motor"), 
 from roar_api.app import app  # noqa: E402
 from roar_ingestao import provisao  # noqa: E402
 from roar_motor import acoes  # noqa: E402
+from roar_motor.conexao import conectar  # noqa: E402
 from roar_motor.disparo import ciclo_do_cliente, url_do_banco  # noqa: E402
 from testar_ingestao import AGENTE_CONF, SUFIXO, Ambiente, agente_ativo, esperar_gerenciador, escrever_falhas, subir_agente  # noqa: E402
 
@@ -92,7 +92,7 @@ async def principal():
         cliente = str(g["cliente"])
         worker = subprocess.Popen([sys.executable, "-m", "roar_motor.worker", "--cliente", cliente], env=ambiente,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        temporal = await Client.connect("127.0.0.1:7233", namespace="roar")
+        temporal = await conectar()
         url = url_do_banco()
 
         with TestClient(app, base_url="https://testserver") as http:

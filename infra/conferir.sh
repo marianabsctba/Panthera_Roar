@@ -39,6 +39,21 @@ done
 for conta in admin:SecretPassword kibanaserver:kibanaserver kibanaro:kibanaro readall:readall; do
   prova "a senha de fábrica de ${conta%%:*} não entra no indexador" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -u '$conta' https://127.0.0.1:9200)\" = 401 ]"
 done
+if [ "$PERFIL" != vulnerabilidades ]; then
+  # Conexão de verdade, sem certificado: tem de ser recusada.
+  prova "a automação recusa quem não tem certificado" "$DESTINO/venv-motor/bin/python" -c "
+import asyncio, sys
+from temporalio.client import Client
+async def tentar():
+    c = await asyncio.wait_for(Client.connect('127.0.0.1:7233', namespace='roar'), 20)
+    await asyncio.wait_for(c.count_workflows(), 20)
+try:
+    asyncio.run(tentar())
+except Exception:
+    sys.exit(0)
+sys.exit(1)"
+  prova "a chave da automação não é de todos" sh -c "[ \"\$(stat -c %a $DESTINO/temporal-tls/cliente/cliente.key)\" = 640 ]"
+fi
 prova "a cópia fria tem lugar no indexador" grep -q '^path.repo:' "$DESTINO/wazuh/single-node/config/wazuh_indexer/wazuh.indexer.yml"
 prova "dá para criar organização nesta instalação" test -f "$DESTINO/app/infra/wazuh/gerenciador/docker-compose.yml"
 for cliente in $(docker exec roar-banco psql -At -U roar_admin -d roar -c "SELECT DISTINCT cliente_id FROM gerenciadores"); do

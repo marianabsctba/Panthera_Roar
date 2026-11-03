@@ -11,11 +11,11 @@ import os
 
 import psycopg
 from temporalio import activity
-from temporalio.client import Client
 from temporalio.exceptions import ApplicationError
 from temporalio.worker import Worker
 
 from . import acoes, blocos, integracoes
+from .conexao import conectar
 from .disparo import url_do_banco
 from .playbook import ExecutarPlaybook, ExecutarResposta, fila_do_cliente
 
@@ -120,9 +120,7 @@ def criar_registro_de_decisao(cliente_do_worker):
 
 
 async def rodar(cliente):
-    conexao = await Client.connect(
-        os.getenv("ROAR_TEMPORAL", "127.0.0.1:7233"), namespace="roar"
-    )
+    conexao = await conectar()
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         await Worker(
             conexao,

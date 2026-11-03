@@ -28,6 +28,7 @@ sys.path.insert(0, str(RAIZ / "motor"))
 from temporalio.client import Client, WorkflowFailureError  # noqa: E402
 
 from roar_motor.playbook import fila_do_cliente  # noqa: E402
+from roar_motor.conexao import conectar  # noqa: E402
 
 RESULTADOS = []
 ACESSOS = collections.Counter()
@@ -106,7 +107,7 @@ async def main():
 
     pasta = tempfile.mkdtemp(prefix="roar-")
     auditoria = os.path.join(pasta, "rede.log")
-    conexao = await Client.connect("127.0.0.1:7233", namespace="roar")
+    conexao = await conectar()
     sufixo = uuid.uuid4().hex[:6]
     a, b = f"a{sufixo}", f"b{sufixo}"
 

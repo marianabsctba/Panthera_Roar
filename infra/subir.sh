@@ -62,6 +62,9 @@ while IFS='=' read -r chave valor; do
 done <"$BASE/.env.exemplo"
 
 echo "$PERFIL" >"$DESTINO/perfil"
+if [ "$PERFIL" != vulnerabilidades ]; then
+  bash "$BASE/temporal_tls.sh"
+fi
 if [ "$PERFIL" = vulnerabilidades ]; then
   docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d --wait banco
 else

@@ -22,13 +22,13 @@ from pathlib import Path
 import psycopg
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
-from temporalio.client import Client
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "api"), str(RAIZ / "motor")]
 
 from roar_api.app import app  # noqa: E402
 from roar_motor import blocos  # noqa: E402
+from roar_motor.conexao import conectar  # noqa: E402
 from roar_motor.disparo import LIMITE_AUTOMATICO_POR_HORA, ciclo_do_cliente, url_do_banco  # noqa: E402
 
 RESULTADOS = []
@@ -411,7 +411,7 @@ async def principal():
     try:
         a, b = cen.cliente("a"), cen.cliente("b")
         workers = [iniciar_worker(a["id"]), iniciar_worker(b["id"])]
-        temporal = await Client.connect("127.0.0.1:7233", namespace="roar")
+        temporal = await conectar()
         await testar_fluxo(cen, a, b, temporal, url_do_banco(), servidor.server_address[1])
     finally:
         for w in workers:
