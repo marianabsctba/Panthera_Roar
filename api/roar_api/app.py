@@ -884,16 +884,22 @@ def _filtros_de_campo(texto):
     return condicoes, exclusoes
 
 
-@app.get("/api/logs")
-def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
-    """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
-    dias = max(1, min(dias, 90))
-    busca = busca.strip()
+def _consulta_de_logs(busca, filtros):
+    """O que a tela de Logs brutos pede, igual para a lista e para o pacote de perícia: o pacote traz o que a pessoa via."""
     try:
         pedido = linguagem_de_consulta.analisar(busca)
     except linguagem_de_consulta.ConsultaInvalida as erro:
         raise HTTPException(status_code=422, detail=str(erro))
     condicoes, exclusoes = _filtros_de_campo(filtros)
+    return pedido, condicoes, exclusoes
+
+
+@app.get("/api/logs")
+def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
+    """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
+    dias = max(1, min(dias, 90))
+    busca = busca.strip()
+    pedido, condicoes, exclusoes = _consulta_de_logs(busca, filtros)
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'buscar_logs', %s)",
@@ -957,6 +963,72 @@ def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: s
         "campos": {campo: [{"valor": b["key"], "total": b["doc_count"]} for b in agregados.get(f"campo_{i}", {}).get("buckets", [])]
                    for i, campo in enumerate(CAMPOS_DE_LOG)},
     }
+
+
+class PacoteDePericia(BaseModel):
+    busca: str = Field(default="", max_length=2000)
+    dias: int = Field(default=7, ge=1, le=90)
+    filtros: str = Field(default="", max_length=30000)
+
+
+@app.post("/api/logs/evidencia")
+def pacote_de_pericia(dados: PacoteDePericia, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    """Tudo o que a busca de Logs brutos acha no período, com a prova de cada log. Sai com dado pessoal: fica na auditoria com o resumo do arquivo."""
+    busca = dados.busca.strip()
+    pedido, condicoes, exclusoes = _consulta_de_logs(busca, dados.filtros)
+    if pedido.contar or pedido.contar_por:
+        raise HTTPException(status_code=422, detail="Tire a contagem da busca: o pacote leva os logs, não um resumo.")
+    with do_cliente(request, sessao) as con:
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        # Só entra o que já foi selado: o último trecho de cada gerenciador ainda está esperando o selo.
+        cobertos = {l["gerenciador_id"]: l["ate"] for l in con.execute("SELECT gerenciador_id, max(fim) AS ate FROM selos WHERE fonte = 'logs' GROUP BY 1").fetchall()}
+    if not gerenciadores:
+        raise HTTPException(status_code=404)
+    indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
+    base = [*condicoes, {"range": {"timestamp": {"gte": f"now-{dados.dias}d"}}}, pedido.filtro]
+    selados = {"bool": {"should": [{"bool": {"filter": [{"prefix": {"_index": f"wazuh-archives-4.x-{g}-"}}, {"range": {"timestamp": {"lt": ate.isoformat()}}}]}}
+                                   for g, ate in cobertos.items()], "minimum_should_match": 1}} if cobertos else {"match_none": {}}
+
+    def buscar(corpo):
+        r = request.app.state.indexer.post(f"{INDEXER_URL}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true", json=corpo, timeout=60)
+        if r.status_code == 400:
+            raise HTTPException(status_code=422, detail="Este campo não aceita essa operação. Tente outro campo.")
+        if not r.ok:
+            raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.")
+        return r.json()
+
+    todos = buscar({"size": 0, "track_total_hits": True, "query": {"bool": {"filter": base, "must_not": exclusoes}}})["hits"]["total"]["value"]
+    ids, cursor = [], None
+    while True:
+        consulta = {"size": evidencia.LOTE_DE_BUSCA, "_source": False, "sort": [{"timestamp": "asc"}, {"_id": "asc"}], "track_total_hits": False,
+                    "query": {"bool": {"filter": [*base, selados], "must_not": exclusoes}}}
+        if cursor:
+            consulta["search_after"] = cursor
+        lote = buscar(consulta)["hits"]["hits"]
+        ids.extend(h["_id"] for h in lote)
+        if len(ids) > evidencia.LIMITE_DO_PERIODO:
+            raise HTTPException(status_code=409, detail=f"A busca acha mais de {evidencia.LIMITE_DO_PERIODO:,} logs. Diminua o período ou refine a busca.".replace(",", "."))
+        if len(lote) < evidencia.LOTE_DE_BUSCA:
+            break
+        cursor = lote[-1]["sort"]
+    if not ids:
+        raise HTTPException(status_code=409, detail="Nenhum log selado com essa busca nesse período. Os mais recentes são selados em até 30 minutos.")
+    descricao = [("Período", f"últimos {dados.dias} {'dia' if dados.dias == 1 else 'dias'}"), ("Busca", busca or "todos os logs"),
+                 ("Filtros", dados.filtros or "nenhum"), ("Logs no pacote", f"{len(ids):,}".replace(",", ".")),
+                 ("Fora do pacote", f"{todos - len(ids)} log(s) ainda não selado(s), dos últimos minutos" if todos > len(ids) else "nenhum")]
+    try:
+        with do_cliente(request, sessao) as con:
+            pacotes = evidencia.montar_pacotes(con, request.app.state.indexer, INDEXER_URL, gerenciadores, "logs", ids, selagem.ler_chave_publica())
+        conteudo = evidencia.gerar_zip_de_varios(pacotes, sessao, relatorios.gerar_pdf, descricao=descricao)
+    except evidencia.EvidenciaRecusada as erro:
+        raise HTTPException(status_code=409, detail=str(erro))
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_evidencia_de_periodo', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.dias}d {(busca or '*')[:300]} {dados.filtros[:300]} {len(ids)} logs sha256:{resumo}"))
+    nome = f"pericia-roar-{datetime.now(timezone.utc):%Y%m%d-%H%M}.zip"
+    return Response(conteudo, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo,
+                                                                    "X-Logs": str(len(ids)), "X-Fora-Do-Pacote": str(todos - len(ids))})
 
 
 @app.get("/api/ativos")

@@ -62,6 +62,8 @@ export const AJUDA = [
     ] },
     { id: "logs", vista: "logs", titulo: "Logs brutos", blocos: [
       "Tudo o que foi recebido, mesmo sem alerta. Digite palavras, ou combine campos.",
+      { h: "Pacote para perícia" },
+      "Leva tudo o que a busca da tela acha no período escolhido, até 10 mil logs, com a prova de cada um, um laudo em PDF e um programa que confere o pacote em qualquer computador, sem depender do Roar. Os logs dos últimos minutos, ainda não selados, ficam de fora, e o pacote diz quantos. Quem gerou e o resumo do arquivo ficam na auditoria.",
       { h: "Consultas" },
       { chaves: [
         ["sshd falha", "logs com as duas palavras"],

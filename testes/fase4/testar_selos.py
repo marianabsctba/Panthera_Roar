@@ -31,6 +31,7 @@ PASTA = tempfile.mkdtemp(prefix="selo-")
 os.environ["ROAR_SELO_PASTA"] = PASTA
 
 from roar_api import app as modulo  # noqa: E402
+from roar_api import evidencia  # noqa: E402
 from roar_ingestao import provisao, selo, verificador_de_evidencia as verificador  # noqa: E402
 from roar_ingestao.armazenamento import Armazenamento  # noqa: E402
 from roar_ingestao.ciclo import conexoes  # noqa: E402
@@ -201,6 +202,33 @@ def main():
             sem_lib = subprocess.run(["/usr/bin/python3", "-I", "-S", "verificar.py", "evidencia.json"], cwd=pasta, capture_output=True, text=True, timeout=60)
             registrar("sem a biblioteca, confere o resto e avisa", sem_lib.returncode == 0 and "assinatura não foi conferida" in sem_lib.stdout, (sem_lib.stdout + sem_lib.stderr)[:200])
 
+            print("\n== Pacote para perícia de um período", flush=True)
+            r = http.post("/api/logs/evidencia", json={"dias": 7})
+            registrar("gera o pacote do período", r.status_code == 200 and r.headers["content-type"] == "application/zip", f"{r.status_code} {r.text[:160] if r.status_code != 200 else ''}")
+            zp = zipfile.ZipFile(io.BytesIO(r.content))
+            bruto_p = zp.read("evidencia.json").decode()
+            registrar("leva todos os logs selados", all(t in bruto_p for t in ("log 0 de A", "log 1 de A", "log 0 segunda janela")), r.headers.get("x-logs"))
+            registrar("deixa de fora o que ainda não foi selado, e diz quantos", "log recente" not in bruto_p and int(r.headers["x-fora-do-pacote"]) >= 1, r.headers.get("x-fora-do-pacote"))
+            pasta_p = tempfile.mkdtemp(prefix="pericia-")
+            zp.extractall(pasta_p)
+            saida = subprocess.run([sys.executable, "-I", "verificar.py", "evidencia.json"], cwd=pasta_p, capture_output=True, text=True, timeout=120)
+            registrar("o pacote do período confere sozinho", saida.returncode == 0 and "CONFERE" in saida.stdout, (saida.stdout + saida.stderr)[:200])
+            laudo_p = " ".join("".join(p.extract_text() for p in PdfReader(io.BytesIO(zp.read("laudo.pdf"))).pages).split())
+            registrar("o laudo diz o que foi pedido", "O que foi pedido" in laudo_p and "últimos 7 dias" in laudo_p, laudo_p[:120])
+            registrar("fica na auditoria com o resumo", admin.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'gerar_evidencia_de_periodo' AND alvo LIKE %s",
+                                                                      (ca, f"%sha256:{r.headers['x-resumo-sha256']}")).fetchone()[0] == 1)
+            r = http.post("/api/logs/evidencia", json={"dias": 7, "busca": "segunda"})
+            bruto_f = zipfile.ZipFile(io.BytesIO(r.content)).read("evidencia.json").decode() if r.status_code == 200 else ""
+            registrar("respeita a busca da tela", "segunda janela" in bruto_f and "de A" not in bruto_f.replace("segunda janela", ""), f"{r.status_code} {r.headers.get('x-logs')}")
+            filtro = json.dumps([{"campo": "agent.name", "valor": "srv-teste", "negar": True}])
+            registrar("respeita os filtros da tela", http.post("/api/logs/evidencia", json={"dias": 7, "filtros": filtro}).status_code == 409)
+            registrar("contagem é recusada", http.post("/api/logs/evidencia", json={"dias": 7, "busca": "| contar por usuario"}).status_code == 422)
+            registrar("busca sem resultado explica", http.post("/api/logs/evidencia", json={"dias": 7, "busca": "palavraquenaoexiste"}).status_code == 409)
+            registrar("período fora do limite é recusado", http.post("/api/logs/evidencia", json={"dias": 400}).status_code == 422)
+            muitos = {**pacote, "eventos": pacote["eventos"] * 101}
+            html = evidencia._laudo(muitos, {"cliente_nome": "X", "nome": "Y"}, datetime.now(timezone.utc), [("Período", "últimos 7 dias")])
+            registrar("com muitos logs, o laudo lista e não imprime cada um", "Por serem muitos" in html and html.count("<pre>") == 0)
+
             def adulterar(mudanca):
                 p = copy.deepcopy(pacote)
                 mudanca(p)
@@ -259,6 +287,9 @@ def main():
             auditora.post("/api/entrar", json={"email": f"c{email}", "senha": senha_c})
             registrar("auditoria vê a situação", auditora.get("/api/integridade").status_code == 200)
             registrar("auditoria não gera pacote com log bruto", auditora.post("/api/integridade/evidencia", json={"fonte": "logs", "ids": [ids[0]]}).status_code == 403)
+            registrar("auditoria não gera pacote de período", auditora.post("/api/logs/evidencia", json={"dias": 7}).status_code == 403)
+            r = with_b.post("/api/logs/evidencia", json={"dias": 7})
+            registrar("o pacote de outro cliente não leva logs meus", r.status_code != 200 or "de A" not in zipfile.ZipFile(io.BytesIO(r.content)).read("evidencia.json").decode(), str(r.status_code))
 
             print("\n== Adulteração real no indexador", flush=True)
             sessao_a.post(f"{url}/{indice(ga)}/_update/{ids[2]}?refresh=true", json={"doc": {"full_log": "log adulterado"}}, timeout=30).raise_for_status()

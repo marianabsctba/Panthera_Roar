@@ -1,12 +1,64 @@
-import { ActionIcon, Autocomplete, Box, Button, Checkbox, Drawer, Grid, Group, Modal, Pill, Popover, ScrollArea, Select, Stack, Table, Tabs, Text, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Alert, Autocomplete, Box, Button, Checkbox, Drawer, Grid, Group, Modal, Pill, Popover, ScrollArea, Select, Stack, Table, Tabs, Text, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
 import { IconArrowRight, IconHelp, IconMinus, IconSearch } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
-import { ler, useEu, usePode } from "../api";
+import { detalhe, enviar, ler, useEu, usePode } from "../api";
 import { BotaoDaCesta } from "../cesta";
 import { AcoesDaLinha, BarrasMetalicas, Cabecalho, Carregando, Data, METAL_ROSA, Numero, Painel, Ranking, Tabela, Vazio, type Coluna } from "../componentes";
 import { numero, quando } from "../formato";
 import { BlocoDeJson } from "./Eventos";
+import { salvarArquivo } from "./Prova";
+
+const LIMITE_DO_PACOTE = 10000;
+
+/** Leva o que a tela mostra: a mesma busca, os mesmos filtros e o mesmo período, com a prova de cada log. */
+function PacoteDePericia({ aberto, aoFechar, consulta, dias, filtros, total, exato }: {
+  aberto: boolean; aoFechar: () => void; consulta: string; dias: string; filtros: FiltroDeCampo[]; total: number; exato: boolean;
+}) {
+  const [gerando, setGerando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [pronto, setPronto] = useState<{ logs: string; fora: string; resumo: string } | null>(null);
+  const grande = total > LIMITE_DO_PACOTE || !exato;
+  const fechar = () => { setErro(null); setPronto(null); aoFechar(); };
+
+  const gerar = async () => {
+    setGerando(true);
+    setErro(null);
+    const r = await enviar("/api/logs/evidencia", { busca: consulta, dias: Number(dias), filtros: JSON.stringify(filtros) });
+    setGerando(false);
+    if (!r.ok) {
+      setErro(await detalhe(r, "Não foi possível gerar o pacote."));
+      return;
+    }
+    salvarArquivo(await r.blob(), r.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] ?? "pericia-roar.zip");
+    setPronto({ logs: r.headers.get("X-Logs") ?? "", fora: r.headers.get("X-Fora-Do-Pacote") ?? "0", resumo: r.headers.get("X-Resumo-SHA256") ?? "" });
+  };
+
+  return (
+    <Modal opened={aberto} onClose={fechar} title="Pacote para perícia" size="lg">
+      {pronto ? (
+        <Stack gap="sm">
+          <Text size="sm">Pacote baixado com {numero(Number(pronto.logs))} logs.{pronto.fora !== "0" && ` Ficaram de fora ${numero(Number(pronto.fora))} logs dos últimos minutos, que ainda não foram selados.`}</Text>
+          <Text size="xs" c="dimmed">Resumo do arquivo, para anotar junto da cadeia de custódia:</Text>
+          <Text size="xs" className="mono" style={{ overflowWrap: "anywhere" }}>{pronto.resumo}</Text>
+          <Group justify="flex-end"><Button variant="filled" onClick={fechar}>Fechar</Button></Group>
+        </Stack>
+      ) : (
+        <Stack gap="sm">
+          <Text size="sm">Leva os logs desta busca, {dias === "1" ? "do último dia" : `dos últimos ${dias} dias`}, com a prova de cada um e um programa que confere tudo sem depender do Roar. Os logs vizinhos não vão junto.</Text>
+          <Text size="sm" c="dimmed">{consulta ? <>Busca: <span className="mono">{consulta}</span></> : "Sem busca: todos os logs do período."}{filtros.length > 0 && ` ${filtros.length} filtro(s) de campo.`}</Text>
+          {grande && <Alert color="yellow" variant="light" p="xs"><Text size="sm">A busca acha mais de {numero(LIMITE_DO_PACOTE)} logs. Diminua o período ou refine a busca antes de gerar.</Text></Alert>}
+          <Alert color="pink" variant="light" p="xs"><Text size="sm">O pacote contém dados pessoais e sai do sistema. Fica na auditoria quem gerou, o que pediu e o resumo do arquivo.</Text></Alert>
+          {erro && <Alert color="red" variant="light" p="xs"><Text size="sm">{erro}</Text></Alert>}
+          <Group justify="flex-end">
+            <Button variant="subtle" color="gray" onClick={fechar}>Cancelar</Button>
+            <Button variant="filled" loading={gerando} disabled={grande || total === 0} onClick={gerar}>Gerar e baixar</Button>
+          </Group>
+        </Stack>
+      )}
+    </Modal>
+  );
+}
 
 // ------------------------------------------------------------------ campos
 
@@ -325,6 +377,7 @@ export function Logs() {
   const [colunasEscolhidas, setColunasEscolhidas] = useState(colunasSalvas);
   const [escolhendo, setEscolhendo] = useState(false);
   const [aberto, setAberto] = useState<(LogBruto & { plano: Plano }) | null>(null);
+  const [pericia, setPericia] = useState(false);
   const pedido = useRef(0);
   const verBruto = pode("ver_bruto");
 
@@ -433,6 +486,7 @@ export function Logs() {
           <AjudaDaConsulta aoEscolher={setTexto} />
           <Select w={130} aria-label="Período" value={dias} onChange={(v) => setDias(v ?? "7")} allowDeselect={false} data={PERIODOS} />
           <Button onClick={() => setEscolhendo(true)} disabled={Boolean(colunasDaConsulta) || Boolean(contagem)} title={colunasDaConsulta ? "A consulta já escolhe as colunas" : undefined}>Colunas</Button>
+          <Button onClick={() => setPericia(true)} disabled={!resposta || Boolean(contagem) || !resposta.total} title={contagem ? "Tire a contagem da consulta" : undefined}>Pacote para perícia</Button>
         </Group>
 
         {filtros.length > 0 && (
@@ -490,6 +544,7 @@ export function Logs() {
         aoFiltrar={(campo, valor, negar) => { setAberto(null); alternarFiltro(campo, valor, negar); }}
         aoAlternarColuna={alternarColuna}
       />
+      <PacoteDePericia aberto={pericia} aoFechar={() => setPericia(false)} consulta={consulta} dias={dias} filtros={filtros} total={resposta?.total ?? 0} exato={resposta?.total_exato !== false} />
     </>
   );
 }

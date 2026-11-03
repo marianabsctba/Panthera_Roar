@@ -41,7 +41,21 @@
 <h2>Divulgação seletiva</h2>
 <p>Só os eventos abaixo foram entregues. Para os demais eventos da mesma janela, o pacote traz apenas resumos com sal, dos quais não se recupera o conteúdo. Eles mostram que existiam, não o que diziam.</p>
 
+{% if descricao %}
+<h2>O que foi pedido</h2>
+<table>
+  {% for rotulo, valor in descricao %}<tr><th>{{ rotulo }}</th><td>{{ valor }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+
 <h2>Eventos</h2>
+{% if not por_extenso %}
+<p>São {{ pacote.eventos|length }} eventos. Por serem muitos, o conteúdo de cada um está em evidencia.json, e aqui vai a lista dos primeiros 300.</p>
+<table>
+  <tr><th>Identificador</th><td><strong>Selo e posição</strong></td></tr>
+  {% for evento, _ in documentos[:300] %}<tr><th><code>{{ evento.id }}</code></th><td>nº {{ evento.selo }}, posição {{ evento.indice + 1 }} de {{ selos[evento.selo].total }}</td></tr>{% endfor %}
+</table>
+{% else %}
 {% for evento, texto in documentos %}
 <div class="evento">
 <table>
@@ -52,6 +66,7 @@
 <pre>{{ texto }}</pre>
 </div>
 {% endfor %}
+{% endif %}
 
 <h2>Selos</h2>
 <table>

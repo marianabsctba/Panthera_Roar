@@ -4,6 +4,7 @@ Os irmãos no caminho de Merkle têm sal, então não dá para adivinhar o conte
 entregue. É a divulgação seletiva: entrega o que importa ao caso, sem expor o resto do log.
 """
 
+import bisect
 import io
 import json
 import zipfile
@@ -17,6 +18,11 @@ from roar_ingestao import verificador_de_evidencia as verificador
 
 MODELOS = Path(__file__).parent / "modelos"
 LIMITE_DE_EVENTOS = 200
+# Um período inteiro para perícia: acima disso, o pedido tem de ser refinado.
+LIMITE_DO_PERIODO = 10000
+# Até aqui o laudo traz cada evento por extenso; acima, só a lista, e o conteúdo fica no arquivo de dados.
+EVENTOS_POR_EXTENSO = 200
+LOTE_DE_BUSCA = 1000
 
 
 class EvidenciaRecusada(Exception):
@@ -29,11 +35,34 @@ def _momento(documento):
     return datetime.fromisoformat(texto[:-2] + ":" + texto[-2:] if texto[-5] in "+-" and ":" not in texto[-5:] else texto)
 
 
-def montar_prova(identificador, documento, selo, segredo, pares):
-    ordem = [i for i, _ in pares]
-    try:
-        indice = ordem.index(identificador)
-    except ValueError:
+class _Janelas:
+    """As folhas de cada selo, lidas uma vez só: num período, milhares de eventos caem nos mesmos selos."""
+
+    def __init__(self, con, gerenciador, fonte, de, ate):
+        self.con = con
+        linhas = con.execute("SELECT n, inicio, fim FROM selos WHERE gerenciador_id = %s AND fonte = %s AND inicio <= %s AND fim > %s ORDER BY fim, n",
+                             (gerenciador, fonte, ate, de)).fetchall()
+        self.gerenciador, self.janelas = gerenciador, [(l["fim"], l["inicio"], l["n"]) for l in linhas]
+        self.fins = [j[0] for j in self.janelas]
+        self.folhas = {}
+
+    def que_cobrem(self, momento):
+        # Janelas tardias podem se sobrepor às normais: todas as que cobrem o momento são candidatas.
+        return [n for fim, inicio, n in self.janelas[bisect.bisect_right(self.fins, momento):] if inicio <= momento]
+
+    def da_janela(self, n):
+        if n not in self.folhas:
+            linha = self.con.execute("SELECT segredo, folhas FROM selo_folhas WHERE gerenciador_id = %s AND n = %s", (self.gerenciador, n)).fetchone()
+            pares = selagem.desempacotar_folhas(linha["folhas"])
+            self.folhas[n] = (bytes(linha["segredo"]), pares, {i: k for k, (i, _) in enumerate(pares)})
+        return self.folhas[n]
+
+
+def montar_prova(identificador, documento, selo, segredo, pares, posicoes=None):
+    if posicoes is None:
+        posicoes = {i: k for k, (i, _) in enumerate(pares)}
+    indice = posicoes.get(identificador)
+    if indice is None:
         return None
     sal = selagem.sal_da_folha(segredo, identificador)
     if selagem.hash_da_folha(sal, identificador, documento) != pares[indice][1]:
@@ -41,36 +70,54 @@ def montar_prova(identificador, documento, selo, segredo, pares):
     return {"id": identificador, "documento": documento, "selo": selo, "indice": indice, "sal": sal.hex(), "caminho": selagem.caminho_de_merkle([h for _, h in pares], indice)}
 
 
-def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica):
-    """Roda sob o RLS da sessão: selo e folhas de outro cliente nem aparecem aqui."""
+def _buscar_documentos(indexer, url, gerenciadores, fonte, ids):
     indices = ",".join(f"{selagem.FONTES[fonte]}{g}-*" for g in gerenciadores)
-    r = indexer.post(f"{url}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true",
-                     json={"size": len(ids), "query": {"ids": {"values": ids}}}, timeout=30)
-    r.raise_for_status()
-    achados = {h["_id"]: h for h in r.json()["hits"]["hits"]}
+    achados = {}
+    for inicio in range(0, len(ids), LOTE_DE_BUSCA):
+        lote = ids[inicio:inicio + LOTE_DE_BUSCA]
+        r = indexer.post(f"{url}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true",
+                         json={"size": len(lote), "query": {"ids": {"values": lote}}}, timeout=60)
+        r.raise_for_status()
+        achados.update({h["_id"]: h for h in r.json()["hits"]["hits"]})
+    return achados
+
+
+def montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica):
+    """Um pacote por gerenciador, porque cada um tem a própria cadeia. Roda sob o RLS da sessão: selo e folhas de outro cliente nem aparecem aqui."""
+    achados = _buscar_documentos(indexer, url, gerenciadores, fonte, ids)
     faltando = [i for i in ids if i not in achados]
     if faltando:
         raise EvidenciaRecusada(f"Evento não encontrado: {faltando[0]}.")
-    eventos, por_gerenciador = [], {}
+    por_gerenciador = {}
+    for identificador in ids:
+        gerenciador = next(g for g in gerenciadores if f"-{g}-" in achados[identificador]["_index"])
+        por_gerenciador.setdefault(gerenciador, []).append(identificador)
+    return [_montar_um(con, gerenciador, fonte, lista, achados, publica) for gerenciador, lista in por_gerenciador.items()]
+
+
+def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica):
+    pacotes = montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica)
+    if len(pacotes) > 1:
+        raise EvidenciaRecusada("Gere um pacote por gerenciador.")
+    return pacotes[0][1], pacotes[0][2]
+
+
+def _montar_um(con, gerenciador, fonte, ids, achados, publica):
+    momentos = {i: _momento(achados[i]["_source"]) for i in ids}
+    janelas = _Janelas(con, gerenciador, fonte, min(momentos.values()), max(momentos.values()))
+    eventos = []
     for identificador in ids:
         documento = achados[identificador]["_source"]
-        gerenciador = next(g for g in gerenciadores if f"-{g}-" in achados[identificador]["_index"])
-        momento = _momento(documento)
-        linhas = con.execute("SELECT s.n, f.segredo, f.folhas FROM selos s JOIN selo_folhas f USING (gerenciador_id, n) "
-                             "WHERE s.gerenciador_id = %s AND s.fonte = %s AND s.inicio <= %s AND s.fim > %s ORDER BY s.n",
-                             (gerenciador, fonte, momento, momento)).fetchall()
         prova = None
-        for linha in linhas:
-            prova = montar_prova(identificador, documento, linha["n"], bytes(linha["segredo"]), selagem.desempacotar_folhas(linha["folhas"]))
+        for n in janelas.que_cobrem(momentos[identificador]):
+            segredo, pares, posicoes = janelas.da_janela(n)
+            prova = montar_prova(identificador, documento, n, segredo, pares, posicoes)
             if prova:
                 break
         if not prova:
             raise EvidenciaRecusada(f"O evento {identificador} ainda não foi selado. Os eventos são selados em até 30 minutos.")
         eventos.append(prova)
-        por_gerenciador.setdefault(gerenciador, []).append(prova["selo"])
-    if len(por_gerenciador) > 1:
-        raise EvidenciaRecusada("Gere um pacote por gerenciador.")
-    gerenciador, numeros = next(iter(por_gerenciador.items()))
+    numeros = [e["selo"] for e in eventos]
     # Até a primeira âncora depois do último evento, ou até a ponta: é o trecho que mostra que nada foi reescrito.
     ancora = con.execute("SELECT min(n) AS n FROM selo_ancoras WHERE gerenciador_id = %s AND n >= %s", (gerenciador, max(numeros))).fetchone()["n"]
     teto = ancora if ancora is not None else con.execute("SELECT max(n) AS n FROM selos WHERE gerenciador_id = %s", (gerenciador,)).fetchone()["n"]
@@ -80,19 +127,20 @@ def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica):
         selo = selagem._selo_da_linha(tuple(linha[c.strip()] for c in selagem.COLUNAS.split(",")))
         selos.append({**selagem.cabecalho_do_selo(selo), "hash": selo["hash"], "assinatura": selo["assinatura"]})
     ancoras = con.execute("SELECT n, hash, calendario, recibo FROM selo_ancoras WHERE gerenciador_id = %s AND n = %s ORDER BY calendario", (gerenciador, teto)).fetchall()
-    return {
+    return gerenciador, {
         "formato": "panthera-roar-evidencia-1", "chave_publica": publica, "fonte": fonte, "eventos": eventos, "selos": selos,
         "ancoras": [{"n": a["n"], "hash": a["hash"], "calendario": a["calendario"], "arquivo": f"ancoras/selo-{a['n']}-{i}.ots"} for i, a in enumerate(ancoras)],
     }, ancoras
 
 
-def _laudo(pacote, sessao, agora):
+def _laudo(pacote, sessao, agora, descricao=None):
     ambiente = Environment(loader=FileSystemLoader(MODELOS), autoescape=select_autoescape(["html"]))
     selos = {s["n"]: s for s in pacote["selos"]}
+    por_extenso = len(pacote["eventos"]) <= EVENTOS_POR_EXTENSO
     return ambiente.get_template("evidencia.html").render(
         cliente=sessao["cliente_nome"], autor=sessao["nome"], agora=agora.strftime("%d/%m/%Y %H:%M UTC"), pacote=pacote, selos=selos,
-        impressao=selagem.impressao_da_chave(pacote["chave_publica"]),
-        documentos=[(e, json.dumps(e["documento"], ensure_ascii=False, indent=2, sort_keys=True)) for e in pacote["eventos"]])
+        impressao=selagem.impressao_da_chave(pacote["chave_publica"]), descricao=descricao, por_extenso=por_extenso,
+        documentos=[(e, json.dumps(e["documento"], ensure_ascii=False, indent=2, sort_keys=True) if por_extenso else "") for e in pacote["eventos"]])
 
 
 LEIA = """Pacote de evidência do Panthera Roar
@@ -109,17 +157,30 @@ substitui perícia. Este pacote contém dados pessoais: compartilhe só com quem
 
 
 def gerar_zip(pacote, ancoras, sessao, gerar_pdf, agora=None):
-    # Quem recebe vai conferir com este programa. Se não passasse aqui, o erro seria nosso, e não deve sair.
-    problemas, _ = verificador.conferir(pacote)
-    if problemas:
-        raise EvidenciaRecusada(f"O pacote não passou na própria conferência: {problemas[0]}")
+    return gerar_zip_de_varios([(None, pacote, ancoras)], sessao, gerar_pdf, agora)
+
+
+def gerar_zip_de_varios(pacotes, sessao, gerar_pdf, agora=None, descricao=None):
+    """Com mais de um gerenciador, cada cadeia vai numa pasta, e cada pasta se confere sozinha."""
     agora = agora or datetime.now(timezone.utc)
     saida = io.BytesIO()
     with zipfile.ZipFile(saida, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("evidencia.json", json.dumps(pacote, ensure_ascii=False, indent=2))
         z.writestr("verificar.py", Path(verificador.__file__).read_text(encoding="utf-8"))
-        z.writestr("LEIA-ME.txt", LEIA)
-        z.writestr("laudo.pdf", gerar_pdf(_laudo(pacote, sessao, agora)))
-        for dados, linha in zip(pacote["ancoras"], ancoras):
-            z.writestr(dados["arquivo"], selagem.arquivo_ots(linha["hash"], linha["recibo"]))
+        z.writestr("LEIA-ME.txt", LEIA if len(pacotes) == 1 else LEIA + LEIA_DE_VARIOS)
+        for numero, (_, pacote, ancoras) in enumerate(pacotes, 1):
+            # Quem recebe vai conferir com este programa. Se não passasse aqui, o erro seria nosso, e não deve sair.
+            problemas, _ = verificador.conferir(pacote)
+            if problemas:
+                raise EvidenciaRecusada(f"O pacote não passou na própria conferência: {problemas[0]}")
+            pasta = "" if len(pacotes) == 1 else f"cadeia-{numero}/"
+            z.writestr(f"{pasta}evidencia.json", json.dumps(pacote, ensure_ascii=False, indent=2))
+            z.writestr(f"{pasta}laudo.pdf", gerar_pdf(_laudo(pacote, sessao, agora, descricao)))
+            for dados, linha in zip(pacote["ancoras"], ancoras):
+                z.writestr(f"{pasta}{dados['arquivo']}", selagem.arquivo_ots(linha["hash"], linha["recibo"]))
     return saida.getvalue()
+
+
+LEIA_DE_VARIOS = """
+Os eventos vieram de mais de um gerenciador, e cada um tem a própria cadeia de selos. Cada pasta cadeia-N
+se confere sozinha: python verificar.py cadeia-1/evidencia.json
+"""
