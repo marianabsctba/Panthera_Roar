@@ -68,6 +68,7 @@ ROTAS = {
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
     ("GET", "/api/organizacao/armazenamento"): "gerir_usuarios", ("PUT", "/api/organizacao/armazenamento"): "gerir_usuarios",
     ("POST", "/api/logs/evidencia"): "ver_bruto",
+    ("POST", "/api/notificacoes/{identificador}/lida"): "ver_auditoria",
     ("GET", "/api/organizacao/copia-fria"): "gerir_usuarios", ("POST", "/api/organizacao/copia-fria"): "gerir_usuarios",
     ("POST", "/api/organizacao/copia-fria/{identificador}/devolver"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",

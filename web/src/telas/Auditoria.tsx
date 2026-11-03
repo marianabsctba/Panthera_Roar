@@ -21,7 +21,9 @@ const NOMES_DA_TRILHA: Record<string, string> = {
   entrar_na_organizacao: "Administração da instalação entrou nesta organização", sair_da_organizacao: "Administração da instalação saiu desta organização", entrar_em_outra_organizacao: "Entrou em outra organização", voltar_para_a_organizacao: "Voltou para a própria organização",
   pedir_organizacao: "Pediu uma organização nova", definir_armazenamento: "Mudou o armazenamento", gerar_evidencia_de_periodo: "Gerou pacote para perícia", recuperar_copia_fria: "Pediu dias de volta da cópia fria", devolver_copia_fria: "Devolveu dias recuperados", remover_organizacao: "Pediu a remoção de uma organização", ver_instalacao_de_agente: "Viu o comando de instalação de agente", criar_caminho_fim: "Incluiu caminho na integridade", desativar_caminho_fim: "Tirou caminho da integridade", pedir_varredura_fim: "Pediu varredura de integridade",
 };
-const nomeDaAcao = (acao: string) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");
+export const nomeDaAcao = (acao: string) => NOMES_DA_TRILHA[acao] ?? acao.replaceAll("_", " ");
+/** Avisa o sino da barra de cima que os avisos mudaram, para o número não ficar velho. */
+export const AVISOS_MUDARAM = "roar:avisos-mudaram";
 
 const SEGUNDOS_ENTRE_AVISOS = 15;
 const PERIODOS = [{ value: "1", label: "Último dia" }, { value: "7", label: "7 dias" }, { value: "30", label: "30 dias" }, { value: "180", label: "180 dias" }];
@@ -92,7 +94,7 @@ function Avisos({ acoes, aoVerNaTrilha, aoVerOrigem }: { acoes: string[]; aoVerN
       acao={avisos.length > 0 && (
         <Group gap="xs" wrap="nowrap">
           <Badge variant="light" size="sm" radius="sm" color="yellow" tt="none" fw={500} className="numero">{numero(total)}</Badge>
-          <Button onClick={async () => { await enviar("/api/notificacoes/lidas"); recarregar(); }}>Marcar como lidos</Button>
+          <Button onClick={async () => { await enviar("/api/notificacoes/lidas"); recarregar(); window.dispatchEvent(new Event(AVISOS_MUDARAM)); }}>Marcar como lidos</Button>
         </Group>
       )}
     >

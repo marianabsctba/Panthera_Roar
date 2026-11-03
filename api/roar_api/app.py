@@ -1271,6 +1271,13 @@ def notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA
         return {"avisos": con.execute("SELECT id, tipo, alvo, origem, contagem, criada_em, atualizada_em FROM notificacoes WHERE lida_em IS NULL ORDER BY atualizada_em DESC LIMIT 50").fetchall()}
 
 
+@app.post("/api/notificacoes/{identificador}/lida", status_code=204)
+def marcar_notificacao(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        con.execute("UPDATE notificacoes SET lida_em = now(), lida_por = %s WHERE id = %s AND lida_em IS NULL", (sessao["usuario_id"], identificador))
+
+
 @app.post("/api/notificacoes/lidas", status_code=204)
 def marcar_notificacoes(request: Request, sessao=Depends(exige(permissoes.VER_AUDITORIA))):
     with do_cliente(request, sessao) as con:

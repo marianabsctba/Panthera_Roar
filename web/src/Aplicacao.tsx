@@ -14,7 +14,7 @@ import { Ajuda } from "./telas/Ajuda";
 import { Armazenamento } from "./telas/Armazenamento";
 import { Ataques } from "./telas/Ataques";
 import { Ativos } from "./telas/Ativos";
-import { Auditoria } from "./telas/Auditoria";
+import { AVISOS_MUDARAM, Auditoria, nomeDaAcao } from "./telas/Auditoria";
 import { Automacao } from "./telas/Automacao";
 import { Eventos } from "./telas/Eventos";
 import { Fila } from "./telas/Fila";
@@ -88,6 +88,50 @@ class ProtecaoDaTela extends Component<{ children: ReactNode; chave: string }, {
   }
 }
 
+interface Aviso { id: number; tipo: string; alvo: string | null; contagem: number; atualizada_em: string }
+const SEGUNDOS_ENTRE_AVISOS = 60;
+
+/** O sino lista os avisos novos e leva a cada um. Abrir um aviso marca só ele como lido. */
+function SinoDeAvisos({ eu, aoIr }: { eu: Eu; aoIr: (tela: string) => void }) {
+  const [avisos, setAvisos] = useState<Aviso[]>([]);
+  const ler_ = () => ler<{ avisos: Aviso[] }>("/api/notificacoes").then((n) => setAvisos(n.avisos)).catch(() => {});
+  useEffect(() => {
+    ler_();
+    const relogio = setInterval(ler_, SEGUNDOS_ENTRE_AVISOS * 1000);
+    window.addEventListener(AVISOS_MUDARAM, ler_);
+    return () => { clearInterval(relogio); window.removeEventListener(AVISOS_MUDARAM, ler_); };
+  }, []);
+  const total = avisos.reduce((t, a) => t + Number(a.contagem), 0);
+  const abrir = async (a: Aviso) => {
+    await enviar(`/api/notificacoes/${a.id}/lida`);
+    window.dispatchEvent(new Event(AVISOS_MUDARAM));
+    // Indicador de ameaça se investiga em Inteligência; o resto é de conta e acesso, que fica na auditoria.
+    aoIr(a.tipo === "indicador_encontrado" && eu.modulos.includes("siem") ? "inteligencia" : "auditoria");
+  };
+  return (
+    <Menu position="bottom-end" shadow="md" width={340} onOpen={ler_}>
+      <Menu.Target>
+        <Indicator disabled={!total} label={total > 99 ? "99+" : total} size={16} color="red">
+          <ActionIcon variant="subtle" color="gray" c="white" aria-label={total ? `${total} avisos` : "Avisos"}><IconBell size={18} /></ActionIcon>
+        </Indicator>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>{total ? "Avisos novos" : "Nenhum aviso novo"}</Menu.Label>
+        {avisos.slice(0, 8).map((a) => (
+          <Menu.Item key={a.id} onClick={() => abrir(a)}>
+            <Text size="sm">{nomeDaAcao(a.tipo)}{Number(a.contagem) > 1 && ` (${a.contagem})`}</Text>
+            <Text size="xs" c="dimmed" truncate className="mono">{a.alvo ?? ""}</Text>
+          </Menu.Item>
+        ))}
+        {avisos.length > 8 && <Menu.Label>E mais {avisos.length - 8} na auditoria</Menu.Label>}
+        <Menu.Divider />
+        {total > 0 && <Menu.Item fz="sm" onClick={async () => { await enviar("/api/notificacoes/lidas"); window.dispatchEvent(new Event(AVISOS_MUDARAM)); }}>Marcar todos como lidos</Menu.Item>}
+        <Menu.Item fz="sm" onClick={() => aoIr("auditoria")}>Ver todos na auditoria</Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 function SeletorDeOrganizacao({ eu }: { eu: Eu }) {
   const [lista, setLista] = useState<{ id: string; nome: string }[] | null>(null);
   return (
@@ -118,7 +162,6 @@ export function Aplicacao() {
   const [fase, setFase] = useState<"carregando" | "entrada" | "codigo" | "dentro">("carregando");
   const [verSenha, setVerSenha] = useState(false);
   const [verMfa, setVerMfa] = useState(false);
-  const [avisos, setAvisos] = useState(0);
   const [violada, setViolada] = useState(false);
   const [vista, setVista] = useState(vistaDaUrl);
   const [aberto, { toggle, close }] = useDisclosure();
@@ -128,9 +171,6 @@ export function Aplicacao() {
     setFase(d.mfa_pendente ? "codigo" : "dentro");
     if (!d.mfa_pendente && d.modulos.includes("siem")) {
       ler<{ verificacao?: { estado?: string } | null }>("/api/integridade").then((p) => setViolada(p.verificacao?.estado === "violada")).catch(() => {});
-    }
-    if (!d.mfa_pendente && d.permissoes.includes("ver_auditoria")) {
-      ler<{ avisos: { contagem: number }[] }>("/api/notificacoes").then((n) => setAvisos(n.avisos.reduce((t, a) => t + a.contagem, 0))).catch(() => {});
     }
   }).catch(() => {});
 
@@ -177,10 +217,8 @@ export function Aplicacao() {
               {eu.plataforma ? <SeletorDeOrganizacao eu={eu} /> : <Text size="sm" visibleFrom="sm" style={{ opacity: 0.85 }}>{eu.cliente}</Text>}
             </Group>
             <Group gap="sm" wrap="nowrap">
-            {eu.permissoes.includes("ver_auditoria") && (
-              <Indicator disabled={!avisos} label={avisos > 99 ? "99+" : avisos} size={16} color="red">
-                <ActionIcon variant="subtle" color="gray" c="white" aria-label={`${avisos} avisos`} onClick={() => ir(TELAS.find((i) => i.id === "auditoria")!)}><IconBell size={18} /></ActionIcon>
-              </Indicator>
+            {eu.permissoes.includes("ver_auditoria") && !eu.mfa_pendente && (
+              <SinoDeAvisos eu={eu} aoIr={(id) => { const i = TELAS.find((t) => t.id === id && visivel(t)); if (i) ir(i); }} />
             )}
             <Menu position="bottom-end" shadow="md">
               <Menu.Target>
