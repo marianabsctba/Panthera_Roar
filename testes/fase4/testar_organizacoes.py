@@ -165,6 +165,11 @@ def main():
             registrar("quem estava dentro dela volta para a própria", outra_sessao.post(f"/api/organizacoes/{novo}/entrar").status_code == 404 and outra_sessao.get("/api/eu").json()["cliente"] == nome_base)
             registrar("a conta não entra mais", anonimo.post("/api/entrar", json={"email": email, "senha": definitiva}).status_code == 401)
             registrar("a outra organização continua", um("SELECT count(*) FROM clientes WHERE id = %s", base) == 1)
+            tabelas = [l[0] for l in ADMIN.execute(
+                """SELECT c.table_name FROM information_schema.columns c JOIN information_schema.tables t USING (table_schema, table_name)
+                   WHERE c.table_schema = 'public' AND c.column_name = 'cliente_id' AND t.table_type = 'BASE TABLE'""").fetchall()]
+            sobras = [t for t in tabelas if t not in organizacoes.GUARDADAS and um(f'SELECT count(*) FROM "{t}" WHERE cliente_id = %s', novo)]
+            registrar("nada da organização fica para trás, só a prova", not sobras, str(sobras))
             novo = None
 
             print("== Falha", flush=True)
