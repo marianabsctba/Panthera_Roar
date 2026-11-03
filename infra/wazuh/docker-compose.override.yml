@@ -1,6 +1,6 @@
 # Sobre o compose oficial do Wazuh: só o indexer, com a porta em 127.0.0.1.
 # Gerenciadores são um por cliente (infra/wazuh/gerenciador) e o dashboard não é usado.
-# A senha de administrador do indexer ainda é a padrão. Trocar antes de sair do ambiente de teste.
+# As senhas de fábrica do indexer são trocadas pelo instalador, em infra/senhas_do_indexador.sh.
 services:
   wazuh.indexer:
     ports: !override

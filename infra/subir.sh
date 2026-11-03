@@ -93,6 +93,8 @@ if [ "$PERFIL" != vulnerabilidades ]; then
     grep -q "^WAZUH_$chave=" "$DESTINO/.env" \
       || echo "WAZUH_$chave=$(grep -m1 "$chave=" "$WAZUH/docker-compose.yml" | cut -d= -f2-)" >>"$DESTINO/.env"
   done
+  # A senha de fábrica é pública: troca antes de qualquer outra coisa usar o indexador.
+  bash "$BASE/senhas_do_indexador.sh"
 
   if [ ! -d "$DESTINO/apps/.git" ]; then
     rm -rf "$DESTINO/apps"

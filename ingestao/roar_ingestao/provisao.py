@@ -29,6 +29,8 @@ RAIZ = Path(__file__).resolve().parents[2]
 WAZUH_VERSAO = "4.14.9"
 # O mesmo da instalação (infra/.env.exemplo): seis meses, o que o Marco Civil pede a provedor de aplicação.
 RETENCAO_PADRAO = "180"
+# Muda quando a configuração base do gerenciador muda: faz cada gerenciador já existente receber a nova uma vez.
+VERSAO_DA_CONFIGURACAO = "2"
 ARQUIVO, PASTA_DO_ARQUIVO, ARQUIVO_PADRAO = "roar-arquivo", "/mnt/roar-arquivo", "365"
 IMAGEM = f"wazuh/wazuh-manager:{WAZUH_VERSAO}"
 CERTIFICADOS = DESTINO / "wazuh/single-node/config/wazuh_indexer_ssl_certs"
@@ -227,6 +229,12 @@ def configuracao_do_gerenciador(conf, guardar_logs=True):
         conf = conf.replace("<logall_json>yes</logall_json>", "<logall_json>no</logall_json>")
     for bloco in ("vulnerability-detection", "indexer"):
         conf = re.sub(rf"(<{bloco}>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
+    # O gerenciador vigiava o próprio contêiner: medição de disco a cada seis minutos, varreduras e inventário dele.
+    # Eram quase metade dos logs brutos, sem nada a investigar. Os agentes têm configuração própria e não mudam.
+    conf = re.sub(r"(<sca>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
+    conf = re.sub(r"(<rootcheck>\s*<disabled>)no(</disabled>)", lambda m: f"{m[1]}yes{m[2]}", conf)
+    conf = re.sub(r'(<wodle name="syscollector">\s*<disabled>)no(</disabled>)', lambda m: f"{m[1]}yes{m[2]}", conf)
+    conf = re.sub(r"\s*<localfile>\s*<log_format>(?:full_)?command</log_format>.*?</localfile>", "", conf, flags=re.S)
     # O inventário do Wazuh liga mesmo com o bloco desligado e pediria, sem parar, para criar modelos de índice.
     # Essa permissão afetaria todos os clientes: sem endereço válido, ele desiste em silêncio.
     conf = re.sub(r"(<indexer>.*?<host>)[^<]*(</host>)", r"\g<1>https://127.0.0.1:1\g<2>", conf, count=1, flags=re.S)

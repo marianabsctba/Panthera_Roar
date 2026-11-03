@@ -254,7 +254,8 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     fragmento = fragmento_de_configuracao(em_uso) + yara_regras.fragmento_de_configuracao(banco, gerenciador_id, cliente)
     arquivos = arquivos_de_credenciais(em_uso)
     # Guardar o log bruto é o padrão e não entra no resumo: assim quem já tinha não reinicia à toa.
-    base = (fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento) + ("" if guardar_logs else "\nsem-logs-brutos")
+    base = (fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento) + ("" if guardar_logs else "\nsem-logs-brutos") \
+        + f"\nconfiguracao-{provisao.VERSAO_DA_CONFIGURACAO}"
     resumo = hashlib.sha256(base.encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
     if resumo == anterior and not pendentes:
