@@ -36,6 +36,7 @@ from roar_ingestao.armazenamento import Armazenamento  # noqa: E402
 
 intel.plataforma_local = lambda: None  # Estes testes usam só fontes próprias.
 RESULTADOS = []
+MEDALLION = "/tmp/medallion/bin/medallion"
 ENV = dict(l.strip().split("=", 1) for l in open("/opt/panthera-roar/.env", encoding="utf-8") if "=" in l and not l.startswith("#"))
 SUFIXO = uuid.uuid4().hex[:8]
 IP_MAU, IP_MAU2, IP_NOVO = "8.8.4.4", "1.0.0.1", "9.9.9.9"
@@ -139,7 +140,11 @@ def main():
                           "manifest": [{"id": "indicator--6770298f-0fd8-471a-ab8c-1c658a46574e", "date_added": "2026-01-01T00:00:00.000Z", "version": "2026-01-01T00:00:00.000Z", "media_type": "application/stix+json;version=2.1"},
                                        {"id": "malware--6770298f-0fd8-471a-ab8c-1c658a46574f", "date_added": "2026-01-01T00:00:00.000Z", "version": "2026-01-01T00:00:00.000Z", "media_type": "application/stix+json;version=2.1"}]}]}}
     Path(pasta, "dados.json").write_text(json.dumps(dados))
-    taxii = subprocess.Popen(["/tmp/medallion/bin/medallion", "--host", "127.0.0.1", "--port", "56565", f"{pasta}/config.json"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Fica fora do repositório e some quando a máquina reinicia: o teste instala de novo, sempre na mesma versão.
+    if not Path(MEDALLION).exists():
+        subprocess.run([sys.executable, "-m", "venv", str(Path(MEDALLION).parents[1])], check=True)
+        subprocess.run([str(Path(MEDALLION).parent / "pip"), "install", "-q", "medallion==3.0.0"], check=True)
+    taxii = subprocess.Popen([MEDALLION, "--host", "127.0.0.1", "--port", "56565", f"{pasta}/config.json"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(4)
 
     try:
@@ -157,7 +162,8 @@ def main():
             http.post("/api/entrar", json={"email": email_a, "senha": senha_a})
 
             print("\n== Ligar", flush=True)
-            registrar("sem nenhuma fonte, nada muda", http.get("/api/inteligencia").json() == {"fontes": [], "ocorrencias": []})
+            vazio = http.get("/api/inteligencia").json()
+            registrar("sem nenhuma fonte, nada muda", (vazio["fontes"], vazio["ocorrencias"]) == ([], []))
             registrar("TAXII sem coleção é recusado", http.post("/api/inteligencia/fontes", json={"nome": "T", "tipo": "taxii", "endereco": "http://127.0.0.1:56565/api1/"}).status_code == 422)
             r = http.post("/api/inteligencia/fontes", json={"nome": "MISP", "tipo": "misp", "endereco": url_misp, "credencial": CHAVE_MISP})
             registrar("cria a fonte MISP", r.status_code == 201, r.text[:120])
@@ -187,7 +193,10 @@ def main():
             outra = TestClient(modulo.app, base_url="https://testserver")
             outra.post("/api/entrar", json={"email": email_b, "senha": senha_b})
             intel.ciclo(banco, cb)
-            registrar("o indicador de um não acusa o evento do outro", outra.get("/api/inteligencia").json() == {"fontes": [], "ocorrencias": []})
+            de_outro = outra.get("/api/inteligencia").json()
+            registrar("o indicador de um não acusa o evento do outro", (de_outro["fontes"], de_outro["ocorrencias"]) == ([], []))
+            conferencia = http.get("/api/inteligencia").json()["conferencia"]
+            registrar("a tela diz até onde conferiu", conferencia and conferencia["eventos_30_dias"] >= 1 and conferencia["indicadores"] >= 1, str(conferencia))
             registrar("a fonte de um não aparece para o outro", outra.post(f"/api/inteligencia/fontes/{f['id']}/sincronizar").status_code == 404)
             registrar("de_b segue sem ocorrência", not admin.execute("SELECT 1 FROM intel_ocorrencias WHERE evento_id = %s", (de_b,)).fetchone())
 

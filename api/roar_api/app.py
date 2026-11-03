@@ -1740,7 +1740,12 @@ def inteligencia(request: Request, sessao=Depends(exige(permissoes.VER)), busca:
         ocorrencias = con.execute(f"""SELECT o.evento_id, o.ocorrido_em, o.encontrada_em, o.no_passado, i.tipo, i.valor, i.descricao, f.nome AS fonte, e.regra_descricao, e.severidade, e.agente_nome AS ativo
                                       FROM intel_ocorrencias o JOIN intel_indicadores i ON i.id = o.indicador_id JOIN intel_fontes f ON f.id = i.fonte_id JOIN eventos e ON e.id = o.evento_id
                                       {condicao} ORDER BY o.ocorrido_em DESC LIMIT 200""", valores).fetchall()
-    return {"fontes": fontes, "ocorrencias": ocorrencias}
+        conferencia = con.execute("""SELECT (SELECT ocorrido_em FROM eventos WHERE id = c.ultimo_evento) AS ate,
+                                            (SELECT count(*) FROM eventos WHERE id <= c.ultimo_evento AND ocorrido_em >= now() - interval '30 days') AS eventos_30_dias
+                                     FROM intel_cursor c""").fetchone()
+    indicadores = sum(int(f["indicadores"]) for f in fontes if f["ativa"])
+    return {"fontes": fontes, "ocorrencias": ocorrencias,
+            "conferencia": {**conferencia, "indicadores": indicadores} if conferencia and conferencia["ate"] else None}
 
 
 @app.post("/api/inteligencia/fontes", status_code=201)

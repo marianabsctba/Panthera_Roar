@@ -9,7 +9,7 @@ import { Fatos } from "./Ataques";
 
 interface Fonte { id: number; nome: string; tipo: string; endereco: string; colecao: string | null; com_credencial: boolean; ativa: boolean; interna: boolean; a_cada_minutos: number; proxima_em: string | null; ultima_em: string | null; ultimo_erro: string | null; indicadores: number }
 interface Ocorrencia { evento_id: number; ocorrido_em: string; encontrada_em: string | null; no_passado: boolean; tipo: string; valor: string; descricao: string | null; fonte: string; regra_descricao: string | null; severidade: string; ativo: string | null }
-interface Visao { fontes: Fonte[]; ocorrencias: Ocorrencia[] }
+interface Visao { fontes: Fonte[]; ocorrencias: Ocorrencia[]; conferencia: { ate: string; eventos_30_dias: number; indicadores: number } | null }
 
 const chaveDaOcorrencia = (o: Ocorrencia) => `${o.evento_id}-${o.fonte}-${o.tipo}-${o.valor}`;
 const comoFoiAchado = (o: Ocorrencia) => (o.no_passado ? "Olhando para trás" : "Na chegada");
@@ -227,7 +227,13 @@ export function Inteligencia() {
             />
           </Painel>
           <Painel titulo="Eventos que bateram com um indicador" acao={<Busca valor={busca} aoMudar={setBusca} dica="Indicador, regra ou ativo" />}>
-            <TabelaDeOcorrencias linhas={dados.ocorrencias} vazio="Nenhum evento bateu com um indicador." aoAbrir={setOcorrencia} aoVerBruto={verBruto} />
+            {/* Sem dizer até onde conferiu, "nada bateu" parece "nada rodou". */}
+            {dados.conferencia && (
+              <Text size="xs" c="dimmed" mb="sm">
+                {numero(dados.conferencia.eventos_30_dias)} eventos dos últimos 30 dias conferidos contra {numero(dados.conferencia.indicadores)} indicadores, até <Data valor={dados.conferencia.ate} />. Eventos antigos são conferidos de novo quando chega indicador novo.
+              </Text>
+            )}
+            <TabelaDeOcorrencias linhas={dados.ocorrencias} vazio={busca ? "Nenhuma ocorrência com essa busca." : dados.conferencia ? "Nenhum evento bateu. Isso é bom: nenhum endereço, domínio ou arquivo visto aqui está nas fontes." : "A primeira conferência ainda não terminou."} aoAbrir={setOcorrencia} aoVerBruto={verBruto} />
           </Painel>
         </Stack>
       )}
