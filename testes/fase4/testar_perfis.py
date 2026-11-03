@@ -66,6 +66,9 @@ ROTAS = {
     ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
+    ("GET", "/api/organizacao/armazenamento"): "gerir_usuarios", ("PUT", "/api/organizacao/armazenamento"): "gerir_usuarios",
+    ("GET", "/api/organizacao/copia-fria"): "gerir_usuarios", ("POST", "/api/organizacao/copia-fria"): "gerir_usuarios",
+    ("POST", "/api/organizacao/copia-fria/{identificador}/devolver"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
 VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}

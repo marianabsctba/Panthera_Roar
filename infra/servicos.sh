@@ -37,7 +37,7 @@ escrever_env() {
   install -m 640 -o root -g "$grupo" "$temporario" "$arquivo"
   rm -f "$temporario"
 }
-escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS
+escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS
 escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.

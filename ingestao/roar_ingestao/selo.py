@@ -374,18 +374,24 @@ def conferir_grupo(indexer, gerenciador, grupo, guardados):
     return achados, len(conhecidos)
 
 
-def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=90, somente_recentes=None, agora=None):
+def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None, somente_recentes=None, agora=None):
     """Sem somente_recentes confere tudo. A retenção apaga evento antigo de propósito: ali só a cadeia vale."""
     agora = agora or datetime.now(timezone.utc)
     with banco.con.transaction():
         _com_cliente(banco, cliente)
         selos = [_selo_da_linha(l) for l in banco.con.execute(f"SELECT {COLUNAS} FROM selos WHERE gerenciador_id = %s ORDER BY n", (gerenciador,)).fetchall()]
+        prazos = banco.con.execute("SELECT retencao_alertas_dias, retencao_logs_dias FROM clientes WHERE id = %s", (cliente,)).fetchone()
     achados = conferir_cadeia(selos, publica)
-    desde = agora - timedelta(days=retencao_dias - 1)
+    # Cada tipo some do indexador no próprio prazo, o que a organização escolheu: evento apagado pela retenção não é violação, ali só a cadeia vale.
+    if retencao_dias is None:
+        dias = {"alertas": prazos[0], "logs": prazos[1]} if prazos else {"alertas": 180, "logs": 180}
+    else:
+        dias = {"alertas": retencao_dias, "logs": retencao_dias}
+    desde = {fonte: agora - timedelta(days=d - 1) for fonte, d in dias.items()}
     if somente_recentes:
-        desde = max(desde, agora - somente_recentes)
+        desde = {fonte: max(d, agora - somente_recentes) for fonte, d in desde.items()}
     eventos = 0
-    for grupo in _grupos_que_se_tocam([s for s in selos if datetime.fromisoformat(s["fim"]) > desde]):
+    for grupo in _grupos_que_se_tocam([s for s in selos if datetime.fromisoformat(s["fim"]) > desde[s["fonte"]]]):
         # Um grupo por vez: guardar as folhas de três meses juntas não cabe na memória.
         with banco.con.transaction():
             _com_cliente(banco, cliente)
@@ -468,7 +474,7 @@ def rodar_ciclo(indexer, banco, chave, publica, com_ancora=False):
     return total
 
 
-def verificar_todos(indexer, banco, publica, retencao_dias, somente_recentes=None):
+def verificar_todos(indexer, banco, publica, retencao_dias=None, somente_recentes=None):
     for gerenciador, cliente in banco.gerenciadores():
         try:
             estado, achados, eventos = verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias, somente_recentes)
@@ -487,7 +493,8 @@ def main():
     a = args.parse_args()
     indexer, banco, env = conexoes()
     chave, publica = carregar_chave()
-    retencao = int(env.get("RETENCAO_DIAS", 90))
+    # Sem prazo aqui: cada organização tem o seu, lido do banco na hora de conferir.
+    retencao = None
     # Só o resumo da cadeia sai daqui, mas quem roda sem internet ou prefere não sair desliga.
     com_ancora = env.get("ROAR_SELO_ANCORA", "1") == "1"
     if a.verificar:

@@ -5,3 +5,6 @@ services:
   wazuh.indexer:
     ports: !override
       - "127.0.0.1:9200:9200"
+    # Cópia fria diária dos índices. Para guardar em NAS, monte o NAS nesta pasta antes de instalar.
+    volumes:
+      - /opt/panthera-roar/arquivo:/mnt/roar-arquivo

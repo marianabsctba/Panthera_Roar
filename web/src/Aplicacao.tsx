@@ -1,7 +1,7 @@
 import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
-  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconCheck, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
+  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
   IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -11,6 +11,7 @@ import { Autenticador, TrocaDeSenha } from "./Conta";
 import { Entrada } from "./Entrada";
 import { trocarDeOrganizacao } from "./trocarDeOrganizacao";
 import { Ajuda } from "./telas/Ajuda";
+import { Armazenamento } from "./telas/Armazenamento";
 import { Ataques } from "./telas/Ataques";
 import { Ativos } from "./telas/Ativos";
 import { Auditoria } from "./telas/Auditoria";
@@ -63,6 +64,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
   { titulo: "Administrar", itens: [
     { id: "organizacoes", rotulo: "Organizações", icone: IconBuildingSkyscraper, soPlataforma: true, tela: Organizacoes },
     { id: "usuarios", rotulo: "Usuários", icone: IconUsers, permissao: "gerir_usuarios", tela: Usuarios },
+    { id: "armazenamento", rotulo: "Armazenamento", icone: IconDatabaseCog, modulo: "siem", permissao: "gerir_usuarios", tela: Armazenamento },
     { id: "ajuda", rotulo: "Ajuda", icone: IconHelpCircle, tela: Ajuda },
   ] },
 ];

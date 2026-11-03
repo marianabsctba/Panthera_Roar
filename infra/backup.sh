@@ -3,7 +3,8 @@
 #
 #   infra/backup.sh [pasta de destino]
 #
-# Os eventos no indexador ficam fora: são muitos terabytes em produção e pedem snapshot em disco próprio.
+# Os eventos no indexador ficam fora: são muitos terabytes em produção. Eles vão na cópia fria diária do próprio
+# indexador, em $DESTINO/arquivo: para sobreviver à perda do servidor, essa pasta precisa ser um NAS ou ser copiada para fora.
 set -euo pipefail
 
 DESTINO="${ROAR_DESTINO:-/opt/panthera-roar}"

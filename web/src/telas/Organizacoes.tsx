@@ -83,7 +83,7 @@ function RemoverOrganizacao({ org, aoFechar, aoRemover }: { org: Organizacao | n
   return (
     <Modal opened={org !== null} onClose={aoFechar} title={`Remover ${org?.nome ?? ""}`}>
       <Stack gap="sm">
-        <Alert color="red" variant="light" p="xs"><Text size="sm">Apaga eventos, regras, pessoas e o gerenciador desta organização. Não tem volta. Os selos de integridade ficam, porque são prova.</Text></Alert>
+        <Alert color="red" variant="light" p="xs"><Text size="sm">Apaga eventos, regras, pessoas e o gerenciador desta organização. Não tem volta. Os selos de integridade ficam, porque são prova. Os dados que já estão nas cópias frias só saem quando cada cópia vencer.</Text></Alert>
         <TextInput label={`Digite ${org?.nome ?? ""} para confirmar`} value={confirmacao} onChange={(e) => setConfirmacao(e.currentTarget.value)} data-autofocus error={erro} />
         <Group justify="flex-end">
           <Button variant="subtle" color="gray" onClick={aoFechar}>Cancelar</Button>

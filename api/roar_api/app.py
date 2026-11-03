@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_api import evidencia, mfa, modulos, permissoes, relatorios  # noqa: E402
-from roar_ingestao import cofre, fim, rede_externa  # noqa: E402
+from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
@@ -1537,7 +1537,7 @@ def _ocupado_por_dia(indexer, logs, alertas):
         if achado:
             dia = dias.setdefault("-".join(achado.groups()), {"logs": 0, "alertas": 0})
             dia[tipo] += tamanho
-    return {**total, "por_dia": [{"dia": d, **v} for d, v in sorted(dias.items())], "retencao_dias": int(_ler_env().get("RETENCAO_DIAS", 90))}
+    return {**total, "por_dia": [{"dia": d, **v} for d, v in sorted(dias.items())]}
 
 
 @app.get("/api/volume")
@@ -1546,6 +1546,7 @@ def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 
     dias = max(1, min(dias, 90))
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        prazos = con.execute("SELECT retencao_alertas_dias, retencao_logs_dias FROM clientes").fetchone()
     if not gerenciadores:
         return {"logs": None, "alertas": None, "dias": dias}
     logs = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
@@ -1554,9 +1555,93 @@ def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 
         resposta = {"logs": _volume_do_indice(request.app.state.indexer, logs, dias), "alertas": _volume_do_indice(request.app.state.indexer, alertas, dias), "dias": dias}
     except (requests.RequestException, KeyError, ValueError):
         raise HTTPException(status_code=503, detail="Não foi possível medir o volume agora.")
-    resposta["ocupado_bytes"] = _ocupado_no_indice(request.app.state.indexer, f"{logs},{alertas}")
     resposta["ocupado"] = _ocupado_por_dia(request.app.state.indexer, logs, alertas)
+    # Da mesma leitura: o indexador compacta o tempo todo, e duas medidas seguidas não batem.
+    resposta["ocupado_bytes"] = (resposta["ocupado"]["logs"] + resposta["ocupado"]["alertas"]) if resposta["ocupado"] else _ocupado_no_indice(request.app.state.indexer, f"{logs},{alertas}")
+    if resposta["ocupado"]:
+        resposta["ocupado"].update(prazos)
     return resposta
+
+
+class Armazenamento(BaseModel):
+    retencao_alertas_dias: int = Field(ge=30, le=3650)
+    retencao_logs_dias: int = Field(ge=7, le=3650)
+    guardar_logs: bool
+
+
+@app.get("/api/organizacao/armazenamento")
+def ver_armazenamento(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        dados = con.execute("SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs, armazenamento_estado AS estado, armazenamento_mensagem AS mensagem FROM clientes").fetchone()
+    return {**dados, "arquivo": _ultima_copia_fria(request.app.state.indexer)}
+
+
+class Recuperacao(BaseModel):
+    de: date
+    ate: date
+    tipo: str = Field(pattern="^(alertas|logs|ambos)$")
+    dias_de_consulta: int = Field(default=7, ge=1, le=30)
+
+
+@app.get("/api/organizacao/copia-fria")
+def ver_copia_fria(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Os dias que dá para trazer de volta: só os desta organização, escolhidos pelos gerenciadores dela."""
+    with do_cliente(request, sessao) as con:
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        pedidos = con.execute("SELECT id, de, ate, tipo, dias_de_consulta, estado, mensagem, cardinality(indices) AS indices, criado_em, expira_em "
+                              "FROM recuperacoes ORDER BY id DESC LIMIT 20").fetchall()
+    try:
+        disponivel = copia_fria.dias_disponiveis(request.app.state.indexer.get, INDEXER_URL, gerenciadores)
+    except requests.RequestException:
+        disponivel = None
+    return {"disponivel": disponivel, "pedidos": pedidos}
+
+
+@app.post("/api/organizacao/copia-fria", status_code=201)
+def pedir_recuperacao(dados: Recuperacao, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    if dados.ate < dados.de or (dados.ate - dados.de).days >= 31:
+        raise HTTPException(status_code=422, detail="Escolha um período de até 31 dias.")
+    with do_cliente(request, sessao) as con:
+        if con.execute("SELECT count(*) AS n FROM recuperacoes WHERE estado IN ('pendente', 'em_andamento')").fetchone()["n"]:
+            raise HTTPException(status_code=409, detail="Já há uma recuperação em andamento. Espere terminar.")
+        novo = con.execute("INSERT INTO recuperacoes (cliente_id, de, ate, tipo, dias_de_consulta, pedido_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                           (sessao["cliente_id"], dados.de, dados.ate, dados.tipo, dados.dias_de_consulta, sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'recuperar_copia_fria', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.tipo} de {dados.de} a {dados.ate}, por {dados.dias_de_consulta} dias"))
+    return {"id": novo}
+
+
+@app.post("/api/organizacao/copia-fria/{identificador}/devolver", status_code=202)
+def devolver_recuperacao(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE recuperacoes SET estado = 'devolver' WHERE id = %s AND estado = 'pronto' RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=409, detail="Só dá para devolver o que já voltou.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'devolver_copia_fria', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+
+
+def _ultima_copia_fria(indexer):
+    """Da instalação inteira: a cópia leva todas as organizações juntas, então só diz quando foi e por quanto tempo fica."""
+    try:
+        r = indexer.get(f"{INDEXER_URL}/_cat/snapshots/roar-arquivo?format=json&h=id,status,end_epoch", timeout=20)
+    except requests.RequestException:
+        return None
+    if not r.ok:
+        return None
+    prontas = [int(s["end_epoch"]) for s in r.json() if s.get("status") == "SUCCESS" and s.get("end_epoch")]
+    return {"ultima": datetime.fromtimestamp(max(prontas), timezone.utc).isoformat() if prontas else None,
+            "copias": len(prontas), "dias": int(_ler_env().get("ROAR_ARQUIVO_DIAS", 365))}
+
+
+@app.put("/api/organizacao/armazenamento", status_code=204)
+def definir_armazenamento(dados: Armazenamento, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """O serviço de fontes aplica no indexador e no gerenciador; a tela acompanha pelo estado."""
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_armazenamento(%s, %s, %s)", (dados.retencao_alertas_dias, dados.retencao_logs_dias, dados.guardar_logs))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_armazenamento', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"],
+                     f"alertas {dados.retencao_alertas_dias} dias, logs brutos {dados.retencao_logs_dias} dias, {'guarda' if dados.guardar_logs else 'não guarda'} logs brutos"))
 
 
 class NovaFonteDeInteligencia(BaseModel):

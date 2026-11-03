@@ -27,6 +27,9 @@ from .fonte_wazuh import Indexer
 DESTINO = Path("/opt/panthera-roar")
 RAIZ = Path(__file__).resolve().parents[2]
 WAZUH_VERSAO = "4.14.9"
+# O mesmo da instalação (infra/.env.exemplo): seis meses, o que o Marco Civil pede a provedor de aplicação.
+RETENCAO_PADRAO = "180"
+ARQUIVO, PASTA_DO_ARQUIVO, ARQUIVO_PADRAO = "roar-arquivo", "/mnt/roar-arquivo", "365"
 IMAGEM = f"wazuh/wazuh-manager:{WAZUH_VERSAO}"
 CERTIFICADOS = DESTINO / "wazuh/single-node/config/wazuh_indexer_ssl_certs"
 CONF_BASE = DESTINO / "wazuh/single-node/config/wazuh_cluster/wazuh_manager.conf"
@@ -108,35 +111,88 @@ def preparar():
         _pedir(indexer, "PUT", f"_ingest/pipeline/filebeat-{versao}-wazuh-{conjunto}-pipeline", pipeline)
 
     # Sem isso os índices crescem até encher o disco, principalmente os de log bruto.
-    dias = int(env.get("RETENCAO_DIAS", "90"))
+    # Vale até a organização ter a própria política: cada gerenciador ganha uma, com prioridade maior.
+    _gravar_politica(indexer, "roar-retencao", "Retenção padrão dos índices de alertas e logs brutos",
+                     [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], int(env.get("RETENCAO_DIAS", RETENCAO_PADRAO)), 100)
+
+    modelo = json.loads(_na_imagem("cat", "/var/ossec/data_tmp/exclusion/etc/filebeat/wazuh-template.json"))
+    _pedir(indexer, "PUT", "_template/wazuh", modelo)
+    # Log bruto é lido bem menos que alerta: vale gastar CPU ao gravar para ocupar menos disco. Só vale para índice novo.
+    _pedir(indexer, "PUT", "_template/roar-compressao", {"index_patterns": [f"{PREFIXO_BRUTO}*"], "order": 10,
+                                                        "settings": {"index.codec": "best_compression"}})
+
+    preparar_arquivo(indexer, int(env.get("ROAR_ARQUIVO_DIAS", ARQUIVO_PADRAO)))
+
+    _pedir(indexer, "PUT", f"_plugins/_security/api/roles/{LEITOR}", {
+        # Ler a lista de cópias frias deixa a tela mostrar quando foi a última.
+        "cluster_permissions": ["cluster_monitor", "cluster:admin/snapshot/get", "cluster:admin/repository/get"],
+        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "allowed_actions": ["read", "indices:monitor/stats"]}],
+    })
+    _pedir(indexer, "PUT", f"_plugins/_security/api/internalusers/{LEITOR}",
+           {"password": env["ROAR_LEITOR_SENHA"], "opendistro_security_roles": [LEITOR]})
+    print("Indexer preparado.")
+
+
+def preparar_arquivo(indexer, dias):
+    """Cópia fria diária de alertas e logs brutos. O índice ao vivo some no prazo da organização; a cópia, no prazo da instalação."""
+    r = indexer.sessao.put(f"{indexer.url}/_snapshot/{ARQUIVO}", json={"type": "fs", "settings": {"location": PASTA_DO_ARQUIVO, "compress": True}}, timeout=60)
+    if not r.ok:
+        # Instalação antiga, sem a pasta declarada no indexador: segue sem cópia fria até rodar o instalador de novo.
+        print(f"Cópia fria desligada: o indexador não aceitou a pasta ({r.status_code}).")
+        return False
+    politica = {
+        "description": "Cópia fria diária dos índices de alertas e logs brutos",
+        "creation": {"schedule": {"cron": {"expression": "30 1 * * *", "timezone": "UTC"}}},
+        # Guarda ao menos uma semana de cópias, mesmo se o prazo for curto.
+        "deletion": {"schedule": {"cron": {"expression": "30 3 * * *", "timezone": "UTC"}}, "condition": {"max_age": f"{dias}d", "min_count": 7}},
+        "snapshot_config": {"indices": f"{PREFIXO}*,{PREFIXO_BRUTO}*", "repository": ARQUIVO, "ignore_unavailable": True, "include_global_state": False},
+    }
+    atual = indexer.sessao.get(f"{indexer.url}/_plugins/_sm/policies/{ARQUIVO}", timeout=30)
+    if atual.ok:
+        dados = atual.json()
+        _pedir(indexer, "PUT", f"_plugins/_sm/policies/{ARQUIVO}?if_seq_no={dados['_seq_no']}&if_primary_term={dados['_primary_term']}", politica)
+    else:
+        _pedir(indexer, "POST", f"_plugins/_sm/policies/{ARQUIVO}", politica)
+    return True
+
+
+def _gravar_politica(indexer, nome, descricao, padroes, dias, prioridade):
     politica = {"policy": {
-        "description": "Retenção dos índices de alertas e logs brutos",
+        "description": descricao,
         "default_state": "quente",
         "states": [
             {"name": "quente", "actions": [],
              "transitions": [{"state_name": "apagar", "conditions": {"min_index_age": f"{dias}d"}}]},
             {"name": "apagar", "actions": [{"delete": {}}], "transitions": []},
         ],
-        "ism_template": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "priority": 100}],
+        "ism_template": [{"index_patterns": padroes, "priority": prioridade}],
     }}
-    atual = indexer.sessao.get(f"{indexer.url}/_plugins/_ism/policies/roar-retencao", timeout=30)
+    atual = indexer.sessao.get(f"{indexer.url}/_plugins/_ism/policies/{nome}", timeout=30)
     if atual.ok:
         dados = atual.json()
-        _pedir(indexer, "PUT", f"_plugins/_ism/policies/roar-retencao?if_seq_no={dados['_seq_no']}"
-                               f"&if_primary_term={dados['_primary_term']}", politica)
+        _pedir(indexer, "PUT", f"_plugins/_ism/policies/{nome}?if_seq_no={dados['_seq_no']}&if_primary_term={dados['_primary_term']}", politica)
     else:
-        _pedir(indexer, "PUT", "_plugins/_ism/policies/roar-retencao", politica)
+        _pedir(indexer, "PUT", f"_plugins/_ism/policies/{nome}", politica)
 
-    modelo = json.loads(_na_imagem("cat", "/var/ossec/data_tmp/exclusion/etc/filebeat/wazuh-template.json"))
-    _pedir(indexer, "PUT", "_template/wazuh", modelo)
 
-    _pedir(indexer, "PUT", f"_plugins/_security/api/roles/{LEITOR}", {
-        "cluster_permissions": ["cluster_monitor"],
-        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "allowed_actions": ["read", "indices:monitor/stats"]}],
-    })
-    _pedir(indexer, "PUT", f"_plugins/_security/api/internalusers/{LEITOR}",
-           {"password": env["ROAR_LEITOR_SENHA"], "opendistro_security_roles": [LEITOR]})
-    print("Indexer preparado.")
+def aplicar_retencao(gerenciador_id, dias_alertas, dias_logs):
+    """Cada gerenciador com a retenção da própria organização. Índice novo pega pela prioridade; o que já existe troca aqui."""
+    indexer = indexer_admin(ler_env(DESTINO / ".env"))
+    for tipo, prefixo, dias in (("alertas", indice_do(gerenciador_id), dias_alertas), ("logs", indice_bruto_do(gerenciador_id), dias_logs)):
+        nome = f"roar-retencao-{tipo}-{gerenciador_id}"
+        _gravar_politica(indexer, nome, f"Retenção de {tipo} de um gerenciador", [f"{prefixo}*"], dias, 200)
+        # Sem índice ainda, o indexador recusa a troca em vez de não fazer nada: o primeiro já nasce com a política certa.
+        if not _pedir(indexer, "GET", f"_cat/indices/{prefixo}*?h=index").text.split():
+            continue
+        # Trocar de política só valeria ao fim da etapa atual, que dura o prazo inteiro: tira a antiga e põe a nova.
+        # A idade conta da criação do índice, então nada ganha prazo extra com a troca.
+        _pedir(indexer, "POST", f"_plugins/_ism/remove/{prefixo}*")
+        _pedir(indexer, "POST", f"_plugins/_ism/add/{prefixo}*", {"policy_id": nome})
+
+
+def apagar_retencao(indexer, gerenciador_id):
+    for tipo in ("alertas", "logs"):
+        indexer.sessao.delete(f"{indexer.url}/_plugins/_ism/policies/roar-retencao-{tipo}-{gerenciador_id}", timeout=60)
 
 
 def _permissoes_do_indexer(indexer, gerenciador_id, senha):
@@ -160,11 +216,15 @@ def _compose(pasta, gerenciador_id, *comando):
                           check=True, capture_output=True, text=True)
 
 
-def configuracao_do_gerenciador(conf):
+def configuracao_do_gerenciador(conf, guardar_logs=True):
     """Exige senha na inscrição e desliga o que usaria índices compartilhados entre clientes."""
     conf = conf.replace("<use_password>no</use_password>", "<use_password>yes</use_password>")
     # Guarda também o que não virou alerta: é o log bruto que investigação e auditoria pedem.
-    conf = conf.replace("<logall_json>no</logall_json>", "<logall_json>yes</logall_json>")
+    # A organização pode abrir mão para economizar disco, e aí só os alertas ficam selados.
+    if guardar_logs:
+        conf = conf.replace("<logall_json>no</logall_json>", "<logall_json>yes</logall_json>")
+    else:
+        conf = conf.replace("<logall_json>yes</logall_json>", "<logall_json>no</logall_json>")
     for bloco in ("vulnerability-detection", "indexer"):
         conf = re.sub(rf"(<{bloco}>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
     # O inventário do Wazuh liga mesmo com o bloco desligado e pediria, sem parar, para criar modelos de índice.
@@ -384,7 +444,7 @@ def _instalar_credenciais(pasta, gerenciador_id, arquivos):
     temporario.unlink(missing_ok=True)
 
 
-def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None):
+def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=True):
     """Troca o trecho das fontes de dados. Se reprovar, volta ao arquivo anterior e não reinicia."""
     arquivos = arquivos or {}
     pasta = DESTINO / "gerenciadores" / gerenciador_id
@@ -402,7 +462,7 @@ def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None):
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
 
     novo = pasta / "ossec.conf.novo"
-    novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text()) + fragmento)
+    novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text(), guardar_logs) + fragmento)
     instalar(novo)
     _instalar_credenciais(pasta, gerenciador_id, arquivos)
     # O analisador sozinho aprova um syslog inválido, que só derrubaria o recebimento ao reiniciar.
@@ -445,6 +505,7 @@ def remover(gerenciador_id, apagar_dados=True):
     for rota in (f"_plugins/_security/api/internalusers/{usuario}", f"_plugins/_security/api/roles/{usuario}"):
         indexer.sessao.delete(f"{indexer.url}/{rota}", timeout=60)
     if apagar_dados:
+        apagar_retencao(indexer, gerenciador_id)
         indexer.sessao.delete(f"{indexer.url}/{indice_do(gerenciador_id)}*", timeout=60)
         indexer.sessao.delete(f"{indexer.url}/{indice_bruto_do(gerenciador_id)}*", timeout=60)
         with banco_admin(env) as banco:

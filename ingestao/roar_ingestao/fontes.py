@@ -245,6 +245,7 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
         linhas = com_cliente(
             "SELECT id, tipo, config, estado FROM fontes WHERE gerenciador_id = %s AND estado IN ('pendente', 'ativa', 'desativada')",
             gerenciador_id).fetchall()
+        guardar_logs = com_cliente("SELECT guardar_logs FROM clientes WHERE id = %s", cliente).fetchone()[0]
     pendentes = [l[0] for l in linhas if l[3] == "pendente"]
     em_uso = [{"id": l[0], "tipo": l[1], "config": l[2]} for l in linhas if l[3] != "desativada"]
     pasta = PASTA_GERENCIADORES / gerenciador_id
@@ -252,11 +253,13 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     _abrir_segredos(banco, cliente, em_uso)
     fragmento = fragmento_de_configuracao(em_uso) + yara_regras.fragmento_de_configuracao(banco, gerenciador_id, cliente)
     arquivos = arquivos_de_credenciais(em_uso)
-    resumo = hashlib.sha256((fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento).encode()).hexdigest()
+    # Guardar o log bruto é o padrão e não entra no resumo: assim quem já tinha não reinicia à toa.
+    base = (fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento) + ("" if guardar_logs else "\nsem-logs-brutos")
+    resumo = hashlib.sha256(base.encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
     if resumo == anterior and not pendentes:
         return 0
-    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(gerenciador_id, fragmento, arquivos)
+    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(gerenciador_id, fragmento, arquivos, guardar_logs)
     if ok:
         marca.write_text(resumo)
     with banco.con.transaction():
@@ -404,6 +407,28 @@ def ciclo(banco):
             aplicar_regras_proprias(banco, gerenciador_id, cliente)
         except Exception:  # Um gerenciador com problema não pode travar a configuração dos outros.
             log.exception("fontes do gerenciador %s falharam", gerenciador_id)
+    aplicar_armazenamento(banco)
+
+
+def aplicar_armazenamento(banco):
+    """Retenção pedida na tela. Depois das fontes: guardar ou não o log bruto já foi para o gerenciador na volta acima."""
+    from . import provisao
+
+    with banco.con.transaction():
+        pendentes = banco.con.execute("SELECT id, retencao_alertas_dias, retencao_logs_dias FROM clientes WHERE armazenamento_estado = 'pendente'").fetchall()
+    for cliente, alertas, logs in pendentes:
+        with banco.con.transaction():
+            banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+            gerenciadores = [l[0] for l in banco.con.execute("SELECT id FROM gerenciadores WHERE cliente_id = %s", (cliente,)).fetchall()]
+        estado, mensagem = "aplicado", None
+        try:
+            for gerenciador_id in gerenciadores:
+                provisao.aplicar_retencao(gerenciador_id, alertas, logs)
+        except Exception:
+            log.exception("retenção da organização %s", cliente)
+            estado, mensagem = "falhou", "Não foi possível aplicar a retenção. Tentaremos de novo na próxima mudança."
+        with banco.con.transaction():
+            banco.con.execute("UPDATE clientes SET armazenamento_estado = %s, armazenamento_mensagem = %s WHERE id = %s", (estado, mensagem, cliente))
 
 
 def main():

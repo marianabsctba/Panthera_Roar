@@ -21,7 +21,7 @@ interface PanoramaDados {
 interface Volume {
   dias: number;
   ocupado_bytes: number;
-  ocupado: { logs: number; alertas: number; retencao_dias: number; por_dia: { dia: string; logs: number; alertas: number }[] } | null;
+  ocupado: { logs: number; alertas: number; retencao_alertas_dias: number; retencao_logs_dias: number; por_dia: { dia: string; logs: number; alertas: number }[] } | null;
   logs: { total: number; eps_agora: number; eps_medio: number; eps_pico: number; pico_em: string | null; eps_por_hora: { hora: string; medio: number; pico: number }[]; por_dia: { dia: string; eventos: number; bytes_estimados: number }[]; ativos: { nome: string; eventos: number }[]; origens: { nome: string; eventos: number }[] } | null;
 }
 
@@ -67,7 +67,12 @@ function GavetaDeDisco({ aberta, aoFechar, volume, aoEscolherDia }: { aberta: bo
   if (!o || !volume) return <Drawer opened={aberta} onClose={aoFechar} title="Ocupado em disco" size="xl"><Vazio>Não foi possível medir o disco agora.</Vazio></Drawer>;
   // Hoje ainda está crescendo: entra no gráfico, mas não na média.
   const fechados = o.por_dia.slice(0, -1);
-  const porDia = fechados.length ? fechados.reduce((t, d) => t + d.logs + d.alertas, 0) / fechados.length : null;
+  const media = (campo: "logs" | "alertas") => (fechados.length ? fechados.reduce((t, d) => t + d[campo], 0) / fechados.length : null);
+  const logsPorDia = media("logs");
+  const alertasPorDia = media("alertas");
+  const porDia = logsPorDia === null || alertasPorDia === null ? null : logsPorDia + alertasPorDia;
+  // Cada tipo tem o próprio prazo.
+  const estimativa = logsPorDia === null || alertasPorDia === null ? null : logsPorDia * o.retencao_logs_dias + alertasPorDia * o.retencao_alertas_dias;
   const dias = o.por_dia.map((d) => ({ ...d, rotulo: diaCurto(d.dia) }));
   return (
     <Drawer opened={aberta} onClose={aoFechar} title="Ocupado em disco" size="xl">
@@ -75,7 +80,7 @@ function GavetaDeDisco({ aberta, aoFechar, volume, aoEscolherDia }: { aberta: bo
         <SimpleGrid cols={3}>
           <Numero rotulo="Ocupado agora" valor={tamanho(volume.ocupado_bytes)} />
           <Numero rotulo="Cresce por dia" valor={tamanho(porDia)} detalhe={porDia === null ? "precisa de um dia inteiro" : `média de ${fechados.length} ${fechados.length === 1 ? "dia" : "dias"}`} />
-          <Numero rotulo={`Com retenção de ${o.retencao_dias} dias`} valor={tamanho(porDia === null ? null : porDia * o.retencao_dias)} detalhe="estimativa, se o ritmo seguir" />
+          <Numero rotulo="Com a retenção atual" valor={tamanho(estimativa)} detalhe={`alertas ${o.retencao_alertas_dias} dias, logs ${o.retencao_logs_dias} dias`} />
         </SimpleGrid>
         <Painel titulo="O que ocupa">
           <Ranking itens={[{ rotulo: "Logs", valor: o.logs }, { rotulo: "Alertas", valor: o.alertas }]} rotuloDoValor={tamanho} vazio="Sem dados." />

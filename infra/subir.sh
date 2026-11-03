@@ -81,6 +81,13 @@ if [ "$PERFIL" != vulnerabilidades ]; then
   if [ ! -f "$WAZUH/config/wazuh_indexer_ssl_certs/root-ca.pem" ]; then
     docker compose --project-directory "$WAZUH" -f "$WAZUH/generate-indexer-certs.yml" run --rm generator
   fi
+  # O indexador só grava cópia em pasta declarada na configuração dele.
+  mkdir -p "$DESTINO/arquivo"
+  chown 1000:1000 "$DESTINO/arquivo"
+  chmod 700 "$DESTINO/arquivo"
+  # O arquivo do Wazuh termina sem quebra de linha: sem a primeira, a linha nova grudaria na anterior e o indexador não subiria.
+  grep -q '^path.repo:' "$WAZUH/config/wazuh_indexer/wazuh.indexer.yml" \
+    || printf '\npath.repo: ["/mnt/roar-arquivo"]\n' >>"$WAZUH/config/wazuh_indexer/wazuh.indexer.yml"
   docker compose --project-directory "$WAZUH" --project-name panthera-roar-wazuh up -d wazuh.indexer
   for chave in INDEXER_USERNAME INDEXER_PASSWORD; do
     grep -q "^WAZUH_$chave=" "$DESTINO/.env" \

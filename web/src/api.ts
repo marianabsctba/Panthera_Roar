@@ -27,7 +27,7 @@ export function usePode() {
   return (permissao: string) => eu.permissoes.includes(permissao);
 }
 
-async function pedir(rota: string, opcoes?: RequestInit) {
+export async function pedir(rota: string, opcoes?: RequestInit) {
   const r = await fetch(rota, { credentials: "same-origin", ...opcoes });
   if (r.status === 401 && rota !== "/api/entrar" && rota !== "/api/mfa/verificar") {
     window.dispatchEvent(new Event("roar:sem-sessao"));

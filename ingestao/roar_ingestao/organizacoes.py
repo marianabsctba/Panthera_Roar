@@ -8,7 +8,7 @@ import argparse
 import logging
 import time
 
-from . import provisao
+from . import copia_fria, provisao
 
 log = logging.getLogger("roar.organizacoes")
 SEGUNDOS_ENTRE_CICLOS = 10
@@ -102,6 +102,11 @@ def main():
         b.execute("UPDATE organizacoes_pedidos SET estado = 'falhou', senha_hash = NULL, mensagem = 'O serviço reiniciou no meio. Confira a organização e peça de novo.' WHERE estado = 'em_andamento'")
     while True:
         feito = processar_um(env)
+        try:
+            # Também precisa do indexador como administrador, que a API não tem.
+            feito = copia_fria.processar(env) or feito
+        except Exception:
+            log.exception("cópia fria")
         if a.uma_vez:
             return
         if not feito:

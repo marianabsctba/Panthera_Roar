@@ -20,7 +20,7 @@ Backup diário e cifrado em `/opt/panthera-roar/backups`. Guarde `/opt/panthera-
 sudo bash /opt/panthera-roar/app/infra/restaurar.sh --verificar /opt/panthera-roar/backups/ARQUIVO
 ```
 
-Os eventos no indexador não entram nesse backup: planeje snapshot próprio.
+Os eventos no indexador não entram nesse backup. Eles vão numa cópia fria diária do próprio indexador, em `/opt/panthera-roar/arquivo`, guardada pelo prazo de `ROAR_ARQUIVO_DIAS` (365 por padrão). Para essa cópia sobreviver à perda do servidor, monte um NAS nessa pasta antes de instalar, ou copie a pasta para fora.
 
 ## Ambiente de teste
 

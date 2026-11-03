@@ -51,7 +51,8 @@ def main():
     def gravar(g, indice, eventos):
         linhas = []
         for momento, ativo, tamanho in eventos:
-            linhas.append(json.dumps({"index": {"_index": f"wazuh-{indice}-4.x-{g}-teste"}}))
+            # Um índice por dia, com a data no nome, como o gerenciador grava.
+            linhas.append(json.dumps({"index": {"_index": f"wazuh-{indice}-4.x-{g}-{momento:%Y.%m.%d}"}}))
             linhas.append(json.dumps({"timestamp": momento.strftime("%Y-%m-%dT%H:%M:%S.000+0000"), "full_log": "x" * tamanho, "agent": {"name": ativo}, "decoder": {"name": "sshd"}}))
         r = sessao.post(f"{URL}/_bulk?refresh=true", data="\n".join(linhas) + "\n", headers={"Content-Type": "application/x-ndjson"}, timeout=60)
         r.raise_for_status()
@@ -88,7 +89,8 @@ def main():
             registrar("alertas à parte", d["alertas"]["total"] == 5)
             registrar("mostra o espaço ocupado", d["ocupado_bytes"] and d["ocupado_bytes"] > 0, str(d["ocupado_bytes"]))
             registrar("logs e alertas somam o total", d["ocupado"]["logs"] + d["ocupado"]["alertas"] == d["ocupado_bytes"], str(d["ocupado"])[:160])
-            registrar("o disco vem por dia", sum(x["logs"] + x["alertas"] for x in d["ocupado"]["por_dia"]) == d["ocupado_bytes"] and d["ocupado"]["retencao_dias"] > 0)
+            registrar("o disco vem por dia", sum(x["logs"] + x["alertas"] for x in d["ocupado"]["por_dia"]) == d["ocupado_bytes"])
+            registrar("a estimativa vem com os prazos da organização", d["ocupado"]["retencao_alertas_dias"] == 180 and d["ocupado"]["retencao_logs_dias"] == 180, str(d["ocupado"])[-80:])
             registrar("período inválido não quebra", http.get("/api/volume", params={"dias": 99999}).json()["dias"] == 90 and http.get("/api/volume", params={"dias": -1}).json()["dias"] == 1)
 
             print("\n== Clientes", flush=True)

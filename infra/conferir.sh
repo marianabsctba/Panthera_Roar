@@ -36,6 +36,7 @@ for nome in $SERVICOS; do
   prova "roar-$nome no ar" systemctl is-active --quiet "roar-$nome"
   prova "roar-$nome volta sozinho depois de reiniciar a máquina" systemctl is-enabled --quiet "roar-$nome"
 done
+prova "a cópia fria tem lugar no indexador" grep -q '^path.repo:' "$DESTINO/wazuh/single-node/config/wazuh_indexer/wazuh.indexer.yml"
 prova "dá para criar organização nesta instalação" test -f "$DESTINO/app/infra/wazuh/gerenciador/docker-compose.yml"
 for cliente in $(docker exec roar-banco psql -At -U roar_admin -d roar -c "SELECT DISTINCT cliente_id FROM gerenciadores"); do
   prova "automação da organização $cliente no ar" systemctl is-active --quiet "roar-worker@$cliente"
