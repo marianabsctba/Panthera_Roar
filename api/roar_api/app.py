@@ -22,6 +22,9 @@ from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from xml.etree.ElementTree import Element as ElementoXml
+from xml.etree.ElementTree import SubElement as SubElementoXml
+from xml.etree.ElementTree import tostring as xml_em_texto
 
 import psycopg
 import requests
@@ -1383,14 +1386,30 @@ def achados_de_vulnerabilidade(request: Request, sessao=Depends(exige(permissoes
 
 
 @app.get("/api/vuln/achados/exportar")
-def exportar_achados(request: Request, sessao=Depends(exige(permissoes.VER)), severidade: str = "", estado: str = "aberto", ativo: int | None = None, busca: str = ""):
+def exportar_achados(request: Request, sessao=Depends(exige(permissoes.VER)), severidade: str = "", estado: str = "aberto", ativo: int | None = None, busca: str = "",
+                     formato: str = "csv"):
+    if formato not in ("csv", "xml"):
+        raise HTTPException(status_code=422)
     onde, valores = _filtros_de_achado(severidade, estado, ativo, busca)
     with do_cliente(request, sessao) as con:
         linhas = con.execute(f"{CONSULTA_DE_ACHADOS}{onde} {ORDEM_DE_ACHADOS} LIMIT 100000", valores).fetchall()
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_vulnerabilidades', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{len(linhas)} linhas"))
+    colunas = ("host", "ativo", "titulo", "severidade", "cvss", "prioridade", "estado", "porta", "fonte")
+    if formato == "xml":
+        # Montado pela biblioteca, nunca colando texto: título e ativo podem ter vindo de quem foi varrido.
+        raiz = ElementoXml("vulnerabilidades", {"gerado_em": datetime.now(timezone.utc).isoformat(), "total": str(len(linhas))})
+        for l in linhas:
+            item = SubElementoXml(raiz, "achado", {"id": str(l["id"])})
+            for c in (*colunas, "primeira_vez", "ultima_vez", "corrigido_em"):
+                valor = l[c]
+                SubElementoXml(item, c).text = "" if valor is None else (valor.isoformat() if hasattr(valor, "isoformat") else str(valor))
+            lista = SubElementoXml(item, "cves")
+            for cve in l["cves"]:
+                SubElementoXml(lista, "cve").text = cve
+        return Response(xml_em_texto(raiz, encoding="utf-8", xml_declaration=True), media_type="application/xml",
+                        headers={"Content-Disposition": 'attachment; filename="vulnerabilidades-roar.xml"'})
     saida = io.StringIO()
     escritor = csv.writer(saida)
-    colunas = ("host", "ativo", "titulo", "severidade", "cvss", "prioridade", "estado", "porta", "fonte")
     escritor.writerow([*colunas, "cves", "primeira_vez", "ultima_vez", "corrigido_em"])
     for l in linhas:
         escritor.writerow([*(_celula_segura(l[c]) for c in colunas), " ".join(l["cves"]), l["primeira_vez"].isoformat(), l["ultima_vez"].isoformat(), l["corrigido_em"].isoformat() if l["corrigido_em"] else ""])

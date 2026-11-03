@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Anchor, Box, Button, Drawer, Group, Popover, Select, SimpleGrid, Stack, Text, Textarea, Title } from "@mantine/core";
+import { ActionIcon, Alert, Anchor, Box, Button, Drawer, Group, Menu, Popover, Select, SimpleGrid, Stack, Text, Textarea, Title } from "@mantine/core";
 import { IconCheck, IconDownload, IconHelp, IconRadar } from "@tabler/icons-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
@@ -8,14 +8,16 @@ import { numero } from "../formato";
 import { SEVERIDADES } from "../tema";
 
 export const ROTULO_ESTADO_ACHADO: Record<string, string> = { aberto: "Aberto", correcao_informada: "Correção informada", corrigido: "Corrigido", aceito: "Risco aceito", falso_positivo: "Falso positivo" };
-const TIPO_DO_ESTADO: Record<string, string> = { aberto: "problema", correcao_informada: "pendente", corrigido: "aplicada" };
+/** Quem encontrou: o agente vê o que está instalado, sem varredura; as varreduras olham de fora ou a imagem. */
+const QUEM_ENCONTROU: Record<string, string> = { agente: "Agente, pelo inventário", rede: "Varredura de rede", web: "Varredura web", conteiner: "Varredura de contêiner", escuta: "Serviço em escuta" };
+const TIPO_DO_ESTADO: Record<string, string> ={ aberto: "problema", correcao_informada: "pendente", corrigido: "aplicada" };
 
 export interface Achado {
   id: number; ativo_id: number; host: string; ativo: string | null; peso: number; titulo: string; cves: string[]; cvss: number | null; severidade: string; porta: string | null; estado: string;
   primeira_vez: string; ultima_vez: string; corrigido_em: string | null; prioridade: string | null;
 }
 interface DetalheDoAchado extends Achado {
-  solucao: string | null; evidencia: string | null;
+  solucao: string | null; evidencia: string | null; fonte: string;
   historico: { quando: string; de: string | null; para: string; por: string | null; varredura_id: number | null; motivo: string | null }[];
 }
 
@@ -217,6 +219,7 @@ export function GavetaDoAchado({ id, focar = false, aoFechar, aoMudar }: { id: n
             <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="sm">
               <Fato rotulo="Ativo"><span className="mono">{a.ativo ?? a.host}</span></Fato>
               <Fato rotulo="Porta"><span className="mono">{a.porta ?? "-"}</span></Fato>
+              <Fato rotulo="Encontrado por">{QUEM_ENCONTROU[a.fonte] ?? a.fonte}</Fato>
               <Fato rotulo="CVSS">{a.cvss === null ? "-" : Number(a.cvss).toFixed(1)}</Fato>
               <Fato rotulo="Visto pela primeira vez"><Data valor={a.primeira_vez} /></Fato>
               <Fato rotulo="Visto pela última vez"><Data valor={a.ultima_vez} /></Fato>
@@ -378,7 +381,13 @@ export function Achados({ filtro, aoMudarFiltro }: { filtro: FiltroDeAchados; ao
           <Busca valor={busca} aoMudar={setBusca} dica="Título, ativo, endereço ou CVE" />
           <Select w={170} aria-label="Severidade" allowDeselect={false} value={filtro.severidade} onChange={(v) => aoMudarFiltro({ ...filtro, severidade: v ?? "todas" })} data={OPCOES_DE_SEVERIDADE} />
           <Select w={170} aria-label="Situação" allowDeselect={false} value={filtro.estado} onChange={(v) => aoMudarFiltro({ ...filtro, estado: v ?? "aberto" })} data={OPCOES_DE_SITUACAO} />
-          <Button leftSection={<IconDownload size={14} />} onClick={() => baixar(`/api/vuln/achados/exportar?${consulta}`, "vulnerabilidades-roar.csv")}>Exportar CSV</Button>
+          <Menu position="bottom-end" shadow="md">
+            <Menu.Target><Button leftSection={<IconDownload size={14} />}>Exportar</Button></Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item fz="sm" onClick={() => baixar(`/api/vuln/achados/exportar?${consulta}`, "vulnerabilidades-roar.csv")}>Planilha (CSV)</Menu.Item>
+              <Menu.Item fz="sm" onClick={() => baixar(`/api/vuln/achados/exportar?${consulta}&formato=xml`, "vulnerabilidades-roar.xml")}>Para outros sistemas (XML)</Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Group>
       )}
     >

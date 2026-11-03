@@ -237,6 +237,12 @@ def main():
             registrar("exporta em CSV", r.status_code == 200 and tabela[0][0] == "host" and len(tabela) >= 4)
             registrar("fórmula de planilha é neutralizada", any(c.startswith("'=") for l in tabela for c in l) and not any(c.startswith("=") for l in tabela for c in l))
             registrar("exportar fica na auditoria", admin.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'exportar_vulnerabilidades'", (a,)).fetchone()[0] == 1)
+            r = http.get("/api/vuln/achados/exportar", params={"estado": "", "formato": "xml"})
+            import xml.etree.ElementTree as ET
+            raiz = ET.fromstring(r.content)
+            registrar("exporta em XML", r.status_code == 200 and raiz.tag == "vulnerabilidades" and len(raiz.findall("achado")) == len(tabela) - 1, f"{len(raiz.findall('achado'))} de {len(tabela) - 1}")
+            registrar("texto de quem foi varrido não quebra o XML", any((a_.findtext("titulo") or "").startswith("=HYPERLINK") for a_ in raiz.findall("achado")))
+            registrar("formato inventado é recusado", http.get("/api/vuln/achados/exportar", params={"formato": "pdf"}).status_code == 422)
 
         print("\n== Banco", flush=True)
         with psycopg.connect(f"postgresql://roar_api:{ENV['ROAR_API_SENHA']}@127.0.0.1:5433/roar") as con:
