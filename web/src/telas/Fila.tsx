@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
 import { PainelDeContexto } from "./Contexto";
 import { useMediaQuery } from "@mantine/hooks";
 import { IconRefresh } from "@tabler/icons-react";
@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 
 import { detalhe, enviar, useDados, useEu, usePode } from "../api";
 import { Busca, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Painel, Severidade, Tabela, Vazio, type FiltroDeEventos } from "../componentes";
-import { numero, quando, SINAIS } from "../formato";
+import { duracao, nomeDaTatica, numero, quando, SINAIS } from "../formato";
 import { SEVERIDADES } from "../tema";
 import { Fato, GavetaDoEvento, type EventoResumo } from "./Eventos";
 
@@ -17,10 +17,12 @@ interface ItemDeGrupo { id: number; severidade: string; nivel: number; total: nu
 interface DadosDaFila { riscos: ItemDeRisco[]; grupos: ItemDeGrupo[] }
 
 type Detalhes = Record<string, string | number | null | undefined>;
-interface Sinal { tipo: string; peso: number; ocorrido_em: string; detalhes: Detalhes | null; evento_id: number; regra_descricao: string | null; ativo: string | null; ip_origem: string | null; usuario: string | null }
+interface Sinal { tipo: string; peso: number; ocorrido_em: string; detalhes: Detalhes | null; evento_id: number; regra_descricao: string | null; ativo: string | null; ip_origem: string | null; usuario: string | null; pais: string | null;
+  risco_depois: number; tecnica: { codigo: string; nome: string; tatica: string } | null }
 interface DadosDoRisco {
   alerta: { id: number; severidade: string; risco_maximo: number; aberto_em: string; encerrado_em: string | null; estado: string; entidade_tipo: string; entidade: string; risco_atual: number };
   sinais: Sinal[];
+  limites: { alto: number; critico: number; meia_vida_horas: number };
 }
 interface DadosDoGrupo {
   grupo: { id: number; severidade: string; nivel: number; total: number; regras: string[] | null; primeira_em: string; ultima_em: string; ip_origem: string | null; agente_id: string };
@@ -185,7 +187,7 @@ function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoA
   const eu = useEu();
   const { dados, erro } = useDados<DadosDoRisco>(`/api/riscos/${id}`);
   if (!dados) return <Carregando erro={erro ? "Este item não está mais disponível." : null} />;
-  const { alerta, sinais } = dados;
+  const { alerta, sinais, limites } = dados;
   const atual = Math.round(Number(alerta.risco_atual));
   return (
     <Stack gap="md">
@@ -201,28 +203,64 @@ function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoA
         <Progress size="sm" value={Math.min(100, atual)} color={corDaSeveridade(alerta.severidade)} aria-label="Risco atual" />
       </div>
       <div>
-        <Title order={3} mb="xs">Por que este alerta existe</Title>
-        {!sinais.length ? <Vazio>Nenhum sinal registrado.</Vazio> : (
-          <Stack gap={4}>
-            {sinais.map((s) => (
+        <Title order={3} mb={2}>Como o risco chegou aqui</Title>
+        <Text size="xs" c="dimmed" mb="xs">Cada sinal soma ao risco, e o risco cai pela metade a cada {numero(limites.meia_vida_horas)} h. Acima de {numero(limites.alto)} abre alerta; acima de {numero(limites.critico)}, crítico.</Text>
+        {!sinais.length ? <Vazio>Nenhum sinal registrado.</Vazio> : <LinhaDoTempo sinais={sinais} limites={limites} fuso={eu.fuso} aoAbrirEvento={aoAbrirEvento} />}
+      </div>
+    </Stack>
+  );
+}
+
+function corDoRisco(risco: number, limites: DadosDoRisco["limites"]) {
+  if (risco >= limites.critico) return SEVERIDADES.critica.cor;
+  if (risco >= limites.alto) return SEVERIDADES.alta.cor;
+  return "var(--mantine-color-dark-2)";
+}
+
+function LinhaDoTempo({ sinais, limites, fuso, aoAbrirEvento }: { sinais: Sinal[]; limites: DadosDoRisco["limites"]; fuso?: string; aoAbrirEvento: (e: EventoResumo) => void }) {
+  const escala = Math.max(limites.critico, ...sinais.map((s) => s.risco_depois)) * 1.1;
+  return (
+    <Stack gap={0}>
+      {sinais.map((s, i) => {
+        const anterior = sinais[i - 1];
+        const cor = corDoRisco(s.risco_depois, limites);
+        const cruzou = anterior && [limites.alto, limites.critico].find((l) => anterior.risco_depois < l && s.risco_depois >= l);
+        return (
+          <div key={`${s.evento_id}-${s.tipo}-${s.ocorrido_em}`}>
+            {anterior && (
+              <Text size="xs" c="dimmed" pl={18} py={2} style={{ borderLeft: "2px solid var(--roar-borda)", marginLeft: 5 }}>
+                {duracao(new Date(s.ocorrido_em).getTime() - new Date(anterior.ocorrido_em).getTime())} depois
+              </Text>
+            )}
+            <Group gap="xs" wrap="nowrap" align="flex-start">
+              <Box mt={14} style={{ flex: "0 0 12px", height: 12, borderRadius: 6, background: cor }} aria-hidden />
               <UnstyledButton
-                key={`${s.evento_id}-${s.tipo}-${s.ocorrido_em}`}
                 className="clicavel"
                 p="xs"
-                style={{ border: "1px solid var(--roar-borda)", borderRadius: 6 }}
+                style={{ border: "1px solid var(--roar-borda)", borderRadius: 6, minWidth: 0 }}
                 onClick={() => aoAbrirEvento({ id: s.evento_id, ocorrido_em: s.ocorrido_em, regra_descricao: s.regra_descricao, ativo: s.ativo, usuario: s.usuario, ip_origem: s.ip_origem })}
               >
                 <Group justify="space-between" wrap="nowrap" gap="xs">
                   <Text size="sm" fw={500}>{tituloDoSinal(s.tipo)}</Text>
-                  <Text size="xs" className="numero" fw={500}>+{Math.round(Number(s.peso))}</Text>
+                  <Text size="xs" className="numero" fw={500}>+{numero(Math.round(Number(s.peso)))}</Text>
                 </Group>
                 <Text size="xs">{TEXTOS_DOS_SINAIS[s.tipo]?.(s.detalhes ?? {}) ?? s.regra_descricao ?? ""}</Text>
-                <Text size="xs" c="dimmed">{quando(s.ocorrido_em, eu.fuso)}, {s.regra_descricao ?? "evento"}</Text>
+                {s.tecnica && (
+                  <Tooltip label={`${s.tecnica.codigo}, ${s.tecnica.nome}`}>
+                    <Badge mt={4} size="sm" radius="sm" variant="light" color="gray" tt="none" fw={500}>{nomeDaTatica(s.tecnica.tatica)}: {s.tecnica.nome}</Badge>
+                  </Tooltip>
+                )}
+                <Group gap="xs" mt={6} wrap="nowrap">
+                  <Progress size="xs" style={{ flex: 1 }} value={(s.risco_depois / escala) * 100} color={cor} aria-label="Risco depois do sinal" />
+                  <Text size="xs" className="numero" fw={500} c={cruzou ? cor : undefined}>{numero(Math.round(s.risco_depois))}</Text>
+                </Group>
+                {cruzou && <Text size="xs" fw={500} c={cor}>Aqui passou de {numero(cruzou)}{cruzou === limites.critico ? " e ficou crítico" : " e abriu o alerta"}.</Text>}
+                <Text size="xs" c="dimmed">{quando(s.ocorrido_em, fuso)}, {s.regra_descricao ?? "evento"}{s.pais ? `, ${s.pais}` : ""}</Text>
               </UnstyledButton>
-            ))}
-          </Stack>
-        )}
-      </div>
+            </Group>
+          </div>
+        );
+      })}
     </Stack>
   );
 }

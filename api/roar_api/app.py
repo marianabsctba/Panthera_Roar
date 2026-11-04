@@ -2855,6 +2855,37 @@ def _inteiro_valido(identificador):
         raise HTTPException(status_code=404)
 
 
+# Os mesmos números do motor de UEBA (Parametros): o teste confere que não se separaram.
+MEIA_VIDA_DO_RISCO_HORAS = 24.0
+LIMITE_DO_RISCO_ALTO = 60.0
+LIMITE_DO_RISCO_CRITICO = 100.0
+
+# A técnica do ATT&CK que cada sinal sugere. A do próprio evento, quando houver, vem antes.
+TECNICA_DO_SINAL = {
+    "sucesso_apos_falhas": "T1110", "pico_de_falhas": "T1110",
+    "viagem_impossivel": "T1078", "horario_incomum": "T1078", "primeiro_ip": "T1078",
+    "primeiro_privilegio": "T1548", "primeiro_host": "T1021", "host_raro_no_cliente": "T1021",
+}
+
+
+def _linha_do_tempo(sinais, tecnicas):
+    """Em ordem de acontecimento, com o risco logo depois de cada sinal, pela mesma conta do motor."""
+    janela = timedelta(hours=MEIA_VIDA_DO_RISCO_HORAS * 7)
+    ordenados = sorted(sinais, key=lambda s: s["ocorrido_em"])
+    for i, s in enumerate(ordenados):
+        risco = 0.0
+        for anterior in ordenados[:i + 1]:
+            idade = s["ocorrido_em"] - anterior["ocorrido_em"]
+            if idade < janela:
+                risco += float(anterior["peso"]) * 0.5 ** (idade.total_seconds() / 3600 / MEIA_VIDA_DO_RISCO_HORAS)
+        s["risco_depois"] = round(risco, 1)
+        do_evento = [t for t in (s.pop("mitre") or []) if t.split(".")[0] in tecnicas]
+        codigo = do_evento[0] if do_evento else TECNICA_DO_SINAL.get(s["tipo"])
+        tecnica = tecnicas.get(codigo) or tecnicas.get((codigo or "").split(".")[0])
+        s["tecnica"] = {"codigo": codigo, **tecnica} if tecnica else None
+    return ordenados
+
+
 @app.get("/api/riscos/{identificador}")
 def risco(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
     _inteiro_valido(identificador)
@@ -2869,12 +2900,19 @@ def risco(identificador: int, request: Request, sessao=Depends(exige(permissoes.
             raise HTTPException(status_code=404)
         sinais = con.execute(
             """SELECT s.tipo, s.peso, s.ocorrido_em, s.detalhes, v.id AS evento_id, v.regra_descricao,
-                      v.agente_nome AS ativo, host(v.ip_origem) AS ip_origem, v.usuario
+                      v.agente_nome AS ativo, host(v.ip_origem) AS ip_origem, v.usuario, v.mitre, v.pais
                FROM sinais s JOIN eventos v ON v.id = s.evento_id
                WHERE s.entidade_id = %s AND s.ocorrido_em >= %s::timestamptz - interval '7 days'
                ORDER BY s.ocorrido_em DESC LIMIT 200""",
             (alerta["entidade_id"], alerta["aberto_em"])).fetchall()
-    return {"alerta": alerta, "sinais": sinais}
+        do_evento = {t for s in sinais for t in (s["mitre"] or [])}
+        codigos = sorted(do_evento | {t.split(".")[0] for t in do_evento} | set(TECNICA_DO_SINAL.values()))
+        tecnicas = {t["tecnica"]: {"nome": t["nome"], "tatica": t["tatica"]} for t in con.execute(
+            """SELECT a.tecnica, a.nome, coalesce(t.nome, a.taticas[1]) AS tatica
+               FROM tecnicas_attack a LEFT JOIN taticas_attack t ON t.tatica = a.taticas[1]
+               WHERE a.tecnica = ANY(%s)""", (codigos,)).fetchall()}
+    return {"alerta": alerta, "sinais": _linha_do_tempo(sinais, tecnicas),
+            "limites": {"alto": LIMITE_DO_RISCO_ALTO, "critico": LIMITE_DO_RISCO_CRITICO, "meia_vida_horas": MEIA_VIDA_DO_RISCO_HORAS}}
 
 
 @app.get("/api/grupos/{identificador}")

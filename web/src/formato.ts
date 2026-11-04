@@ -21,6 +21,25 @@ export function quando(valor: string | null | undefined, fuso?: string) {
   return new Date(valor).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: fuso });
 }
 
+/** Tempo entre dois momentos, do jeito que se fala. */
+export function duracao(ms: number) {
+  const minutos = Math.round(ms / 60000);
+  if (minutos < 1) return "menos de 1 min";
+  if (minutos < 60) return `${minutos} min`;
+  const horas = Math.floor(minutos / 60);
+  if (horas < 48) return minutos % 60 && horas < 10 ? `${horas} h ${minutos % 60} min` : `${horas} h`;
+  return `${Math.round(horas / 24)} dias`;
+}
+
+// A base do ATT&CK vem em inglês.
+const TATICAS: Record<string, string> = {
+  Reconnaissance: "Reconhecimento", "Resource Development": "Preparação de recursos", "Initial Access": "Acesso inicial", Execution: "Execução",
+  Persistence: "Persistência", "Privilege Escalation": "Elevação de privilégio", "Defense Evasion": "Evasão de defesas", "Credential Access": "Acesso a credenciais",
+  Discovery: "Descoberta", "Lateral Movement": "Movimento lateral", Collection: "Coleta", "Command and Control": "Comando e controle", Exfiltration: "Exfiltração", Impact: "Impacto",
+};
+
+export const nomeDaTatica = (nome: string) => TATICAS[nome] ?? nome;
+
 export function diaCurto(valor: string) {
   const [, mes, dia] = valor.slice(0, 10).split("-");
   return `${dia}/${mes}`;

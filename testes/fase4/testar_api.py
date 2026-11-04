@@ -100,6 +100,29 @@ def entrar(http, cliente):
     return http.post("/api/entrar", json={"email": cliente["email"], "senha": cliente["senha"]})
 
 
+def testar_linha_do_tempo():
+    print("\n== Linha do tempo do risco", flush=True)
+    from roar_api.app import LIMITE_DO_RISCO_ALTO, LIMITE_DO_RISCO_CRITICO, MEIA_VIDA_DO_RISCO_HORAS, _linha_do_tempo
+    sys.path.insert(0, str(RAIZ / "ueba"))
+    from roar_ueba.motor import Parametros
+    p = Parametros()
+    registrar("a tela usa os mesmos números do motor", (MEIA_VIDA_DO_RISCO_HORAS, LIMITE_DO_RISCO_ALTO, LIMITE_DO_RISCO_CRITICO)
+              == (p.meia_vida_horas, p.limite_alerta, p.limite_critico))
+    inicio = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    tecnicas = {"T1110": {"nome": "Brute Force", "tatica": "Credential Access"}, "T1078": {"nome": "Valid Accounts", "tatica": "Initial Access"}}
+    sinais = [
+        {"tipo": "primeiro_ip", "peso": 10, "ocorrido_em": inicio + timedelta(hours=24), "mitre": []},
+        {"tipo": "sucesso_apos_falhas", "peso": 40, "ocorrido_em": inicio, "mitre": ["T9999"]},
+        {"tipo": "primeiro_host", "peso": 15, "ocorrido_em": inicio + timedelta(days=7, hours=12), "mitre": None},
+    ]
+    linha = _linha_do_tempo(sinais, tecnicas)
+    registrar("sinais saem em ordem de acontecimento", [s["tipo"] for s in linha] == ["sucesso_apos_falhas", "primeiro_ip", "primeiro_host"])
+    registrar("risco decai pela meia-vida", [s["risco_depois"] for s in linha][:2] == [40.0, 30.0], str([s["risco_depois"] for s in linha]))
+    registrar("sinal fora da janela não soma", linha[2]["risco_depois"] == round(15 + 10 * 0.5 ** 6.5, 1), str(linha[2]["risco_depois"]))
+    registrar("técnica desconhecida do evento cai na do sinal", linha[0]["tecnica"] == {"codigo": "T1110", **tecnicas["T1110"]})
+    registrar("sinal sem técnica conhecida fica sem", linha[2]["tecnica"] is None)
+
+
 def main():
     a, b = novo_cliente("a"), novo_cliente("b")
     with TestClient(app, base_url="https://testserver") as http:
@@ -241,6 +264,12 @@ def main():
         registrar("subtécnica herda a defesa da técnica mãe", any(d["defesa_id"] == "D3-TESTE" for d in sub["defesas"]))
         registrar("match de B não aparece em A", http.get("/api/mitre/tecnicas/T9999").json().get("match", []) == [])
         registrar("técnica inválida não é encontrada", http.get("/api/mitre/tecnicas/DROP%20TABLE").status_code == 404)
+        risco = http.get(f"/api/riscos/{a['alerta']}").json()
+        tecnica = risco["sinais"][0]["tecnica"] or {}
+        registrar("sinal leva a subtécnica do próprio evento", tecnica.get("codigo") == "T1110.001" and tecnica.get("nome") == "Password Guessing", str(tecnica))
+        registrar("técnica do sinal vem com a tática", tecnica.get("tatica") == "Credential Access")
+        registrar("risco traz o risco depois de cada sinal", risco["sinais"][0]["risco_depois"] == 15.0)
+        registrar("campo mitre cru não sai na linha do tempo", "mitre" not in risco["sinais"][0])
         ADMIN.execute("DELETE FROM tecnicas_defesa WHERE defesa_id = 'D3-TESTE'")
         if criar_attack:
             ADMIN.execute("DELETE FROM tecnicas_attack WHERE versao = 'teste'")
@@ -415,6 +444,8 @@ def main():
         registrar("não altera a auditoria", recusado(lambda: api.execute("UPDATE auditoria SET acao = 'x'")))
         registrar("não altera regras", recusado(lambda: api.execute("UPDATE regras SET nivel = 0")))
         registrar("não troca o próprio cliente pelo cadastro", recusado(lambda: api.execute("UPDATE clientes SET nome = 'x'")))
+
+    testar_linha_do_tempo()
 
     falhas = [n for n, ok in RESULTADOS if not ok]
     print(f"\n{len(RESULTADOS) - len(falhas)} de {len(RESULTADOS)} passaram.")
