@@ -34,7 +34,7 @@ export function duracao(ms: number) {
 // A base do ATT&CK vem em inglês.
 const TATICAS: Record<string, string> = {
   Reconnaissance: "Reconhecimento", "Resource Development": "Preparação de recursos", "Initial Access": "Acesso inicial", Execution: "Execução",
-  Persistence: "Persistência", "Privilege Escalation": "Elevação de privilégio", "Defense Evasion": "Evasão de defesas", "Credential Access": "Acesso a credenciais",
+  Persistence: "Persistência", "Privilege Escalation": "Elevação de privilégio", "Defense Evasion": "Evasão de defesas", Stealth: "Furtividade", "Defense Impairment": "Enfraquecimento de defesas", "Credential Access": "Acesso a credenciais",
   Discovery: "Descoberta", "Lateral Movement": "Movimento lateral", Collection: "Coleta", "Command and Control": "Comando e controle", Exfiltration: "Exfiltração", Impact: "Impacto",
 };
 
