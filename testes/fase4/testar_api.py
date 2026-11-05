@@ -516,6 +516,8 @@ def main():
         registrar("controle sem nome próprio leva o do nível acima", (nome_do_controle("hipaa", "164.310.d"), nome_do_controle("nist_800_53", "RA.5"),
                   nome_do_controle("tsc", "cc6.8"), nome_do_controle("gpg13", "4.12")) == ("Salvaguardas físicas", "Avaliação de risco",
                   "Impedir ou detectar software não autorizado ou malicioso", "Estado de estações, servidores e dispositivos"))
+        registrar("as duas grafias do HIPAA dão no mesmo controle", nome_do_controle("hipaa", "164.312.a.2.I") == nome_do_controle("hipaa", "164.312(a)(2)(i)")
+                  == "Identificação única de cada usuário" and nome_do_controle("hipaa", "164.308(a)(3)(ii)(A)").startswith("Autorizar"))
         sem_nome = [(n, c) for n, c in ADMIN.execute(
             "SELECT DISTINCT n, c FROM regras, jsonb_object_keys(normas) n, jsonb_array_elements_text(normas -> n) c WHERE n = ANY(%s)", (list(CATALOGO),)).fetchall()
             if nome_do_controle(n, c) is None]

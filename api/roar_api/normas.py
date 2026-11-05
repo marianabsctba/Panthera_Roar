@@ -98,21 +98,31 @@ LGPD = {
 # A LGPD não vem marcada nas regras do Wazuh. Os controles saem do GDPR, artigo por artigo, pelo mesmo fundamento.
 DERIVADAS = {"lgpd": ("gdpr", {"II_5.1.f": "Art. 6, VII", "IV_30.1.g": "Art. 37", "IV_32.2": "Art. 46", "IV_35.7.d": "Art. 38"})}
 
+# Na grafia oficial da lei, "164.312(a)(2)(i)". As regras do Wazuh escrevem "164.312.a.2.I"; as checagens, a oficial.
 HIPAA = {
     "164.308": "Salvaguardas administrativas", "164.310": "Salvaguardas físicas", "164.312": "Salvaguardas técnicas",
-    "164.308.a.1": "Gestão da segurança: análise de risco e revisão de atividade",
-    "164.312.a.1": "Controle de acesso: só pessoas e programas autorizados",
-    "164.312.a.2.I": "Identificação única de cada usuário",
-    "164.312.a.2.II": "Procedimento de acesso de emergência",
-    "164.312.a.2.III": "Encerrar a sessão sozinho depois de inatividade",
-    "164.312.a.2.IV": "Criptografia dos dados de saúde",
-    "164.312.b": "Controles de auditoria: registrar e examinar atividade",
-    "164.312.c.1": "Integridade: proteger contra alteração ou destruição indevida",
-    "164.312.c.2": "Confirmar que os dados não foram alterados",
-    "164.312.d": "Autenticar pessoa ou sistema antes do acesso",
-    "164.312.e.1": "Segurança na transmissão",
-    "164.312.e.2.I": "Integridade na transmissão",
-    "164.312.e.2.II": "Criptografia na transmissão",
+    "164.308(a)(1)": "Gestão da segurança: análise de risco e revisão de atividade",
+    "164.308(a)(3)": "Segurança da força de trabalho",
+    "164.308(a)(3)(i)": "Acesso aos dados de saúde só para quem precisa",
+    "164.308(a)(3)(ii)(A)": "Autorizar e supervisionar quem trabalha com dados de saúde",
+    "164.308(a)(3)(ii)(C)": "Tirar o acesso de quem sai ou muda de função",
+    "164.308(a)(5)": "Conscientização e treinamento em segurança",
+    "164.308(a)(5)(ii)(B)": "Proteção contra software malicioso",
+    "164.308(a)(6)": "Incidentes de segurança",
+    "164.308(a)(6)(ii)": "Identificar e responder a incidentes de segurança",
+    "164.310(d)(1)": "Controle de dispositivos e mídias",
+    "164.312(a)(1)": "Controle de acesso: só pessoas e programas autorizados",
+    "164.312(a)(2)(i)": "Identificação única de cada usuário",
+    "164.312(a)(2)(ii)": "Procedimento de acesso de emergência",
+    "164.312(a)(2)(iii)": "Encerrar a sessão sozinho depois de inatividade",
+    "164.312(a)(2)(iv)": "Criptografia dos dados de saúde",
+    "164.312(b)": "Controles de auditoria: registrar e examinar atividade",
+    "164.312(c)(1)": "Integridade: proteger contra alteração ou destruição indevida",
+    "164.312(c)(2)": "Confirmar que os dados não foram alterados",
+    "164.312(d)": "Autenticar pessoa ou sistema antes do acesso",
+    "164.312(e)(1)": "Segurança na transmissão",
+    "164.312(e)(2)(i)": "Integridade na transmissão",
+    "164.312(e)(2)(ii)": "Criptografia na transmissão",
 }
 
 NIST_800_53 = {
@@ -161,11 +171,35 @@ GPG13 = {
 CATALOGO = {"lgpd": LGPD, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
 
 
+def canonico(norma, controle):
+    """Uma grafia só para o mesmo controle. No HIPAA, a oficial: "164.312.a.2.I" vira "164.312(a)(2)(i)"."""
+    codigo = str(controle).strip()
+    if norma == "tsc":
+        return codigo.upper()
+    pontuado = re.fullmatch(r"(\d+\.\d+)\.(.+)", codigo) if norma == "hipaa" else None
+    if pontuado:
+        return pontuado.group(1) + "".join(f"({p.lower()})" for p in pontuado.group(2).split("."))
+    return codigo
+
+
+# A mesma conta do canonico(), no banco: o agrupamento junta as duas grafias numa linha só.
+CANONICO_SQL = {
+    "hipaa": r"""CASE WHEN {c} ~ '^\d+\.\d+\.' THEN substring({c} from '^\d+\.\d+')
+                      || regexp_replace('.' || lower(substring({c} from '^\d+\.\d+\.(.*)$')), '\.([^.]+)', '(\1)', 'g') ELSE {c} END""",
+    "tsc": "upper({c})",
+}
+
+
 def _acima(controle):
-    """Do mais específico ao mais geral: "164.312.a.2.I", "164.312.a.2", ..., "164"."""
-    partes = re.split(r"([._])", controle)
-    for fim in range(len(partes), 0, -2):
-        yield "".join(partes[:fim])
+    """Do mais específico ao mais geral: "164.312(a)(2)(i)", "164.312(a)(2)", ..., "164.312", "164"."""
+    while controle:
+        yield controle
+        if controle.endswith(")"):
+            controle = controle[:controle.rindex("(")]
+        elif re.search(r"[._]", controle):
+            controle = re.split(r"[._](?=[^._]*$)", controle)[0]
+        else:
+            return
 
 
 def origem(norma):
@@ -176,13 +210,16 @@ def origem(norma):
 def traduzir(norma, controles):
     """Os controles do alerta nos da norma pedida. Na derivada, o que não tem correspondência fica de fora."""
     _, mapa = origem(norma)
-    return [c for c in controles if c] if mapa is None else sorted({mapa[c] for c in controles if c in mapa})
+    if mapa is None:
+        return list(dict.fromkeys(canonico(norma, c) for c in controles if c))
+    return sorted({mapa[c] for c in controles if c in mapa})
 
 
 def controles_com_alerta(con, norma, dias, limite=200):
     """Alertas por controle no período, com a maior severidade, os ativos e as principais regras."""
     chave, mapa = origem(norma)
-    juncao, coluna, parametros = "", "c.controle", {"chave": chave, "d": dias, "l": limite}
+    juncao, parametros = "", {"chave": chave, "d": dias, "l": limite}
+    coluna = CANONICO_SQL.get(norma, "{c}").format(c="c.controle")
     if mapa:
         juncao = "JOIN unnest(%(de)s::text[], %(para)s::text[]) AS m(origem, controle) ON m.origem = c.controle"
         coluna = "m.controle"
@@ -217,9 +254,7 @@ def regras_da_norma(con, norma):
 def nome_do_controle(norma, controle, so_o_requisito=False):
     """O nome do controle, ou do primeiro nível acima que tiver nome. None se a norma não diz nada sobre ele."""
     catalogo = CATALOGO.get(norma, {})
-    codigo = str(controle).strip()
-    if norma == "tsc":
-        codigo = codigo.upper()
+    codigo = canonico(norma, controle)
     if codigo in catalogo and not so_o_requisito:
         return catalogo[codigo]
     niveis = list(_acima(codigo))
