@@ -14,6 +14,7 @@ function Moldura({ children, aoEnviar }: { children: ReactNode; aoEnviar: (e: Fo
               <Title order={1}>Panthera Roar</Title>
             </Stack>
             {children}
+            <div className="assinatura assinatura-centro">Powered by<b>Mariana BS</b></div>
           </Stack>
         </form>
       </Card>

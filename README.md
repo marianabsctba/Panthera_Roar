@@ -2,6 +2,8 @@
 
 SIEM open source com análise de comportamento, resposta automatizada e IA local, sem nenhum componente pago.
 
+**Powered by Mariana BS**
+
 **Estado:** em construção. A arquitetura, a ordem de construção e as pendências de segurança estão em [docs/arquitetura.md](docs/arquitetura.md).
 
 ## Instalar
@@ -49,4 +51,12 @@ cd api && sudo ROAR_COOKIE_SEGURO=0 /opt/panthera-roar/venv/bin/python -m uvicor
 
 ## Licença
 
-[AGPL-3.0](LICENSE).
+[AGPL-3.0](LICENSE). A fonte da assinatura, Mr De Haviland, é distribuída sob a [SIL Open Font License](api/roar_api/estatico/fontes/OFL-MrDeHaviland.txt).
+
+---
+
+<p align="center">
+  <strong>Panthera Roar</strong><br>
+  SIEM open source com análise de comportamento.<br><br>
+  <strong>Powered by Mariana BS</strong>
+</p>

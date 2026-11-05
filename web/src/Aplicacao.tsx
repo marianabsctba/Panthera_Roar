@@ -242,7 +242,7 @@ export function Aplicacao() {
         </AppShell.Header>
 
         <AppShell.Navbar style={{ background: "var(--mantine-color-dark-7)", borderColor: "var(--roar-borda)" }}>
-          <ScrollArea h="100%" px={8} pb={8} component="nav" aria-label="Seções">
+          <ScrollArea style={{ flex: 1 }} px={8} pb={8} component="nav" aria-label="Seções">
             {GRUPOS.map((g) => {
               const itens = g.itens.filter(visivel);
               if (!itens.length) return null;
@@ -262,6 +262,7 @@ export function Aplicacao() {
               );
             })}
           </ScrollArea>
+          <div className="assinatura">Powered by<b>Mariana BS</b></div>
         </AppShell.Navbar>
 
         <TrocaDeSenha aberta={verSenha || eu.trocar_senha} obrigatoria={eu.trocar_senha} aoFechar={() => setVerSenha(false)} aoTrocar={() => { setVerSenha(false); abrir(); }} />
