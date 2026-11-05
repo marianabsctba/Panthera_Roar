@@ -50,7 +50,7 @@ from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
-from roar_ingestao import contexto, sigma, xml_proprio, yara_regras  # noqa: E402
+from roar_ingestao import contexto, inteligencia as inteligencia_de_ameacas, sigma, xml_proprio, yara_regras  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
 
 INDEXER_URL = os.getenv("ROAR_INDEXER_URL", "https://127.0.0.1:9200")
@@ -2138,8 +2138,176 @@ def ligar_fonte_local(identificador: int, request: Request, sessao=Depends(exige
 def sincronizar_fonte_de_inteligencia(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
-        if not con.execute("UPDATE intel_fontes SET proxima_em = now() WHERE id = %s AND ativa RETURNING id", (identificador,)).fetchone():
+        if not con.execute("UPDATE intel_fontes SET proxima_em = now() WHERE id = %s AND ativa AND tipo <> 'manual' RETURNING id", (identificador,)).fetchone():
             raise HTTPException(status_code=404)
+
+
+MAXIMO_DE_INDICADORES_NA_CACA = 200
+LIMITE_DE_ACHADOS_NA_CACA = 500
+TIPO_DO_RESUMO = {32: "md5", 40: "sha1", 64: "sha256"}
+
+
+class Caca(BaseModel):
+    texto: str = Field(min_length=1, max_length=20000)
+    dias: int = Field(default=30, ge=1, le=90)
+
+
+class IndicadorVigiado(BaseModel):
+    tipo: str = Field(pattern="^(ip|dominio|url|md5|sha1|sha256)$")
+    valor: str = Field(min_length=1, max_length=2048)
+
+
+class Vigilancia(BaseModel):
+    indicadores: list[IndicadorVigiado] = Field(min_length=1, max_length=MAXIMO_DE_INDICADORES_NA_CACA)
+    descricao: str = Field(default="", max_length=200)
+
+
+def _desarmar(valor):
+    """Relatório de ameaça escreve "hxxp" e "1.2.3[.]4" para ninguém clicar sem querer."""
+    valor = valor.strip().strip("\"'<>()")
+    valor = re.sub(r"(?i)^hxxp", "http", valor)
+    for armado, normal in (("[.]", "."), ("(.)", "."), ("{.}", "."), ("[dot]", "."), ("[:]", ":"), ("[://]", "://")):
+        valor = valor.replace(armado, normal)
+    return valor
+
+
+def _classificar(texto):
+    """O tipo e o valor comparável de um indicador colado, ou None."""
+    valor = _desarmar(texto)
+    try:
+        # Na caça vale endereço interno: é a pessoa que está perguntando por ele.
+        return "ip", str(ipaddress.ip_address(valor))
+    except ValueError:
+        pass
+    if re.match(r"(?i)^https?://", valor):
+        return "url", valor[:2048]
+    if re.fullmatch(r"[0-9a-fA-F]+", valor) and len(valor) in TIPO_DO_RESUMO:
+        return TIPO_DO_RESUMO[len(valor)], valor.lower()
+    dominio = inteligencia_de_ameacas.normalizar("dominio", valor)
+    return ("dominio", dominio) if dominio and not re.fullmatch(r"[\d.]+", dominio) else None
+
+
+def _valores_do_evento(ip, bruto):
+    """Como observaveis() da inteligência, mas sem descartar endereço interno."""
+    bruto = bruto if isinstance(bruto, dict) else {}
+    dados = bruto.get("data") if isinstance(bruto.get("data"), dict) else {}
+    arquivo = bruto.get("syscheck") if isinstance(bruto.get("syscheck"), dict) else {}
+    saida = defaultdict(set)
+    for candidato in (ip, dados.get("srcip"), dados.get("dstip")):
+        try:
+            saida["ip"].add(str(ipaddress.ip_address(str(candidato))))
+        except ValueError:
+            pass
+    for campo in ("hostname", "domain", "query", "dest_host"):
+        if isinstance(dados.get(campo), str):
+            saida["dominio"].add(dados[campo].lower().rstrip("."))
+    if isinstance(dados.get("url"), str):
+        saida["url"].add(dados["url"])
+    for tipo in ("md5", "sha1", "sha256"):
+        if isinstance(arquivo.get(f"{tipo}_after"), str):
+            saida[tipo].add(arquivo[f"{tipo}_after"].lower())
+    return saida
+
+
+def _contar_nos_logs(request, con, indicadores, dias):
+    """Quantas vezes cada indicador aparece nos logs brutos, inclusive os que não viraram alerta."""
+    gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+    if not gerenciadores or not indicadores:
+        return {}
+    indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
+    linhas = []
+    for _, valor in indicadores:
+        linhas.append(json.dumps({"index": indices, "ignore_unavailable": True, "allow_no_indices": True}))
+        linhas.append(json.dumps({"size": 0, "track_total_hits": 10000, "query": {"bool": {"filter": [
+            {"range": {"timestamp": {"gte": f"now-{dias}d"}}}, {"match_phrase": {"full_log": valor}}]}}}))
+    try:
+        resposta = request.app.state.indexer.post(f"{INDEXER_URL}/_msearch", data="\n".join(linhas) + "\n",
+                                                  headers={"Content-Type": "application/x-ndjson"}, timeout=30)
+        respostas = resposta.json()["responses"] if resposta.ok else []
+    except (requests.RequestException, ValueError, KeyError):
+        return {}
+    return {chave: r["hits"]["total"]["value"] for chave, r in zip(indicadores, respostas) if "hits" in r}
+
+
+@app.post("/api/inteligencia/cacar")
+def cacar_indicadores(dados: Caca, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """Procura agora, nos eventos dos últimos dias, indicadores que a pessoa colou. Não precisa de fonte."""
+    reconhecidos, ignorados = {}, []
+    for pedaco in re.split(r"[\s,;|]+", dados.texto):
+        if not pedaco:
+            continue
+        achado = _classificar(pedaco)
+        if achado:
+            reconhecidos[achado] = None
+        elif len(ignorados) < 50:
+            ignorados.append(pedaco[:100])
+    if not reconhecidos:
+        raise HTTPException(status_code=422, detail="Nenhum indicador reconhecido. Cole IPs, domínios, URLs ou resumos MD5, SHA-1 ou SHA-256.")
+    if len(reconhecidos) > MAXIMO_DE_INDICADORES_NA_CACA:
+        raise HTTPException(status_code=422, detail=f"Cace até {MAXIMO_DE_INDICADORES_NA_CACA} indicadores por vez.")
+    por_tipo = defaultdict(list)
+    for tipo, valor in reconhecidos:
+        por_tipo[tipo].append(valor)
+    achados, contagem = [], Counter()
+    with do_cliente(request, sessao) as con:
+        # A busca olha dentro do log de cada evento: com período longo e muito evento, melhor parar e pedir menos.
+        con.execute("SET LOCAL statement_timeout = '20s'")
+        try:
+            for tipo, valores in por_tipo.items():
+                linhas = con.execute(
+                    f"""SELECT id, ocorrido_em, severidade, regra_descricao, agente_nome AS ativo, usuario, host(ip_origem) AS ip_origem, bruto
+                        FROM eventos WHERE ocorrido_em > now() - make_interval(days => %(d)s) AND {inteligencia_de_ameacas.CAMPOS_NO_PASSADO[tipo]}
+                        ORDER BY ocorrido_em DESC LIMIT %(l)s""",
+                    {"v": valores, "d": dados.dias, "l": LIMITE_DE_ACHADOS_NA_CACA}).fetchall()
+                for linha in linhas:
+                    vistos = _valores_do_evento(linha["ip_origem"], linha.pop("bruto"))[tipo]
+                    for valor in sorted(vistos & set(valores)):
+                        contagem[(tipo, valor)] += 1
+                        achados.append({**linha, "tipo": tipo, "indicador": valor})
+        except psycopg.errors.QueryCanceled:
+            raise HTTPException(status_code=504, detail="A busca demorou demais. Diminua o período ou a lista.")
+        vigiados = {(v["tipo"], v["valor"]) for v in con.execute(
+            "SELECT DISTINCT tipo, valor FROM intel_indicadores WHERE valor = ANY(%s)", ([v for _, v in reconhecidos],)).fetchall()}
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'cacar_indicadores', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{len(reconhecidos)} indicadores, {dados.dias} dias, {len(achados)} eventos"))
+        nos_logs = _contar_nos_logs(request, con, list(reconhecidos), dados.dias) if permissoes.pode(sessao["perfil"], permissoes.VER_BRUTO) else {}
+    achados.sort(key=lambda a: a["ocorrido_em"], reverse=True)
+    return {"dias": dados.dias, "ignorados": ignorados,
+            "indicadores": [{"tipo": t, "valor": v, "eventos": contagem[(t, v)], "logs": nos_logs.get((t, v)), "vigiado": (t, v) in vigiados}
+                            for t, v in reconhecidos],
+            "achados": achados[:LIMITE_DE_ACHADOS_NA_CACA]}
+
+
+@app.post("/api/inteligencia/vigiar", status_code=201)
+def vigiar_indicadores(dados: Vigilancia, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Passa a conferir cada evento novo contra os indicadores, como se viessem de uma fonte."""
+    aceitos, recusados = {}, []
+    for item in dados.indicadores:
+        # Endereço interno ou reservado nunca bate na conferência dos eventos novos: vigiar seria prometer o que não acontece.
+        valor = inteligencia_de_ameacas.normalizar(item.tipo, item.valor)
+        if valor:
+            aceitos[(item.tipo, valor)] = None
+        else:
+            recusados.append(item.valor[:100])
+    if not aceitos:
+        raise HTTPException(status_code=422, detail="Nenhum destes dá para vigiar. Endereços internos ou reservados ficam de fora.")
+    with do_cliente(request, sessao) as con:
+        fonte = con.execute("SELECT id FROM intel_fontes WHERE tipo = 'manual'").fetchone()
+        if fonte:
+            con.execute("UPDATE intel_fontes SET ativa = true WHERE id = %s", (fonte["id"],))
+        else:
+            fonte = con.execute(
+                """INSERT INTO intel_fontes (cliente_id, nome, tipo, endereco, criado_por) VALUES (%s, 'Lista manual', 'manual', 'manual', %s)
+                   RETURNING id""", (sessao["cliente_id"], sessao["usuario_id"])).fetchone()
+        descricao = dados.descricao.strip() or f"Vigiado por {sessao['nome']}"
+        for tipo, valor in aceitos:
+            con.execute(
+                """INSERT INTO intel_indicadores (cliente_id, fonte_id, tipo, valor, descricao) VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (fonte_id, tipo, valor) DO UPDATE SET ultima_vez = now(), descricao = EXCLUDED.descricao""",
+                (sessao["cliente_id"], fonte["id"], tipo, valor, descricao[:200]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'vigiar_indicadores', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{len(aceitos)} indicadores"))
+    return {"vigiados": len(aceitos), "recusados": recusados}
 
 
 @app.get("/api/cves")

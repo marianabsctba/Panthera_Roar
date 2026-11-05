@@ -90,7 +90,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -142,6 +142,32 @@ def testar_mascara_sem_banco():
     registrar("apelido muda de uma organização para outra", Mascara(CATEGORIAS, b"chave", "outro").apelido("maria.silva") != apelido)
     so_ip = Mascara(["ip"], b"chave", "cliente").dado({"usuario": "maria", "ip_origem": "2001:db8::1", "texto": "maria@x.com"})
     registrar("só o que está ligado é mascarado", so_ip == {"usuario": "maria", "ip_origem": "2001:x:x", "texto": "maria@x.com"}, str(so_ip))
+
+
+def testar_caca(http, a):
+    print("\n== Caça de indicadores", flush=True)
+    entrar(http, a)
+    registrar("caça sem indicador reconhecido é recusada", http.post("/api/inteligencia/cacar", json={"texto": "ola tudo bem"}).status_code == 422)
+    r = http.post("/api/inteligencia/cacar", json={"texto": "203.0.113[.]5, 198.51.100.77; hxxps://mal[.]exemplo.com/x ola", "dias": 30})
+    registrar("caça reconhece indicador desarmado", r.status_code == 200 and {(i["tipo"], i["valor"]) for i in r.json()["indicadores"]}
+              == {("ip", "203.0.113.5"), ("ip", "198.51.100.77"), ("url", "https://mal.exemplo.com/x")} and r.json()["ignorados"] == ["ola"], r.text[:300])
+    contagem = {i["valor"]: i["eventos"] for i in r.json()["indicadores"]}
+    registrar("caça acha o evento da organização e só ele", contagem == {"203.0.113.5": 1, "198.51.100.77": 0, "https://mal.exemplo.com/x": 0}, str(contagem))
+    registrar("o achado diz qual indicador bateu", [x["indicador"] for x in r.json()["achados"]] == ["203.0.113.5"])
+    registrar("caça fica na auditoria", ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'cacar_indicadores'",
+                                                      (a["id"],)).fetchone()[0] == 1)
+    registrar("endereço interno não é vigiado", http.post("/api/inteligencia/vigiar", json={"indicadores": [{"tipo": "ip", "valor": "10.0.0.1"}]}).status_code == 422)
+    v = http.post("/api/inteligencia/vigiar", json={"indicadores": [{"tipo": "ip", "valor": "185.220.101.4"}, {"tipo": "ip", "valor": "10.0.0.1"}]})
+    registrar("indicador passa a ser vigiado na Lista manual", v.status_code == 201 and v.json() == {"vigiados": 1, "recusados": ["10.0.0.1"]}, v.text[:200])
+    registrar("vigiar de novo não duplica", http.post("/api/inteligencia/vigiar", json={"indicadores": [{"tipo": "ip", "valor": "185.220.101.4"}]}).status_code == 201
+              and ADMIN.execute("SELECT count(*) FROM intel_indicadores i JOIN intel_fontes f ON f.id = i.fonte_id WHERE f.cliente_id = %s AND f.tipo = 'manual'",
+                                (a["id"],)).fetchone()[0] == 1)
+    registrar("a caça mostra que já é vigiado", next(i["vigiado"] for i in http.post("/api/inteligencia/cacar", json={"texto": "185.220.101.4"}).json()["indicadores"]))
+    manual = next(f for f in http.get("/api/inteligencia").json()["fontes"] if f["tipo"] == "manual")
+    registrar("a Lista manual aparece nas fontes e não sincroniza", manual["indicadores"] == 1
+              and http.post(f"/api/inteligencia/fontes/{manual['id']}/sincronizar").status_code == 404)
+    http.post("/api/sair")
+    http.cookies.clear()
 
 
 def testar_casos(http, a, b):
@@ -595,6 +621,8 @@ def main():
         testar_triagem(http, a)
         falhas_de_login.clear()
         testar_casos(http, a, b)
+        falhas_de_login.clear()
+        testar_caca(http, a)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

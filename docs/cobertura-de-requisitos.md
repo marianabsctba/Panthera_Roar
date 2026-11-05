@@ -17,13 +17,13 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Listas de observação | 3 | Do Wazuh, sem tela |
 | | MITRE ATT&CK | 2 | Feito: matriz completa com regras e D3FEND |
 | Busca | Linguagem de consulta | 4 | Feito: em português e inglês |
-| | Hunting | 2 | Parcial: busca em eventos e logs brutos, sem IOC |
+| | Hunting | 2 | Feito: busca em eventos e logs brutos, e caça por lista de indicadores colada, com formato desarmado |
 | UEBA | Análise de comportamento | 5 | Feito: login, privilégio, conta criada, grupo administrativo, arquivo sensível e indicador de ameaça, com pares e triagem pelo analista |
 | | Score de risco | 3 | Feito |
 | SOAR | Resposta automatizada | 5 | Feito: bloquear, desativar conta, avisar e registrar, com prova em agente real; catálogo de integrações por ligar |
 | | Playbooks | 3 | Pronto: blocos, modelos, simulação e YAML |
-| Inteligência | Feeds e IOC | 5 | Falta |
-| | STIX | 3 | Falta |
+| Inteligência | Feeds e IOC | 5 | Feito: MISP local já ligado, MISP e TAXII externos, conferência na chegada e nos últimos 90 dias quando chega indicador novo, e lista manual vinda da caça |
+| | STIX | 3 | Feito: indicadores STIX 2.1 por TAXII 2.1 |
 | Retenção | Período mínimo | 5 | Parcial: 90 dias configuráveis, sem camada fria para anos |
 | | Log bruto | 3 | Feito |
 | Relatórios | Dashboards e exportação | 5 | Parcial: panorama, sem exportar |

@@ -347,7 +347,7 @@ def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None):
 def fontes_vencidas(banco, cliente, agora=None):
     with banco.con.transaction():
         _com_cliente(banco, cliente)
-        linhas = banco.con.execute("SELECT id, tipo, endereco, colecao, segredo, interna FROM intel_fontes WHERE ativa AND proxima_em <= %s ORDER BY id", (agora or datetime.now(timezone.utc),)).fetchall()
+        linhas = banco.con.execute("SELECT id, tipo, endereco, colecao, segredo, interna FROM intel_fontes WHERE ativa AND tipo <> 'manual' AND proxima_em <= %s ORDER BY id", (agora or datetime.now(timezone.utc),)).fetchall()
     return [dict(zip(("id", "tipo", "endereco", "colecao", "segredo", "interna"), l)) for l in linhas]
 
 
