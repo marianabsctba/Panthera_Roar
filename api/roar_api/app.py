@@ -45,7 +45,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import evidencia, mfa, modulos, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
+from roar_api import evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -1480,7 +1480,7 @@ def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(exige(permissoe
     return {"tecnica": dados, "match": match, "cobertura": cobertura, "subtecnicas": subtecnicas, "defesas": defesas}
 
 
-NORMAS_CONHECIDAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+NORMAS_CONHECIDAS = catalogo_de_normas.NORMAS
 
 
 @app.get("/api/normas")
@@ -1499,6 +1499,8 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
                WHERE e.ocorrido_em >= now() - make_interval(days => %(d)s)
                GROUP BY c.controle ORDER BY total DESC LIMIT 200""", {"n": norma, "d": dias}).fetchall()
         regras_da_norma = con.execute("SELECT count(*) AS total FROM regras WHERE normas ? %s", (norma,)).fetchone()["total"]
+    for c in controles:
+        c["nome"] = catalogo_de_normas.nome_do_controle(norma, c["controle"])
     return {"norma": norma, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma}
 
 

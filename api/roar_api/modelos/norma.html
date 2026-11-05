@@ -5,8 +5,6 @@
 <title>Relatório {{ norma }} - {{ cliente }}</title>
 <style>
 {% include "estilo.css" %}
-  .controles { columns: 4; column-gap: 4mm; font-size: 8pt; }
-  .controles span { display: block; }
 </style>
 </head>
 <body>
@@ -22,15 +20,17 @@
   <div class="numero"><b>{{ resumo.controles_cobertos|n }}</b><span>controles cobertos pelas {{ regras_da_norma|n }} regras</span></div>
   <div class="numero"><b>{{ resumo.controles_com_checagem_reprovada|n }}</b><span>controles com checagem de configuração reprovada</span></div>
 </div>
-<p>Cada alerta do Wazuh traz os controles de {{ norma }} que a regra atende. Os números acima contam os alertas do período por controle, os controles que as regras cobrem, e as checagens de configuração segura que estão reprovadas em algum ativo.</p>
+<p>Cada alerta do Wazuh traz os controles de {{ norma }} que a regra atende{% if norma == "PCI DSS" %}, na versão 3.2.1{% endif %}. A coluna "O que pede" resume cada controle em português; não é a redação oficial da norma. Os números acima contam os alertas do período por controle, os controles que as regras cobrem, e as checagens de configuração segura que estão reprovadas em algum ativo.</p>
 
 <h1 class="capitulo" id="c-alertas">2. Alertas por controle</h1>
-{% if controles %}<table><thead><tr><th>Controle</th><th class="num">Alertas</th><th>Maior severidade</th><th class="num">Ativos</th><th>Último</th><th>Principais regras</th></tr></thead><tbody>
-{% for c in controles %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="selo" style="color:{{ cores[c.severidade] }}">{{ rotulos[c.severidade] }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.ultimo|data }}</td><td>{{ (c.regras or [])|select|join("; ") }}</td></tr>{% endfor %}
+{% if controles %}<table style="table-layout:fixed"><thead><tr><th style="width:15mm">Controle</th><th>O que pede</th><th class="num" style="width:14mm">Alertas</th><th style="width:19mm">Severidade</th><th class="num" style="width:12mm">Ativos</th><th style="width:20mm">Último</th></tr></thead><tbody>
+{% for c in controles %}<tr><td class="mono" style="white-space:nowrap">{{ c.controle }}</td><td>{{ c.nome or "-" }}{% set regras = (c.regras or [])|select|map("truncate", 90)|list %}{% if regras %}<div class="nota" style="margin-top:.8mm">Regras: {{ regras|join("; ") }}</div>{% endif %}</td><td class="num">{{ c.total|n }}</td><td class="selo" style="color:{{ cores[c.severidade] }}">{{ rotulos[c.severidade] }}</td><td class="num">{{ c.ativos|n }}</td><td style="white-space:nowrap">{{ c.ultimo|data(false) }}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="vazio">Nenhum alerta ligado a {{ norma }} no período.</p>{% endif %}
 <h2>Controles cobertos e sem alerta no período</h2>
 <p class="nota">Há regra monitorando estes controles, e nenhuma disparou. Sem alerta não quer dizer que o controle foi testado: quer dizer que nada do que as regras procuram aconteceu.</p>
-{% if cobertos_sem_alerta %}<div class="controles">{% for c in cobertos_sem_alerta %}<span class="mono">{{ c }}</span>{% endfor %}</div>{% else %}<p class="vazio">Todo controle coberto teve alerta no período.</p>{% endif %}
+{% if cobertos_sem_alerta %}<table style="table-layout:fixed"><thead><tr><th style="width:22mm">Controle</th><th>O que pede</th></tr></thead><tbody>
+{% for c in cobertos_sem_alerta %}<tr><td class="mono" style="white-space:nowrap">{{ c.controle }}</td><td>{{ c.nome or "-" }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Todo controle coberto teve alerta no período.</p>{% endif %}
 
 <h1 class="capitulo" id="c-config">3. Configuração segura</h1>
 <h2>Nota de cada ativo</h2>
@@ -39,8 +39,9 @@
 </tbody></table>{% else %}<p class="vazio">Nenhum ativo com checagem de configuração.</p>{% endif %}
 <h2>Controles com checagem reprovada</h2>
 <p class="nota">A situação mais recente de cada checagem em cada ativo, no período. Uma checagem reprovada que depois passou não aparece.</p>
-{% if configuracao %}<table><thead><tr><th>Controle</th><th class="num">Checagens reprovadas</th><th class="num">Ativos</th><th>Exemplos</th></tr></thead><tbody>
-{% for c in configuracao %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.exemplos|join("; ") }}</td></tr>{% endfor %}
+{% if norma == "PCI DSS" %}<p class="nota">As checagens seguem o PCI DSS 4.0. A descrição é a do requisito principal, que tem o mesmo número nas versões 3.2.1 e 4.0.</p>{% endif %}
+{% if configuracao %}<table style="table-layout:fixed"><thead><tr><th style="width:16mm">Controle</th><th>O que pede</th><th class="num" style="width:22mm">Reprovadas</th><th class="num" style="width:14mm">Ativos</th></tr></thead><tbody>
+{% for c in configuracao %}<tr><td class="mono" style="white-space:nowrap">{{ c.controle }}</td><td>{{ c.nome or "-" }}{% if c.exemplos %}<div class="nota" style="margin-top:.8mm">Por exemplo: {{ c.exemplos[:2]|map("truncate", 90)|join("; ") }}</div>{% endif %}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="vazio">Nenhuma checagem reprovada ligada a {{ norma }} no período.</p>{% endif %}
 
 <h1 class="capitulo" id="c-guarda">4. Guarda e integridade dos registros</h1>

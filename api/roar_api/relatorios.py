@@ -16,12 +16,14 @@ from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from . import normas as catalogo_de_normas
+
 MODELOS = Path(__file__).parent / "modelos"
 NIVEL_MINIMO = 5
 FAIXAS = ("critica", "alta", "media", "baixa")
 ROTULOS = {"critica": "Crítica", "alta": "Alta", "media": "Média", "baixa": "Baixa"}
 CORES = {"critica": "#b3261e", "alta": "#d9730d", "media": "#b58900", "baixa": "#1a6fb5"}
-NORMAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+NORMAS = catalogo_de_normas.NORMAS
 MUDANCAS = {"added": "Criados", "modified": "Alterados", "deleted": "Apagados"}
 ESTADOS_DE_EXECUCAO = {"nova": "Iniciando", "executando": "Executando", "aguardando_aprovacao": "Aguardando decisão", "concluida": "Concluída", "falhou": "Falhou", "recusada": "Recusada"}
 TIPOS_DE_FONTE = {"syslog": "Syslog", "webhook": "Webhook", "api": "API", "github": "GitHub", "office365": "Microsoft 365", "msgraph": "Microsoft Graph", "aws": "AWS CloudTrail",
@@ -114,6 +116,8 @@ def coletar(con, dias):
         controles = _linhas(con, f"""SELECT c.controle, count(*) AS total, count(DISTINCT e.agente_id) AS ativos, max(e.ocorrido_em) AS ultimo
                                      FROM eventos e, jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(norma)s) = 'array' THEN e.bruto -> 'rule' -> %(norma)s ELSE '[]' END) AS c(controle)
                                      WHERE e.{janela} GROUP BY 1 ORDER BY total DESC LIMIT %(l)s""", norma=chave, **p)
+        for c in controles:
+            c["nome"] = catalogo_de_normas.nome_do_controle(chave, c["controle"])
         d["normas"].append({"rotulo": rotulo, "controles": controles})
 
     d["auditoria_acoes"] = _linhas(con, "SELECT acao, count(*) AS total, max(em) AS ultimo FROM auditoria WHERE em >= now() - make_interval(days => %(d)s) GROUP BY 1 ORDER BY total DESC", **p)
@@ -191,8 +195,10 @@ def coletar_norma(con, norma, dias):
         WHERE e.{janela} GROUP BY c.controle ORDER BY total DESC LIMIT %(l)s""", **p)
     cobertos = sorted({r["controle"] for r in _linhas(con, "SELECT DISTINCT jsonb_array_elements_text(normas -> %(n)s) AS controle FROM regras WHERE normas ? %(n)s", **p)},
                       key=_ordem_do_controle)
+    for c in d["controles"]:
+        c["nome"] = catalogo_de_normas.nome_do_controle(norma, c["controle"])
     com_alerta = {c["controle"] for c in d["controles"]}
-    d["cobertos_sem_alerta"] = [c for c in cobertos if c not in com_alerta]
+    d["cobertos_sem_alerta"] = [{"controle": c, "nome": catalogo_de_normas.nome_do_controle(norma, c)} for c in cobertos if c not in com_alerta]
     d["regras_da_norma"] = _um(con, "SELECT count(*) AS t FROM regras WHERE normas ? %(n)s", **p)["t"]
 
     # A última situação de cada checagem em cada ativo: a reprovada que depois passou não conta.
@@ -209,7 +215,10 @@ def coletar_norma(con, norma, dias):
         for chave in NORMA_NA_CHECAGEM.get(norma, ()):
             for controle in _textos(c["mapeamento"].get(chave)):
                 reprovadas[controle].append(c)
-    d["configuracao"] = [{"controle": k, "total": len(v), "ativos": len({c["ativo"] for c in v}), "exemplos": sorted({c["titulo"] for c in v})[:3]}
+    # As checagens seguem o PCI DSS 4.0, de numeração diferente da 3.2.1 do catálogo: ali só o requisito principal é o mesmo.
+    so_o_requisito = norma == "pci_dss"
+    d["configuracao"] = [{"controle": k, "nome": catalogo_de_normas.nome_do_controle(norma, k, so_o_requisito), "total": len(v),
+                          "ativos": len({c["ativo"] for c in v}), "exemplos": sorted({c["titulo"] for c in v})[:3]}
                          for k, v in sorted(reprovadas.items(), key=lambda i: (-len(i[1]), _ordem_do_controle(i[0])))][:LIMITE_DE_CONTROLES]
     d["politicas"] = _linhas(con, "SELECT nome AS ativo, sca_politica AS politica, sca_nota AS nota, sca_aprovados AS aprovados, sca_reprovados AS reprovados FROM ativos WHERE sca_politica IS NOT NULL ORDER BY sca_nota NULLS LAST, nome")
 

@@ -6,7 +6,7 @@ import { AcoesDaLinha, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Pai
 import { numero } from "../formato";
 import { GavetaDaRegra, severidadeDoNivel, type DetalheDaRegra } from "./Ataques";
 
-interface Controle { controle: string; total: number; nivel: number; ultimo: string | null; ativos: number }
+interface Controle { controle: string; nome: string | null; total: number; nivel: number; ultimo: string | null; ativos: number }
 interface VisaoDaNorma { norma: string; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
 
 const PAGINA_DE_REGRAS = 100;
@@ -75,7 +75,7 @@ function GavetaDoControle({ norma, rotuloDaNorma, controle, dias, aoFechar, aoVe
   const { regras, procurando, erro } = useRegrasDoControle(norma, controle, dias);
   const achados = regras.reduce((t, r) => t + Number(r.disparos.total), 0);
   return (
-    <Drawer opened={controle !== null} onClose={aoFechar} title={controle ? `${rotuloDaNorma}: ${controle.controle}` : ""} size="xl">
+    <Drawer opened={controle !== null} onClose={aoFechar} title={controle ? `${rotuloDaNorma}: ${controle.controle}${controle.nome ? ` · ${controle.nome}` : ""}` : ""} size="xl">
       {controle && (
         <Stack gap="md">
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
@@ -194,7 +194,8 @@ export function Normas() {
               vazio="Nenhum alerta ligado a esta norma no período."
               aoClicarLinha={setControle}
               colunas={[
-                { titulo: "Controle", celula: (c) => <span className="mono">{c.controle}</span> },
+                { titulo: "Controle", largura: 130, celula: (c) => <span className="mono">{c.controle}</span> },
+                { titulo: "O que pede", celula: (c) => <Text size="sm">{c.nome ?? "-"}</Text> },
                 { titulo: "Maior severidade", largura: 130, celula: (c) => <Severidade valor={severidadeDoNivel(c.nivel)} /> },
                 { titulo: "Alertas", alinhar: "right", largura: 90, celula: (c) => numero(c.total) },
                 { titulo: "Ativos", alinhar: "right", largura: 80, celula: (c) => numero(c.ativos) },

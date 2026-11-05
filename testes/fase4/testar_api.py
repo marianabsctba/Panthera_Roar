@@ -506,6 +506,16 @@ def main():
             ADMIN.execute("DELETE FROM tecnicas_attack WHERE versao = 'teste'")
             ADMIN.execute("DELETE FROM taticas_attack WHERE tatica = 'credential-access'")
         registrar("controle da norma só do cliente", [c["controle"] for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]] == ["IV_32.2"])
+        registrar("o controle da norma vem com o nome", next(c for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]
+                                                            if c["controle"] == "IV_32.2")["nome"].startswith("Art. 32(2)"))
+        from roar_api.normas import CATALOGO, nome_do_controle
+        registrar("controle sem nome próprio leva o do nível acima", (nome_do_controle("hipaa", "164.310.d"), nome_do_controle("nist_800_53", "RA.5"),
+                  nome_do_controle("tsc", "cc6.8"), nome_do_controle("gpg13", "4.12")) == ("Salvaguardas físicas", "Avaliação de risco",
+                  "Impedir ou detectar software não autorizado ou malicioso", "Estado de estações, servidores e dispositivos"))
+        sem_nome = [(n, c) for n, c in ADMIN.execute(
+            "SELECT DISTINCT n, c FROM regras, jsonb_object_keys(normas) n, jsonb_array_elements_text(normas -> n) c WHERE n = ANY(%s)", (list(CATALOGO),)).fetchall()
+            if nome_do_controle(n, c) is None]
+        registrar("todo controle das regras tem nome", not sem_nome, str(sem_nome[:10]))
         registrar("campo de norma fora do formato não quebra", http.get("/api/normas", params={"norma": "pci_dss"}).json()["controles"] == [])
         registrar("norma desconhecida é recusada", http.get("/api/normas", params={"norma": "'; DROP TABLE eventos; --"}).status_code == 422)
         registrar("mudança em arquivo aparece", http.get("/api/arquivos").json()["arquivos"][0]["caminho"] == "/etc/passwd")

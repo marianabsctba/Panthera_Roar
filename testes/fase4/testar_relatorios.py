@@ -200,10 +200,14 @@ def main():
             _, paginas_n = texto_do_pdf(rn.content)
             texto_n = "\n".join(paginas_n)
             registrar("o relatório de norma sai em PDF", rn.status_code == 200 and "Relatório de conformidade: PCI DSS" in texto_n.replace("\n", " "), texto_n[:120])
-            registrar("o PDF da norma traz os controles com alerta", "10.2.5" in texto_n and "Força bruta em SSH" in texto_n)
+            registrar("o PDF da norma traz os controles com alerta", "10.2.5" in texto_n and "Força bruta em SSH" in " ".join(texto_n.split()))
             jn = http.get("/api/normas/relatorio", params={"norma": "pci_dss", "dias": 30, "formato": "json"}).json()
             controle = next((c for c in jn["controles"] if c["controle"] == "10.2.5"), {})
             registrar("o JSON conta os alertas do controle no período", controle.get("total") == 25 and controle.get("severidade") == "critica", str(controle)[:160])
+            registrar("o controle vem com o nome em português", controle.get("nome") == "Registrar o uso e a mudança de identificação e autenticação", str(controle.get("nome")))
+            registrar("o PDF da norma traz o que cada controle pede", "Registrar o uso e a mudança de" in " ".join(texto_n.split()))
+            registrar("checagem do PCI 4.0 leva o nome do requisito principal",
+                      {c["controle"]: c["nome"] for c in jn["configuracao"]}.get("8.3.1") == "Identificar e autenticar o acesso")
             reprovadas = {c["controle"]: c for c in jn["configuracao"]}
             registrar("checagem reprovada aparece no controle que ela atende", set(reprovadas) == {"2.2.4", "8.3.1"}
                       and reprovadas["2.2.4"]["exemplos"] == ["Garantir senha forte"], str(jn["configuracao"])[:200])

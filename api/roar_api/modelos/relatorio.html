@@ -189,8 +189,8 @@
 <p class="nota">Alertas por controle, conforme a marcação de cada regra. Isto ajuda a reunir evidências: não é um atestado de conformidade, e não substitui a avaliação de quem responde pela norma.</p>
 {% for norma in normas %}
 <h2>{{ norma.rotulo }}</h2>
-{% if norma.controles %}<table><thead><tr><th>Controle</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
-{% for c in norma.controles %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.ultimo|data }}</td></tr>{% endfor %}
+{% if norma.controles %}<table><thead><tr><th>Controle</th><th>O que pede</th><th class="num">Alertas</th><th class="num">Ativos</th><th>Último</th></tr></thead><tbody>
+{% for c in norma.controles %}<tr><td class="mono" style="white-space:nowrap">{{ c.controle }}</td><td>{{ c.nome or "-" }}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.ultimo|data }}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="vazio">Nenhum alerta marcado com esta norma no período.</p>{% endif %}
 {% endfor %}
 
