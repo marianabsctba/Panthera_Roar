@@ -236,7 +236,8 @@ def testar_isolamento_no_banco(amb, a, b):
         registrar("ingestão não grava em outro cliente sob o contexto de A", recusado(forjar))
         registrar("ingestão não muda o dono de um gerenciador", recusado(lambda: ing.execute(
             "UPDATE gerenciadores SET cliente_id = %s WHERE id = %s", (a["cliente"], b["id"]))))
-        registrar("ingestão não lê os clientes", recusado(lambda: ing.execute("SELECT 1 FROM clientes")))
+        # Lê o id e o que precisa para guardar os dados (029 e 043), não o nome nem o resto.
+        registrar("ingestão não lê o nome dos clientes", recusado(lambda: ing.execute("SELECT nome FROM clientes")))
         registrar("ingestão sem contexto não lê eventos",
                   ing.execute("SELECT count(*) FROM eventos").fetchone()[0] == 0)
 

@@ -209,9 +209,10 @@ def main():
         for g in ADMIN.execute("SELECT id FROM gerenciadores WHERE cliente_id = %s", (novo,)).fetchall() if novo else []:
             provisao.remover(g[0])
         ADMIN.execute("DELETE FROM organizacoes_pedidos WHERE nome LIKE %s", (f"% {SUFIXO}",))
-        ADMIN.execute("DELETE FROM auditoria WHERE cliente_id = %s", (base,))
-        ADMIN.execute("DELETE FROM usuarios WHERE cliente_id = %s", (base,))
-        ADMIN.execute("DELETE FROM clientes WHERE id = %s", (base,))
+        # Login recusado vira aviso da organização: a varredura leva junto o que lista à mão esqueceria.
+        for cliente in [base] + ([novo] if novo else []):
+            provisao.varrer(ADMIN, cliente)
+            ADMIN.execute("DELETE FROM clientes WHERE id = %s", (cliente,))
 
     falhas = [n for n, p in RESULTADOS if not p]
     print(f"\n{len(RESULTADOS) - len(falhas)}/{len(RESULTADOS)} passaram")

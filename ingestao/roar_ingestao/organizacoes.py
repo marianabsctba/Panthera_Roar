@@ -8,15 +8,13 @@ import argparse
 import logging
 import time
 
-import psycopg
-
 from . import copia_fria, provisao
 
 log = logging.getLogger("roar.organizacoes")
 SEGUNDOS_ENTRE_CICLOS = 10
 TABELAS_SEM_LIGACAO = ("intel_ocorrencias", "intel_indicadores", "intel_fontes", "intel_cursor", "notificacoes", "yara_regras", "yara_assinatura")
-# Os selos são prova e só recebem acréscimo; o pedido de remoção é o registro de que a organização saiu.
-GUARDADAS = ("selos", "selo_folhas", "selo_ancoras", "selo_verificacoes", "organizacoes_pedidos")
+GUARDADAS = provisao.GUARDADAS
+varrer = provisao.varrer
 
 
 def _so_vulnerabilidades():
@@ -68,29 +66,6 @@ def remover(env, cliente):
     with provisao.banco_admin(env) as b:
         varrer(b, cliente)
         b.execute("DELETE FROM clientes WHERE id = %s", (cliente,))
-
-
-def varrer(b, cliente):
-    """Apaga a organização de toda tabela que tem o campo dela, menos as que guardam prova.
-
-    Lista escrita à mão esquece a tabela criada no ano que vem. Aqui ela entra sozinha. A ordem das chaves estrangeiras
-    não está escrita em lugar nenhum: tenta de novo o que falhou, até não sobrar nada ou não andar mais.
-    """
-    tabelas = [l[0] for l in b.execute(
-        """SELECT c.table_name FROM information_schema.columns c JOIN information_schema.tables t USING (table_schema, table_name)
-           WHERE c.table_schema = 'public' AND c.column_name = 'cliente_id' AND t.table_type = 'BASE TABLE'
-             AND c.table_name <> ALL(%s) ORDER BY 1""", (list(GUARDADAS),)).fetchall()]
-    while tabelas:
-        faltam = []
-        for tabela in tabelas:
-            try:
-                with b.transaction():
-                    b.execute(f'DELETE FROM "{tabela}" WHERE cliente_id = %s', (cliente,))
-            except psycopg.errors.ForeignKeyViolation:
-                faltam.append(tabela)
-        if len(faltam) == len(tabelas):
-            raise RuntimeError(f"não deu para apagar a organização de: {', '.join(faltam)}")
-        tabelas = faltam
 
 
 def processar_um(env):

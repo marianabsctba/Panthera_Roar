@@ -65,6 +65,33 @@ def indexer_admin(env):
                    str(CERTIFICADOS / "root-ca.pem"))
 
 
+# Os selos são prova e só recebem acréscimo; o pedido de remoção é o registro de que a organização saiu.
+GUARDADAS = ("selos", "selo_folhas", "selo_ancoras", "selo_verificacoes", "organizacoes_pedidos")
+
+
+def varrer(b, cliente):
+    """Apaga a organização de toda tabela que tem o campo dela, menos as que guardam prova.
+
+    Lista escrita à mão esquece a tabela criada no ano que vem. Aqui ela entra sozinha. A ordem das chaves estrangeiras
+    não está escrita em lugar nenhum: tenta de novo o que falhou, até não sobrar nada ou não andar mais.
+    """
+    tabelas = [l[0] for l in b.execute(
+        """SELECT c.table_name FROM information_schema.columns c JOIN information_schema.tables t USING (table_schema, table_name)
+           WHERE c.table_schema = 'public' AND c.column_name = 'cliente_id' AND t.table_type = 'BASE TABLE'
+             AND c.table_name <> ALL(%s) ORDER BY 1""", (list(GUARDADAS),)).fetchall()]
+    while tabelas:
+        faltam = []
+        for tabela in tabelas:
+            try:
+                with b.transaction():
+                    b.execute(f'DELETE FROM "{tabela}" WHERE cliente_id = %s', (cliente,))
+            except psycopg.errors.ForeignKeyViolation:
+                faltam.append(tabela)
+        if len(faltam) == len(tabelas):
+            raise RuntimeError(f"não deu para apagar a organização de: {', '.join(faltam)}")
+        tabelas = faltam
+
+
 def banco_admin(env):
     return psycopg.connect(f"postgresql://roar_admin:{env['BANCO_SENHA']}@127.0.0.1:5433/roar", autocommit=True)
 
@@ -532,11 +559,8 @@ def remover(gerenciador_id, apagar_dados=True):
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
                 _worker_do_cliente(cliente[0], ["disable", "--now"])
-                for tabela in ("vuln_historico", "vuln_achados", "vuln_ativos", "vuln_varreduras", "vuln_alvos", "vuln_modelos"):
-                    banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
-                for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
-                               "auditoria", "aprovacoes", "execucoes", "playbooks", "soar_cursor", "segredos"):
-                    banco.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente[0],))
+                # A mesma varredura da remoção de organização: tabela nova não fica para trás.
+                varrer(banco, cliente[0])
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))
 
 
