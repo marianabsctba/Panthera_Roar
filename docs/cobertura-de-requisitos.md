@@ -37,7 +37,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | Disponibilidade | Tolerância a falhas | 3 | Falta |
 | Capacidade | Volume (EPS ou GB/dia) | 4 | Não medido de ponta a ponta |
 | | Sem descarte em pico | 4 | Não testado |
-| Integrações | API | 5 | Parcial: API da tela e webhook de entrada, sem API pública documentada |
+| Integrações | API | 5 | Feito: chaves de API por organização, com perfil, validade, último uso e revogação; documentação OpenAPI das rotas que uma chave alcança, na tela API, com exemplo de cada uma. Webhook de entrada pronto |
 | | Chamados | 3 | Parcial: caso próprio com itens, responsável, prazo pela severidade e histórico; integração com Jira, ServiceNow e GLPI falta |
 | Idioma | Documentos ou suporte em português | 3 | Tela em português; documentação parcial |
 

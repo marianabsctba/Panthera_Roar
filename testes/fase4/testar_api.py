@@ -90,7 +90,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("chaves_api", "relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -173,6 +173,55 @@ def testar_ocsf_sem_banco():
     registrar("checagem de configuração vira Compliance Finding", (sca["class_uid"], sca["compliance"]["status"], sca["compliance"]["standards"],
               sca["finding_info"]["title"]) == (2003, "Fail", ["CIS Debian 12"], "Garantir /tmp separado"), str(sca)[:200])
     registrar("campo vazio não aparece", "status" not in converter({**base, "regra_grupos": [], "bruto": {}, "usuario": None}).get("user", {}))
+
+
+def testar_chaves(http, a, b):
+    print("\n== Chaves de API", flush=True)
+    entrar(http, a)
+    registrar("chave de administrador é recusada", http.post("/api/chaves", json={"nome": "x", "perfil": "administrador"}).status_code == 422)
+    criada = http.post("/api/chaves", json={"nome": "SOAR externo", "perfil": "analista_n1", "dias": 30})
+    registrar("chave é criada e o segredo sai uma vez", criada.status_code == 201 and criada.json()["chave"].startswith("roar_"), criada.text[:120])
+    token, identificador = criada.json()["chave"], criada.json()["id"]
+    lista = http.get("/api/chaves").json()["chaves"]
+    registrar("a lista não mostra o segredo", lista and token not in json.dumps(lista) and lista[0]["estado"] == "ativa" and lista[0]["dono"] == "Analista a")
+    openapi = http.get("/api/openapi.json").json()
+    registrar("a documentação traz as rotas de dado e não as de conta", "/api/eventos" in openapi["paths"] and "/api/casos" in openapi["paths"]
+              and not any(p.startswith(("/api/chaves", "/api/usuarios", "/api/minha-senha", "/api/mfa", "/api/entrar")) for p in openapi["paths"])
+              and openapi["paths"]["/api/eventos"]["get"]["x-permissao"] == "ver")
+    outro_evento = ADMIN.execute("SELECT id FROM eventos WHERE cliente_id = %s LIMIT 1", (b["id"],)).fetchone()[0]
+    http.post("/api/sair")
+    http.cookies.clear()
+
+    chave = {"Authorization": f"Bearer {token}"}
+    registrar("a chave lê os dados da organização", http.get("/api/fila", headers=chave).status_code == 200
+              and http.get("/api/openapi.json", headers=chave).status_code == 200)
+    caso = http.post("/api/casos", headers=chave, json={"titulo": "Aberto pela integração", "severidade": "media"})
+    registrar("a chave age com o perfil escolhido, em nome de quem criou", caso.status_code == 201
+              and http.get(f"/api/casos/{caso.json()['id']}", headers=chave).json()["caso"]["criado_por_nome"] == "Analista a (chave SOAR externo)")
+    registrar("a chave não passa do perfil", http.get("/api/chaves", headers=chave).status_code == 403
+              and http.request("PUT", "/api/organizacao/ofuscacao", headers=chave, json={"categorias": []}).status_code == 403)
+    registrar("a chave não entra nas rotas de conta", http.get("/api/eu", headers=chave).status_code == 401
+              and http.post("/api/minha-senha", headers=chave, json={"atual": "x", "nova": "y" * 20}).status_code == 401)
+    registrar("a chave não vê outra organização", http.get(f"/api/eventos/{outro_evento}/ocsf", headers=chave).status_code == 404)
+    registrar("chave inventada é recusada", http.get("/api/fila", headers={"Authorization": "Bearer roar_inventada_x"}).status_code == 401
+              and http.get("/api/fila", headers={"Authorization": "Basic abc"}).status_code == 401)
+    ADMIN.execute("UPDATE usuarios SET ativo = false WHERE cliente_id = %s", (a["id"],))
+    registrar("dono desativado derruba a chave", http.get("/api/fila", headers=chave).status_code == 401)
+    ADMIN.execute("UPDATE usuarios SET ativo = true WHERE cliente_id = %s", (a["id"],))
+    ADMIN.execute("UPDATE chaves_api SET expira_em = now() - interval '1 minute' WHERE id = %s", (identificador,))
+    registrar("chave vencida é recusada", http.get("/api/fila", headers=chave).status_code == 401)
+    ADMIN.execute("UPDATE chaves_api SET expira_em = NULL WHERE id = %s", (identificador,))
+    registrar("a chave registra o último uso", http.get("/api/fila", headers=chave).status_code == 200
+              and ADMIN.execute("SELECT ultima_vez IS NOT NULL FROM chaves_api WHERE id = %s", (identificador,)).fetchone()[0])
+
+    entrar(http, a)
+    registrar("revogar a chave", http.request("DELETE", f"/api/chaves/{identificador}").status_code == 204
+              and http.request("DELETE", f"/api/chaves/{identificador}").status_code == 404)
+    registrar("criar e revogar ficam na auditoria", ADMIN.execute(
+        "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao IN ('criar_chave_de_api', 'revogar_chave_de_api')", (a["id"],)).fetchone()[0] == 2)
+    http.post("/api/sair")
+    http.cookies.clear()
+    registrar("chave revogada é recusada", http.get("/api/fila", headers=chave).status_code == 401)
 
 
 def testar_caca(http, a):
@@ -683,6 +732,8 @@ def main():
         testar_casos(http, a, b)
         falhas_de_login.clear()
         testar_caca(http, a)
+        falhas_de_login.clear()
+        testar_chaves(http, a, b)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

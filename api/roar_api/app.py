@@ -33,6 +33,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
+from fastapi.openapi.utils import get_openapi
+from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
@@ -206,6 +208,29 @@ def sessao_atual(request: Request):
     return linha
 
 
+PREFIXO_DA_CHAVE = "roar_"
+
+
+def _sessao_por_chave(request: Request):
+    """A chave vem em "Authorization: Bearer roar_...". Inválida, vencida ou revogada é como não ter vindo."""
+    cabecalho = request.headers.get("authorization", "")
+    token = cabecalho[7:].strip() if cabecalho[:7].lower() == "bearer " else ""
+    if not token.startswith(PREFIXO_DA_CHAVE) or len(token) > 200:
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    with request.app.state.banco.connection() as con:
+        linha = con.execute("SELECT * FROM roar_sessao_por_chave(%s)", (_hash_do_token(token),)).fetchone()
+    if not linha:
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    return linha
+
+
+def sessao_ou_chave(request: Request):
+    """As rotas de dado aceitam a tela ou uma chave. As de conta (senha, autenticador, sair) só aceitam a tela."""
+    if request.headers.get("authorization"):
+        return _sessao_por_chave(request)
+    return sessao_atual(request)
+
+
 def _sessao_liberada(sessao):
     """Passou da senha não basta: nada de dado até confirmar o segundo fator e cumprir o que a organização exige."""
     if sessao["mfa_pendente"]:
@@ -223,7 +248,7 @@ def exige(permissao, mascarar=False):
     `mascarar` vai só nas rotas que mostram o que foi monitorado: em tela de configuração, um valor mascarado
     poderia voltar salvo por cima do verdadeiro.
     """
-    def verificar(request: Request, sessao=Depends(sessao_atual)):
+    def verificar(request: Request, sessao=Depends(sessao_ou_chave)):
         _sessao_liberada(sessao)
         if not permissoes.pode(sessao["perfil"], permissao):
             raise HTTPException(status_code=403, detail="Seu perfil não permite esta ação.")
@@ -1558,6 +1583,81 @@ def _guardar_relatorio(con, sessao, tipo, norma, dias, formato, nome, conteudo, 
 
 def _pode_apagar_relatorio(sessao, relatorio):
     return relatorio["gerado_por"] == sessao["usuario_id"] or permissoes.pode(sessao["perfil"], permissoes.GERIR_USUARIOS)
+
+
+class NovaChave(BaseModel):
+    nome: str = Field(min_length=1, max_length=80)
+    perfil: str = Field(pattern="^(analista_n1|analista_n2|engenharia|auditor)$")
+    dias: int | None = Field(default=None, ge=1, le=730)
+
+
+@app.get("/api/chaves")
+def chaves_de_api(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("""SELECT id, nome, prefixo, perfil, criada_em, expira_em, ultima_vez, revogada_em,
+                                       coalesce(roar_nome_do_usuario(usuario_id), 'Removida') AS dono,
+                                       CASE WHEN revogada_em IS NOT NULL THEN 'revogada' WHEN expira_em <= now() THEN 'vencida' ELSE 'ativa' END AS estado
+                                FROM chaves_api ORDER BY revogada_em IS NOT NULL, criada_em DESC""").fetchall()
+    return {"chaves": linhas}
+
+
+@app.post("/api/chaves", status_code=201)
+def criar_chave_de_api(dados: NovaChave, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """O segredo sai só nesta resposta. Depois, nem o administrador vê de novo: perdeu, revoga e cria outra."""
+    nome = dados.nome.strip()
+    if not nome:
+        raise HTTPException(status_code=422, detail="Dê um nome à chave.")
+    prefixo = secrets.token_hex(4)
+    token = f"{PREFIXO_DA_CHAVE}{prefixo}_{secrets.token_urlsafe(32)}"
+    expira = datetime.now(timezone.utc) + timedelta(days=dados.dias) if dados.dias else None
+    with do_cliente(request, sessao) as con:
+        identificador = con.execute(
+            """INSERT INTO chaves_api (cliente_id, usuario_id, nome, prefixo, resumo, perfil, expira_em) VALUES (%s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""", (sessao["cliente_id"], sessao["usuario_id"], nome, prefixo, _hash_do_token(token), dados.perfil, expira)).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_chave_de_api', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {nome} {dados.perfil}"))
+    return {"id": identificador, "chave": token, "prefixo": prefixo, "expira_em": expira}
+
+
+@app.delete("/api/chaves/{identificador}", status_code=204)
+def revogar_chave_de_api(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        chave = con.execute("UPDATE chaves_api SET revogada_em = now() WHERE id = %s AND revogada_em IS NULL RETURNING nome", (identificador,)).fetchone()
+        if not chave:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'revogar_chave_de_api', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {chave['nome']}"))
+
+
+def _permissao_da_rota(rota):
+    return next((d.call.permissao for d in rota.dependant.dependencies if hasattr(d.call, "permissao")), None)
+
+
+def openapi_publico():
+    """Só o que uma chave alcança: rota de dado com permissão, menos as de administrar pessoas e chaves."""
+    rotas = [r for r in app.routes if isinstance(r, APIRoute) and r.path.startswith("/api/")
+             and _permissao_da_rota(r) not in (None, permissoes.GERIR_USUARIOS) and modulos.rota_liberada(r.path, MODULOS)]
+    documento = get_openapi(
+        title="Panthera Roar", version="1", routes=rotas,
+        description="API do Panthera Roar. Autentique com uma chave criada em API, no menu: `Authorization: Bearer roar_...`. "
+                    "A chave age com o perfil escolhido, só na organização em que foi criada, e respeita o mascaramento de dado pessoal.")
+    documento.setdefault("components", {})["securitySchemes"] = {"chave": {"type": "http", "scheme": "bearer"}}
+    documento["security"] = [{"chave": []}]
+    for rota in rotas:
+        for metodo in rota.methods:
+            operacao = documento["paths"].get(rota.path, {}).get(metodo.lower())
+            if operacao is not None:
+                operacao["x-permissao"] = _permissao_da_rota(rota)
+                operacao["tags"] = [rota.path.split("/")[2]]
+    return documento
+
+
+@app.get("/api/openapi.json")
+def documentacao_da_api(request: Request, sessao=Depends(exige(permissoes.VER))):
+    if not hasattr(request.app.state, "openapi_publico"):
+        request.app.state.openapi_publico = openapi_publico()
+    return request.app.state.openapi_publico
 
 
 @app.get("/api/relatorios/historico")
