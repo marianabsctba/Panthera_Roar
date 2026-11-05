@@ -90,7 +90,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -142,6 +142,52 @@ def testar_mascara_sem_banco():
     registrar("apelido muda de uma organização para outra", Mascara(CATEGORIAS, b"chave", "outro").apelido("maria.silva") != apelido)
     so_ip = Mascara(["ip"], b"chave", "cliente").dado({"usuario": "maria", "ip_origem": "2001:db8::1", "texto": "maria@x.com"})
     registrar("só o que está ligado é mascarado", so_ip == {"usuario": "maria", "ip_origem": "2001:x:x", "texto": "maria@x.com"}, str(so_ip))
+
+
+def testar_casos(http, a, b):
+    print("\n== Casos", flush=True)
+    entrar(http, a)
+    registrar("caso sem título é recusado", http.post("/api/casos", json={"titulo": " ", "severidade": "alta"}).status_code == 422)
+    registrar("caso com item de outra organização é recusado",
+              http.post("/api/casos", json={"titulo": "x", "severidade": "alta", "itens": [{"tipo": "grupo", "id": b["grupo"]}]}).status_code == 404)
+    criado = http.post("/api/casos", json={"titulo": "Força bruta no servidor", "severidade": "alta", "nota": "começando",
+                                           "itens": [{"tipo": "grupo", "id": a["grupo"]}, {"tipo": "risco", "id": a["alerta"]}]})
+    registrar("caso é criado com itens e nota", criado.status_code == 201, criado.text[:160])
+    caso = criado.json()["id"]
+    detalhe = http.get(f"/api/casos/{caso}").json()
+    registrar("caso traz os itens, a nota e o prazo da severidade",
+              sorted(i["tipo"] for i in detalhe["itens"]) == ["grupo", "risco"] and detalhe["notas"][0]["texto"] == "começando"
+              and 23.9 < (datetime.fromisoformat(detalhe["caso"]["prazo"]) - datetime.fromisoformat(detalhe["caso"]["criado_em"])).total_seconds() / 3600 < 24.1)
+    registrar("a Fila sabe em que caso o alerta está",
+              [c["id"] for c in http.get("/api/casos/do-item", params={"tipo": "grupo", "id": a["grupo"]}).json()["casos"]] == [caso])
+    eu = next(r for r in detalhe["responsaveis"] if r["nome"] == "Analista a")
+    registrar("responsável que não pode triar é recusado", http.patch(f"/api/casos/{caso}", json={"responsavel_id": str(uuid.uuid4())}).status_code == 422)
+    r = http.patch(f"/api/casos/{caso}", json={"responsavel_id": eu["id"], "estado": "investigando", "severidade": "critica"})
+    registrar("caso muda de responsável, estado e severidade", r.status_code == 204, r.text[:160])
+    detalhe = http.get(f"/api/casos/{caso}").json()
+    registrar("a severidade nova muda o prazo", 3.9 < (datetime.fromisoformat(detalhe["caso"]["prazo"])
+                                                       - datetime.fromisoformat(detalhe["caso"]["criado_em"])).total_seconds() / 3600 < 4.1)
+    registrar("cada mudança vira nota automática", sum(n["automatica"] for n in detalhe["notas"]) == 3, str(detalhe["notas"]))
+    registrar("encerrar sem desfecho é recusado", http.patch(f"/api/casos/{caso}", json={"estado": "encerrado"}).status_code == 422)
+    registrar("evento entra e sai do caso", http.post(f"/api/casos/{caso}/itens", json={"tipo": "evento", "id": ADMIN.execute(
+        "SELECT id FROM eventos WHERE cliente_id = %s LIMIT 1", (a["id"],)).fetchone()[0]}).status_code == 204
+              and len(http.get(f"/api/casos/{caso}").json()["itens"]) == 3
+              and http.request("DELETE", f"/api/casos/{caso}/itens/risco/{a['alerta']}").status_code == 204)
+    registrar("nota vazia é recusada", http.post(f"/api/casos/{caso}/notas", json={"texto": "  "}).status_code == 422)
+    registrar("nota entra no histórico", http.post(f"/api/casos/{caso}/notas", json={"texto": "bloqueei o IP"}).status_code == 201)
+    registrar("caso encerra com desfecho", http.patch(f"/api/casos/{caso}", json={"estado": "encerrado", "desfecho": "incidente"}).status_code == 204)
+    registrar("caso encerrado sai dos abertos e vai para os encerrados",
+              caso not in [c["id"] for c in http.get("/api/casos").json()["casos"]]
+              and caso in [c["id"] for c in http.get("/api/casos", params={"estado": "encerrados"}).json()["casos"]])
+    registrar("criar e mudar caso ficam na auditoria", ADMIN.execute(
+        "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao IN ('criar_caso', 'alterar_caso')", (a["id"],)).fetchone()[0] == 3)
+    http.post("/api/sair")
+    http.cookies.clear()
+    entrar(http, b)
+    registrar("outra organização não vê o caso", http.get(f"/api/casos/{caso}").status_code == 404
+              and http.post(f"/api/casos/{caso}/notas", json={"texto": "x"}).status_code == 404)
+    http.post("/api/sair")
+    http.cookies.clear()
 
 
 def testar_triagem(http, a):
@@ -547,6 +593,8 @@ def main():
         testar_ofuscacao(http, a)
         falhas_de_login.clear()
         testar_triagem(http, a)
+        falhas_de_login.clear()
+        testar_casos(http, a, b)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

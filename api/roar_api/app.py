@@ -741,6 +741,234 @@ def fila(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)),
     return {"riscos": riscos, "grupos": grupos}
 
 
+# Quanto tempo o caso tem para ser encerrado, pela severidade, contado de quando foi aberto.
+PRAZO_DO_CASO = {"critica": timedelta(hours=4), "alta": timedelta(hours=24), "media": timedelta(hours=72), "baixa": timedelta(days=7)}
+ESTADOS_DO_CASO = {"aberto": "Aberto", "investigando": "Investigando", "encerrado": "Encerrado"}
+DESFECHOS_DO_CASO = {"incidente": "Incidente confirmado", "falso_positivo": "Falso positivo", "sem_acao": "Sem ação necessária"}
+LIMITE_DE_ITENS_DO_CASO = 500
+
+
+class ItemDoCaso(BaseModel):
+    tipo: str = Field(pattern="^(grupo|risco|evento)$")
+    id: int = Field(ge=1, le=2**62)
+
+
+class CasoNovo(BaseModel):
+    titulo: str = Field(min_length=1, max_length=200)
+    severidade: str = Field(pattern="^(baixa|media|alta|critica)$")
+    itens: list[ItemDoCaso] = Field(default=[], max_length=50)
+    nota: str = Field(default="", max_length=4000)
+
+
+class CasoAlterado(BaseModel):
+    titulo: str | None = Field(default=None, min_length=1, max_length=200)
+    severidade: str | None = Field(default=None, pattern="^(baixa|media|alta|critica)$")
+    estado: str | None = Field(default=None, pattern="^(aberto|investigando|encerrado)$")
+    desfecho: str | None = Field(default=None, pattern="^(incidente|falso_positivo|sem_acao)$")
+    # Vazio tira o responsável.
+    responsavel_id: str | None = Field(default=None, max_length=36)
+
+
+class NotaDoCaso(BaseModel):
+    texto: str = Field(min_length=1, max_length=4000)
+
+
+def _responsaveis(con):
+    """Quem pode cuidar de um caso: usuário ativo da organização que pode triar."""
+    return [{"id": str(u["id"]), "nome": u["nome"]} for u in con.execute("SELECT * FROM roar_listar_usuarios()").fetchall()
+            if u["ativo"] and permissoes.pode(u["perfil"], permissoes.TRIAR)]
+
+
+def _item_existe(con, item):
+    tabela = {"grupo": "grupos_alerta", "risco": "alertas_risco", "evento": "eventos"}[item.tipo]
+    return con.execute(f"SELECT 1 FROM {tabela} WHERE id = %s", (item.id,)).fetchone() is not None
+
+
+def _nota_do_caso(con, sessao, caso, texto, automatica=False):
+    con.execute("INSERT INTO casos_notas (cliente_id, caso_id, autor_id, autor_nome, automatica, texto) VALUES (%s, %s, %s, %s, %s, %s)",
+                (sessao["cliente_id"], caso, sessao["usuario_id"], sessao["nome"], automatica, texto[:4000]))
+
+
+def _incluir_itens(con, sessao, caso, itens):
+    incluidos = 0
+    for item in itens:
+        if not _item_existe(con, item):
+            raise HTTPException(status_code=404, detail="Um dos itens não existe.")
+        incluidos += con.execute(
+            """INSERT INTO casos_itens (cliente_id, caso_id, tipo, item_id, adicionado_por_nome) VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT DO NOTHING""", (sessao["cliente_id"], caso, item.tipo, item.id, sessao["nome"])).rowcount
+    total = con.execute("SELECT count(*) AS n FROM casos_itens WHERE caso_id = %s", (caso,)).fetchone()["n"]
+    if total > LIMITE_DE_ITENS_DO_CASO:
+        raise HTTPException(status_code=422, detail=f"Um caso guarda até {LIMITE_DE_ITENS_DO_CASO} itens.")
+    return incluidos
+
+
+@app.get("/api/casos")
+def casos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), estado: str = "abertos"):
+    encerrados = estado == "encerrados"
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            f"""SELECT c.id, c.titulo, c.severidade, c.estado, c.desfecho, c.responsavel_nome, c.criado_por_nome, c.criado_em,
+                       c.atualizado_em, c.prazo, c.encerrado_em, c.estado <> 'encerrado' AND c.prazo < now() AS atrasado,
+                       (SELECT count(*) FROM casos_itens i WHERE i.caso_id = c.id) AS itens,
+                       (SELECT count(*) FROM casos_notas n WHERE n.caso_id = c.id AND NOT n.automatica) AS notas
+                FROM casos c WHERE c.estado {"=" if encerrados else "<>"} 'encerrado'
+                ORDER BY {"c.encerrado_em DESC" if encerrados else "c.prazo, c.id"} LIMIT 500""").fetchall()
+        responsaveis = _responsaveis(con)
+    return {"casos": linhas, "responsaveis": responsaveis}
+
+
+@app.get("/api/casos/do-item")
+def casos_do_item(tipo: str, id: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    """Em quais casos o item já está, para a Fila avisar antes de abrir outro."""
+    if tipo not in ("grupo", "risco", "evento"):
+        raise HTTPException(status_code=422)
+    _inteiro_valido(id)
+    with do_cliente(request, sessao) as con:
+        return {"casos": con.execute(
+            """SELECT c.id, c.titulo, c.estado FROM casos c JOIN casos_itens i ON i.caso_id = c.id
+               WHERE i.tipo = %s AND i.item_id = %s ORDER BY c.id DESC""", (tipo, id)).fetchall()}
+
+
+@app.post("/api/casos", status_code=201)
+def criar_caso(dados: CasoNovo, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    titulo = dados.titulo.strip()
+    if not titulo:
+        raise HTTPException(status_code=422, detail="Dê um título ao caso.")
+    agora = datetime.now(timezone.utc)
+    with do_cliente(request, sessao) as con:
+        caso = con.execute(
+            """INSERT INTO casos (cliente_id, titulo, severidade, criado_por, criado_por_nome, criado_em, atualizado_em, prazo)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (sessao["cliente_id"], titulo, dados.severidade, sessao["usuario_id"], sessao["nome"], agora, agora,
+             agora + PRAZO_DO_CASO[dados.severidade])).fetchone()["id"]
+        _incluir_itens(con, sessao, caso, dados.itens)
+        if dados.nota.strip():
+            _nota_do_caso(con, sessao, caso, dados.nota.strip())
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_caso', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{caso} {titulo[:200]}"))
+    return {"id": caso}
+
+
+@app.get("/api/casos/{identificador}")
+def caso(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        dados = con.execute(
+            """SELECT id, titulo, severidade, estado, desfecho, responsavel_id, responsavel_nome, criado_por_nome, criado_em,
+                      atualizado_em, prazo, encerrado_em, estado <> 'encerrado' AND prazo < now() AS atrasado
+               FROM casos WHERE id = %s""", (identificador,)).fetchone()
+        if not dados:
+            raise HTTPException(status_code=404)
+        dados["responsavel_id"] = dados["responsavel_id"] and str(dados["responsavel_id"])
+        grupos = con.execute(
+            """SELECT 'grupo' AS tipo, g.id, g.severidade, g.total, g.regras, g.primeira_em, g.ultima_em AS quando, host(g.ip_origem) AS ip_origem,
+                      (SELECT v.agente_nome FROM eventos v WHERE v.grupo_id = g.id ORDER BY v.id DESC LIMIT 1) AS ativo,
+                      (SELECT v.regra_descricao FROM eventos v WHERE v.grupo_id = g.id ORDER BY v.nivel DESC, v.id DESC LIMIT 1) AS descricao,
+                      i.adicionado_por_nome, i.adicionado_em
+               FROM casos_itens i JOIN grupos_alerta g ON g.id = i.item_id
+               WHERE i.caso_id = %s AND i.tipo = 'grupo' ORDER BY g.ultima_em DESC""", (identificador,)).fetchall()
+        riscos = con.execute(
+            """SELECT 'risco' AS tipo, a.id, a.severidade, a.risco_maximo, a.estado, a.aberto_em AS quando,
+                      e.tipo AS entidade_tipo, coalesce(e.nome, e.chave) AS entidade, i.adicionado_por_nome, i.adicionado_em
+               FROM casos_itens i JOIN alertas_risco a ON a.id = i.item_id JOIN entidades e ON e.id = a.entidade_id
+               WHERE i.caso_id = %s AND i.tipo = 'risco' ORDER BY a.aberto_em DESC""", (identificador,)).fetchall()
+        eventos = con.execute(
+            """SELECT 'evento' AS tipo, v.id, v.severidade, v.ocorrido_em AS quando, v.regra_descricao AS descricao, v.agente_nome AS ativo,
+                      v.usuario, host(v.ip_origem) AS ip_origem, i.adicionado_por_nome, i.adicionado_em
+               FROM casos_itens i JOIN eventos v ON v.id = i.item_id
+               WHERE i.caso_id = %s AND i.tipo = 'evento' ORDER BY v.ocorrido_em DESC""", (identificador,)).fetchall()
+        notas = con.execute(
+            "SELECT id, autor_nome, automatica, texto, criado_em FROM casos_notas WHERE caso_id = %s ORDER BY criado_em, id",
+            (identificador,)).fetchall()
+        responsaveis = _responsaveis(con)
+    return {"caso": dados, "itens": grupos + riscos + eventos, "notas": notas, "responsaveis": responsaveis}
+
+
+@app.patch("/api/casos/{identificador}", status_code=204)
+def alterar_caso(identificador: int, dados: CasoAlterado, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        atual = con.execute("SELECT * FROM casos WHERE id = %s FOR UPDATE", (identificador,)).fetchone()
+        if not atual:
+            raise HTTPException(status_code=404)
+        mudancas, notas = {}, []
+        if dados.titulo is not None and dados.titulo.strip() and dados.titulo.strip() != atual["titulo"]:
+            mudancas["titulo"] = dados.titulo.strip()
+            notas.append(f"Título mudou para \"{mudancas['titulo']}\".")
+        if dados.severidade and dados.severidade != atual["severidade"]:
+            mudancas["severidade"] = dados.severidade
+            mudancas["prazo"] = atual["criado_em"] + PRAZO_DO_CASO[dados.severidade]
+            notas.append(f"Severidade mudou de {atual['severidade']} para {dados.severidade}.")
+        if dados.responsavel_id is not None:
+            if dados.responsavel_id == "":
+                novo = None
+            else:
+                novo = next((r for r in _responsaveis(con) if r["id"] == dados.responsavel_id), None)
+                if not novo:
+                    raise HTTPException(status_code=422, detail="Essa pessoa não pode cuidar de casos.")
+            if (novo and novo["id"]) != (atual["responsavel_id"] and str(atual["responsavel_id"])):
+                mudancas["responsavel_id"] = novo and novo["id"]
+                mudancas["responsavel_nome"] = novo and novo["nome"]
+                notas.append(f"Responsável: {novo['nome']}." if novo else "Ficou sem responsável.")
+        if dados.estado and dados.estado != atual["estado"]:
+            if dados.estado == "encerrado":
+                if not dados.desfecho:
+                    raise HTTPException(status_code=422, detail="Diga como o caso terminou.")
+                mudancas.update(desfecho=dados.desfecho, encerrado_em=datetime.now(timezone.utc))
+                notas.append(f"Encerrado: {DESFECHOS_DO_CASO[dados.desfecho].lower()}.")
+            else:
+                mudancas.update(desfecho=None, encerrado_em=None)
+                notas.append("Reaberto." if atual["estado"] == "encerrado" else f"Estado: {ESTADOS_DO_CASO[dados.estado].lower()}.")
+            mudancas["estado"] = dados.estado
+        if not mudancas:
+            return
+        mudancas["atualizado_em"] = datetime.now(timezone.utc)
+        colunas = ", ".join(f"{c} = %s" for c in mudancas)
+        con.execute(f"UPDATE casos SET {colunas} WHERE id = %s", (*mudancas.values(), identificador))
+        for texto in notas:
+            _nota_do_caso(con, sessao, identificador, texto, automatica=True)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'alterar_caso', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} " + " ".join(notas)[:300]))
+
+
+@app.post("/api/casos/{identificador}/itens", status_code=204)
+def incluir_no_caso(identificador: int, item: ItemDoCaso, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT 1 FROM casos WHERE id = %s FOR UPDATE", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        if _incluir_itens(con, sessao, identificador, [item]):
+            rotulo = {"grupo": "alerta", "risco": "risco", "evento": "evento"}[item.tipo]
+            _nota_do_caso(con, sessao, identificador, f"Incluiu o {rotulo} {item.id}.", automatica=True)
+            con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (identificador,))
+
+
+@app.delete("/api/casos/{identificador}/itens/{tipo}/{item}", status_code=204)
+def tirar_do_caso(identificador: int, tipo: str, item: int, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    _inteiro_valido(identificador)
+    _inteiro_valido(item)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("DELETE FROM casos_itens WHERE caso_id = %s AND tipo = %s AND item_id = %s", (identificador, tipo, item)).rowcount:
+            raise HTTPException(status_code=404)
+        rotulo = {"grupo": "alerta", "risco": "risco", "evento": "evento"}.get(tipo, tipo)
+        _nota_do_caso(con, sessao, identificador, f"Tirou o {rotulo} {item}.", automatica=True)
+        con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (identificador,))
+
+
+@app.post("/api/casos/{identificador}/notas", status_code=201)
+def anotar_caso(identificador: int, dados: NotaDoCaso, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    _inteiro_valido(identificador)
+    texto = dados.texto.strip()
+    if not texto:
+        raise HTTPException(status_code=422, detail="A nota está vazia.")
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT 1 FROM casos WHERE id = %s", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        _nota_do_caso(con, sessao, identificador, texto)
+        con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (identificador,))
+
+
 @app.get("/api/panorama")
 def panorama(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30):
     dias = max(1, min(dias, 90))

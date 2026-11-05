@@ -1,7 +1,7 @@
 import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
-  IconAlertTriangle, IconBell, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
+  IconAlertTriangle, IconBell, IconBriefcase, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
   IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -17,6 +17,7 @@ import { Ativos } from "./telas/Ativos";
 import { AVISOS_MUDARAM, Auditoria, nomeDaAcao } from "./telas/Auditoria";
 import { Automacao } from "./telas/Automacao";
 import { Eventos } from "./telas/Eventos";
+import { Casos } from "./telas/Casos";
 import { Fila } from "./telas/Fila";
 import { Fontes } from "./telas/Fontes";
 import { Inteligencia } from "./telas/Inteligencia";
@@ -38,6 +39,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
   { titulo: "Monitorar", itens: [
     { id: "panorama", rotulo: "Panorama", icone: IconChartHistogram, modulo: "siem", tela: Panorama },
     { id: "fila", rotulo: "Fila", icone: IconAlertTriangle, modulo: "siem", tela: Fila },
+    { id: "casos", rotulo: "Casos", icone: IconBriefcase, modulo: "siem", tela: Casos },
     { id: "eventos", rotulo: "Eventos", icone: IconListSearch, modulo: "siem", tela: Eventos },
     { id: "logs", rotulo: "Logs brutos", icone: IconFileText, modulo: "siem", tela: Logs },
   ] },

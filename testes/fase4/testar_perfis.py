@@ -68,7 +68,10 @@ ROTAS = {
     ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",
     ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
-    ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios", ("PUT", "/api/organizacao/ofuscacao"): "gerir_usuarios", ("PUT", "/api/ativos/criticidade"): "gerir_regras", ("GET", "/api/entidades/{identificador}/normal"): "ver", ("POST", "/api/riscos/{identificador}/decisao"): "triar", ("GET", "/api/silencios"): "ver", ("POST", "/api/silencios"): "gerir_regras", ("DELETE", "/api/silencios/{identificador}"): "gerir_regras",
+    ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios", ("PUT", "/api/organizacao/ofuscacao"): "gerir_usuarios", ("PUT", "/api/ativos/criticidade"): "gerir_regras", ("GET", "/api/entidades/{identificador}/normal"): "ver",
+    ("GET", "/api/casos"): "ver", ("GET", "/api/casos/do-item"): "ver", ("POST", "/api/casos"): "triar", ("GET", "/api/casos/{identificador}"): "ver",
+    ("PATCH", "/api/casos/{identificador}"): "triar", ("POST", "/api/casos/{identificador}/itens"): "triar",
+    ("DELETE", "/api/casos/{identificador}/itens/{tipo}/{item}"): "triar", ("POST", "/api/casos/{identificador}/notas"): "triar", ("POST", "/api/riscos/{identificador}/decisao"): "triar", ("GET", "/api/silencios"): "ver", ("POST", "/api/silencios"): "gerir_regras", ("DELETE", "/api/silencios/{identificador}"): "gerir_regras",
     ("GET", "/api/organizacao/armazenamento"): "gerir_usuarios", ("PUT", "/api/organizacao/armazenamento"): "gerir_usuarios",
     ("POST", "/api/logs/evidencia"): "ver_bruto",
     ("POST", "/api/notificacoes/{identificador}/lida"): "ver_auditoria",
@@ -76,7 +79,7 @@ ROTAS = {
     ("POST", "/api/organizacao/copia-fria/{identificador}/devolver"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
-VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "acao": "ativar"}
+VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "tipo": "grupo", "item": "999999", "acao": "ativar"}
 
 
 def registrar(nome, passou, detalhe=""):

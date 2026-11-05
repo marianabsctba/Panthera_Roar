@@ -1,4 +1,5 @@
 import { ActionIcon, Alert, Badge, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, Radio, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, Textarea, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
+import { PorNumCaso } from "./Casos";
 import { PainelDeContexto } from "./Contexto";
 import { useMediaQuery } from "@mantine/hooks";
 import { IconRefresh } from "@tabler/icons-react";
@@ -331,6 +332,7 @@ function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos, aoEncerrar }: { id:
     <Stack gap="md">
       <TopoDoDetalhe titulo={alerta.entidade} severidade={alerta.severidade} subtitulo={`${alerta.entidade_tipo === "ativo" ? `Ativo${alerta.criticidade && alerta.criticidade !== "normal" ? ` de criticidade ${CRITICIDADES[alerta.criticidade]?.texto.toLowerCase()}` : ""}` : "Usuário"}, aberto em ${quando(alerta.aberto_em, eu.fuso)}`}>
         <Button size="xs" onClick={() => aoAbrirEventos({ rotulo: `Eventos de ${alerta.entidade}`, consulta: { entidade: alerta.entidade } })}>Ver eventos</Button>
+        <PorNumCaso tipo="risco" id={alerta.id} titulo={`Risco de ${alerta.entidade}`} severidade={alerta.severidade} />
         <BotaoAutomatizar criar={() => rascunhoDeRisco(dados)} />
         {alerta.estado === "aberto" && pode("triar") && <EncerrarRisco alerta={alerta} aoEncerrar={aoEncerrar} />}
       </TopoDoDetalhe>
@@ -499,6 +501,7 @@ function DetalheDoGrupo({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoA
   return (
     <Stack gap="md">
       <TopoDoDetalhe titulo={eventos[0]?.regra_descricao ?? "Alerta"} severidade={grupo.severidade}>
+        <PorNumCaso tipo="grupo" id={grupo.id} titulo={`${eventos[0]?.regra_descricao ?? "Alerta"}${ativo ? ` em ${ativo}` : ""}`} severidade={grupo.severidade} />
         <BotaoAutomatizar criar={() => rascunhoDeGrupo(dados)} />
       </TopoDoDetalhe>
       {eventos[0] && <PainelDeContexto evento={eventos[0].id} />}
