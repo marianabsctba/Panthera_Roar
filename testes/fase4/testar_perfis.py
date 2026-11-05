@@ -33,12 +33,15 @@ SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/e
                  ("POST", "/api/organizacoes/{cliente}/entrar"), ("POST", "/api/organizacoes/voltar")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
-    "administrador": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
+    "administrador": {"ver", "ver_bruto", "ver_dado_pessoal", "triar", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
     "engenharia": {"ver", "ver_bruto", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "gerir_vulnerabilidades"},
-    "analista_n2": {"ver", "ver_bruto", "aprovar"},
-    "analista_n1": {"ver", "ver_bruto"},
+    "analista_n2": {"ver", "ver_bruto", "ver_dado_pessoal", "triar", "aprovar"},
+    "analista_n1": {"ver", "ver_bruto", "triar"},
     "auditor": {"ver", "ver_auditoria"},
 }
+# Leva o log original: quem vê dado pessoal mascarado também é recusado. O pacote de evidência
+# também, mas com corpo vazio para antes, na validação; o teste da API confere esse com corpo válido.
+PEDEM_O_ORIGINAL = {("POST", "/api/logs/evidencia")}
 ROTAS = {
     ("GET", "/api/fila"): "ver", ("GET", "/api/panorama"): "ver", ("GET", "/api/eventos"): "ver", ("GET", "/api/eventos/{identificador}/bruto"): "ver_bruto",
     ("GET", "/api/logs"): "ver_bruto", ("GET", "/api/ativos"): "ver", ("GET", "/api/mitre/matriz"): "ver", ("GET", "/api/mitre/tecnicas/{tecnica}"): "ver",
@@ -65,7 +68,7 @@ ROTAS = {
     ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",
     ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
-    ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios",
+    ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios", ("PUT", "/api/organizacao/ofuscacao"): "gerir_usuarios", ("PUT", "/api/ativos/criticidade"): "gerir_regras", ("GET", "/api/entidades/{identificador}/normal"): "ver", ("POST", "/api/riscos/{identificador}/decisao"): "triar", ("GET", "/api/silencios"): "ver", ("POST", "/api/silencios"): "gerir_regras", ("DELETE", "/api/silencios/{identificador}"): "gerir_regras",
     ("GET", "/api/organizacao/armazenamento"): "gerir_usuarios", ("PUT", "/api/organizacao/armazenamento"): "gerir_usuarios",
     ("POST", "/api/logs/evidencia"): "ver_bruto",
     ("POST", "/api/notificacoes/{identificador}/lida"): "ver_auditoria",
@@ -133,7 +136,7 @@ def main():
                     endereco = re.sub(r"{(\w+)}", lambda x: VALORES[x.group(1)], caminho).replace("/usuarios/999999", f"/usuarios/{uuid.uuid4()}")
                     r = http.request(metodo, endereco, json={})
                     negado = r.status_code == 403
-                    if negado != (permissao not in permitidas):
+                    if negado != (permissao not in permitidas or ((metodo, caminho) in PEDEM_O_ORIGINAL and "ver_dado_pessoal" not in permitidas)):
                         errado.append((metodo, caminho, r.status_code))
                 registrar(f"{perfil}: faz só o que pode", not errado, str(errado)[:300])
                 eu = http.get("/api/eu").json()

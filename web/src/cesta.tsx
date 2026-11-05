@@ -1,6 +1,8 @@
 import { Button } from "@mantine/core";
 import { useSyncExternalStore } from "react";
 
+import { useEu } from "./api";
+
 /** O pacote de evidência em montagem. Vive fora das telas: a pessoa junta itens enquanto navega. */
 interface Estado { fonte: string | null; itens: Map<string, string>; versao: number }
 
@@ -42,7 +44,10 @@ export function useCesta() {
 
 export function BotaoDaCesta({ fonte, id, resumo }: { fonte: string; id: string; resumo: string }) {
   const c = useCesta();
+  const eu = useEu();
   const outraFonte = c.itens.length > 0 && c.fonte !== fonte && !c.tem(id);
+  // A evidência leva o log original: quem vê mascarado não pode tirá-lo do sistema.
+  if (eu.dados_mascarados) return null;
   return (
     <Button size="xs" disabled={outraFonte} title={outraFonte ? `O pacote já tem ${c.fonte}: gere ou esvazie antes` : undefined} onClick={() => cesta.alternar(fonte, id, resumo)}>
       {c.tem(id) ? "Tirar da evidência" : "Incluir na evidência"}

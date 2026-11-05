@@ -2,7 +2,7 @@ import { ActionIcon, Alert, Anchor, Badge, Box, Button, Drawer, FileInput, Group
 import { IconDownload, IconHelp, IconLibrary, IconPlus, IconUpload } from "@tabler/icons-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import { detalhe, enviar, ler, useDados, usePode } from "../api";
+import { detalhe, enviar, ler, pedir, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDeEventos, GavetaDoBruto, Numero, Painel, Severidade, Tabela, type FiltroDeEventos } from "../componentes";
 import { numero, SINAIS } from "../formato";
 import { EditorDeRegra, type AberturaDoEditor, type RegraPropria } from "./RegrasEditor";
@@ -427,27 +427,64 @@ const DESCRICAO_COMPORTAMENTO: Record<string, string> = {
   horario_incomum: "Acesso em hora muito rara para a pessoa, no fuso da organização.",
   primeiro_ip: "Endereço que a pessoa nunca tinha usado.",
   host_raro_no_cliente: "Ativo usado por menos de 5% da organização.",
+  ioc_tocado: "Evento com um IP que está nas fontes de inteligência da organização.",
+  grupo_administrativo: "Alguém entrou num grupo que manda na máquina ou no domínio, como Administrators, Domain Admins, sudo ou wheel.",
+  arquivo_sensivel: "Mudança em arquivo que guarda contas, privilégios ou inicialização, como /etc/shadow, sudoers, authorized_keys e cron.",
+  conta_criada: "Conta criada por quem não costuma criar contas naquele ativo. Sem saber quem criou, soma para o ativo.",
+  pessoa_em_risco: "Pessoa com risco acima do limite de alerta entrou no ativo. Soma para o ativo.",
+  ativo_em_risco: "Entrada num ativo com risco acima do limite de alerta. Soma para a pessoa. Risco repassado não se repassa de novo.",
 };
+
+interface SilencioDoUeba { id: number; tipo: string; motivo: string; criado_por_nome: string | null; criado_em: string; expira_em: string | null; entidade: string | null }
+
+function SilenciosDoUeba() {
+  const pode = usePode();
+  const { dados, erro, recarregar } = useDados<{ silencios: SilencioDoUeba[] }>("/api/silencios");
+  if (!dados) return <Carregando erro={erro} />;
+  const remover = async (s: SilencioDoUeba) => {
+    if ((await pedir(`/api/silencios/${s.id}`, { method: "DELETE" })).ok) recarregar();
+  };
+  return (
+    <Painel titulo="Sinais silenciados" acao={<Explica rotulo="Como silenciar">Abra o risco da pessoa na Fila e use "Silenciar um sinal". O sinal deixa de somar para ela até o prazo acabar.</Explica>}>
+      <Tabela
+        linhas={dados.silencios}
+        chave={(s) => s.id}
+        vazio="Nenhum sinal silenciado: todos somam para todos."
+        colunas={[
+          { titulo: "Sinal", celula: (s) => <Text size="sm" fw={500}>{SINAIS[s.tipo] ?? s.tipo}</Text> },
+          { titulo: "Para quem", celula: (s) => s.entidade ?? "Todos" },
+          { titulo: "Por quê", celula: (s) => <Text size="sm" c="dimmed">{s.motivo}</Text> },
+          { titulo: "Quem", celula: (s) => s.criado_por_nome ?? "-" },
+          { titulo: "Até", largura: 150, celula: (s) => (s.expira_em ? <Data valor={s.expira_em} /> : "Sem prazo") },
+          { titulo: "", largura: 40, celula: (s) => <AcoesDaLinha rotulo="Ações do silêncio" itens={pode("gerir_regras") ? [{ texto: "Tirar o silêncio", perigo: true, aoClicar: () => remover(s) }] : []} /> },
+        ]}
+      />
+    </Painel>
+  );
+}
 
 function Comportamento() {
   const { dados, erro } = useDados<RespostaDoCatalogo>("/api/regras?so_disparadas=true");
   const [filtro, setFiltro] = useState<FiltroDeEventos | null>(null);
   if (!dados) return <Carregando erro={erro} />;
   return (
-    <Painel titulo="Regras de comportamento" acao={<Explica rotulo="Como os pontos funcionam">Somam pontos no risco de cada pessoa. O alerta abre em 60 pontos, e os pontos caem pela metade a cada 24 horas.</Explica>}>
-      <Tabela
-        linhas={dados.comportamento}
-        chave={(r) => r.tipo}
-        vazio="Nenhuma regra de comportamento."
-        aoClicarLinha={(r) => setFiltro({ rotulo: `Eventos com o sinal: ${SINAIS[r.tipo] ?? r.tipo}`, consulta: { sinal: r.tipo, dias: "30" } })}
-        colunas={[
-          { titulo: "Sinal", celula: (r) => <Text size="sm" fw={500}>{SINAIS[r.tipo] ?? r.tipo}</Text> },
-          { titulo: "Quando soma", celula: (r) => <Text size="sm" c="dimmed">{DESCRICAO_COMPORTAMENTO[r.tipo] ?? "-"}</Text> },
-          { titulo: "Pontos", alinhar: "right", largura: 70, celula: (r) => `+${Math.round(r.peso)}` },
-        ]}
-      />
-      <GavetaDeEventos filtro={filtro} aoFechar={() => setFiltro(null)} />
-    </Painel>
+    <Stack gap="md">
+      <Painel titulo="Regras de comportamento" acao={<Explica rotulo="Como os pontos funcionam">Somam pontos no risco de cada pessoa. O alerta abre em 60 pontos, e os pontos caem pela metade a cada 24 horas.</Explica>}>
+        <Tabela
+          linhas={dados.comportamento}
+          chave={(r) => r.tipo}
+          vazio="Nenhuma regra de comportamento."
+          aoClicarLinha={(r) => setFiltro({ rotulo: `Eventos com o sinal: ${SINAIS[r.tipo] ?? r.tipo}`, consulta: { sinal: r.tipo, dias: "30" } })}
+          colunas={[
+            { titulo: "Sinal", celula: (r) => <Text size="sm" fw={500}>{SINAIS[r.tipo] ?? r.tipo}</Text> },
+            { titulo: "Quando soma", celula: (r) => <Text size="sm" c="dimmed">{DESCRICAO_COMPORTAMENTO[r.tipo] ?? "-"}</Text> },
+            { titulo: "Pontos", alinhar: "right", largura: 70, celula: (r) => `+${Math.round(r.peso)}` },
+          ]}
+        />
+        <GavetaDeEventos filtro={filtro} aoFechar={() => setFiltro(null)} />
+      </Painel>
+      <SilenciosDoUeba />
+    </Stack>
   );
 }
 

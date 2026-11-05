@@ -528,11 +528,149 @@ def testar_real():
         and um("SELECT count(*) FROM clientes WHERE id = %s", g["cliente"]) == 0)
 
 
+def testar_triagem_e_pares():
+    print("\n== Silêncio, decisão do analista e pares", flush=True)
+    t = base()
+    fim = t + timedelta(days=20)
+    c = Cliente()
+    for nome, hosts in (("ana", ("h1", "h2")), ("bia", ("h1", "h2", "h5")), ("carla", ("h3", "h4")), ("duda", ("h1",))):
+        for i, host in enumerate(hosts):
+            c.rotina(nome, t, host=host, hora=9 + i)
+    c.processar()
+    entidade = {n: um("SELECT id FROM entidades WHERE cliente_id = %s AND chave = %s", c.id, n) for n in ("ana", "bia", "carla", "duda")}
+
+    c.motor.recalcular_pares(c.id)
+    pares = {n: {p for (p,) in ADMIN.execute("SELECT par_id FROM pares WHERE entidade_id = %s", (entidade[n],)).fetchall()} for n in entidade}
+    registrar("quem divide ativos vira par", entidade["bia"] in pares["ana"] and entidade["ana"] in pares["bia"], str(pares))
+    registrar("quem não divide nada fica sem par", not pares["carla"] and entidade["carla"] not in pares["ana"])
+    registrar("pares não são recalculados antes do prazo", c.motor.recalcular_pares(c.id) is None)
+
+    c.ev(local(fim, 10), "ana", host="h5")
+    c.ev(local(fim, 10), "carla", host="h5")
+    c.processar()
+    peso = dict(ADMIN.execute("""SELECT e.chave, s.peso FROM sinais s JOIN entidades e ON e.id = s.entidade_id
+                                 WHERE s.cliente_id = %s AND s.tipo = 'primeiro_host'""", (c.id,)).fetchall())
+    registrar("primeira vez que os pares já fazem soma menos", peso.get("ana") == 5.0 and peso.get("carla") == 15.0, str(peso))
+    registrar("o sinal diz quantos pares já fazem", um("""SELECT s.detalhes->>'pares' FROM sinais s
+                                                         WHERE s.entidade_id = %s AND s.tipo = 'primeiro_host'""", entidade["ana"]) == "1")
+
+    ADMIN.execute("INSERT INTO silencios (cliente_id, entidade_id, tipo, motivo) VALUES (%s, %s, 'primeiro_ip', 'teste')", (c.id, entidade["duda"]))
+    ADMIN.execute("INSERT INTO silencios (cliente_id, entidade_id, tipo, motivo, expira_em) VALUES (%s, %s, 'primeiro_host', 'vencido', %s)",
+                  (c.id, entidade["duda"], local(fim, 8)))
+    c.ev(local(fim, 11), "duda", host="h9", ip="10.7.7.7")
+    c.ev(local(fim, 11), "bia", host="h9", ip="10.7.7.8")
+    c.processar()
+    registrar("sinal silenciado não soma", c.sinais("duda", "primeiro_ip") == [] and c.sinais("bia", "primeiro_ip") == ["primeiro_ip"])
+    registrar("silêncio vencido não vale mais", c.sinais("duda", "primeiro_host") == ["primeiro_host"])
+
+    antes = c.risco("duda")
+    ADMIN.execute("UPDATE entidades SET risco_desde = %s WHERE id = %s", (local(fim, 12), entidade["duda"]))
+    c.ev(local(fim, 13), "duda", host="h8")
+    c.processar()
+    registrar("depois da decisão do analista, só o que veio depois soma", antes > 14 and c.risco("duda") == 15.0, f"{antes} -> {c.risco('duda')}")
+
+
+def _windows(evento, **dados):
+    return {"data": {"win": {"system": {"eventID": evento}, "eventdata": dados}}}
+
+
+def testar_conta_grupo_arquivo_e_ioc():
+    print("\n== Conta criada, grupo administrativo, arquivo sensível e indicador", flush=True)
+    t = base()
+    fim = t + timedelta(days=21)
+    c = Cliente()
+    c.rotina("ana", t)
+    c.processar()
+    ativo = lambda host: f"{c.ger}:{host}"  # noqa: E731
+    windows = ["windows", "windows_security"]
+
+    c.ev(local(fim, 10), "nova1", windows, bruto=_windows("4720", targetUserName="nova1", subjectUserName="EMPRESA\\ana"))
+    c.ev(local(fim, 11), "nova2", windows, bruto=_windows("4720", targetUserName="nova2", subjectUserName="ana"))
+    c.ev(local(fim, 10), None, ["syslog", "adduser"], host="h2", bruto={"full_log": "useradd[42]: new user: name=eve, UID=1001, GID=1001"})
+    c.processar()
+    registrar("conta criada por quem nunca cria ali soma uma vez", c.sinais("ana", "conta_criada") == ["conta_criada"], str(c.sinais("ana")))
+    registrar("sem saber quem criou, soma para o ativo", c.sinais(ativo("h2"), "conta_criada") == ["conta_criada"]
+              and um("SELECT detalhes->>'conta' FROM sinais WHERE cliente_id = %s AND tipo = 'conta_criada' AND valor = 'eve'", c.id) == "eve")
+
+    c.ev(local(fim, 12), "Administrators", windows, bruto=_windows("4732", targetUserName="Administrators",
+                                                                  memberName="CN=bob,OU=TI,DC=empresa,DC=local", subjectUserName="ana"))
+    c.ev(local(fim, 12), "Remote Desktop Users", windows, bruto=_windows("4732", targetUserName="Remote Desktop Users",
+                                                                        memberName="CN=caio,DC=empresa", subjectUserName="ana"))
+    c.ev(local(fim, 13), None, ["syslog"], host="h3", bruto={"full_log": "usermod[7]: add 'ana' to group 'sudo'"})
+    c.processar()
+    registrar("entrar em Administrators soma para a pessoa e o ativo", c.sinais("bob", "grupo_administrativo") == ["grupo_administrativo"]
+              and c.sinais(ativo("h1"), "grupo_administrativo") == ["grupo_administrativo"])
+    registrar("grupo comum não soma", c.sinais("caio") == [])
+    registrar("usermod para sudo soma", c.sinais("ana", "grupo_administrativo") == ["grupo_administrativo"])
+    registrar("o sinal diz quem pôs", um("SELECT detalhes->>'por' FROM sinais s JOIN entidades e ON e.id = s.entidade_id"
+                                         " WHERE s.cliente_id = %s AND e.chave = 'bob'", c.id) == "ana")
+
+    fim_ = {"syscheck": {"path": "/etc/shadow", "event": "modified", "audit": {"login_user": {"name": "ana"}, "user": {"name": "root"}}}}
+    c.ev(local(fim, 14), None, ["ossec", "syscheck"], host="h4", bruto=fim_)
+    c.ev(local(fim, 14), None, ["ossec", "syscheck"], host="h4", bruto={"syscheck": {"path": "/etc/hostname", "event": "modified"}})
+    c.processar()
+    registrar("mudança em /etc/shadow soma para o ativo e para quem entrou", c.sinais(ativo("h4"), "arquivo_sensivel") == ["arquivo_sensivel"]
+              and c.sinais("ana", "arquivo_sensivel") == ["arquivo_sensivel"])
+    registrar("o sinal traz a técnica do arquivo", um("SELECT detalhes->>'tecnica' FROM sinais WHERE cliente_id = %s AND tipo = 'arquivo_sensivel'"
+                                                      " LIMIT 1", c.id) == "T1098")
+    registrar("arquivo comum não soma", um("SELECT count(*) FROM sinais WHERE cliente_id = %s AND valor = '/etc/hostname'", c.id) == 0)
+
+    fonte = um("INSERT INTO intel_fontes (cliente_id, nome, tipo, endereco, criado_por) VALUES (%s, 'teste', 'misp', 'https://misp.test', %s)"
+               " RETURNING id", c.id, uuid.uuid4())
+    ADMIN.execute("INSERT INTO intel_indicadores (cliente_id, fonte_id, tipo, valor, descricao) VALUES (%s, %s, 'ip', '203.0.113.66', 'C2 de teste')",
+                  (c.id, fonte))
+    outro = Cliente()
+    outro.rotina("ana", t, dias=2)
+    outro.ev(local(fim, 15), "ana", ip="203.0.113.66")
+    outro.processar()
+    c.ev(local(fim, 15), "ana", ip="203.0.113.66")
+    c.ev(local(fim, 15), None, ["firewall"], host="h5", ip="10.0.0.9", bruto={"data": {"dstip": "203.0.113.66"}})
+    c.processar()
+    registrar("acesso vindo de um indicador soma para a pessoa", c.sinais("ana", "ioc_tocado") == ["ioc_tocado"])
+    registrar("destino num indicador soma para o ativo", c.sinais(ativo("h5"), "ioc_tocado") == ["ioc_tocado"])
+    registrar("indicador de uma organização não vale para outra", outro.sinais("ana", "ioc_tocado") == [])
+
+
+def testar_criticidade_e_repasse():
+    print("\n== Criticidade do ativo e risco repassado entre pessoa e ativo", flush=True)
+    t = base()
+    fim = t + timedelta(days=21)
+    c = Cliente()
+    c.rotina("ana", t)
+    c.rotina("bia", t)
+    c.processar()
+    ADMIN.execute("INSERT INTO ativos (cliente_id, gerenciador_id, agente_id, nome, criticidade) VALUES (%s, %s, 'h2', 'folha', 'critica')",
+                  (c.id, c.ger))
+    c.ev(local(fim, 8), "ana", host="h2")
+    c.processar()
+    sinal = ADMIN.execute("""SELECT s.peso, s.detalhes->>'criticidade' FROM sinais s JOIN entidades e ON e.id = s.entidade_id
+                             WHERE s.cliente_id = %s AND e.chave = 'ana' AND s.tipo = 'primeiro_host'""", (c.id,)).fetchone()
+    registrar("ativo crítico dobra o peso e diz por quê", sinal == (30.0, "critica"), str(sinal))
+
+    evento = um("SELECT max(id) FROM eventos WHERE cliente_id = %s", c.id)
+    entidade = lambda chave: um("SELECT id FROM entidades WHERE cliente_id = %s AND chave = %s", c.id, chave)  # noqa: E731
+    forcar = "INSERT INTO sinais (cliente_id, entidade_id, tipo, valor, dia, peso, ocorrido_em, evento_id) VALUES (%s, %s, 'viagem_impossivel', 'teste', %s, 70, %s, %s)"
+    ADMIN.execute(forcar, (c.id, entidade("ana"), fim.date(), local(fim, 9), evento))
+    c.ev(local(fim, 10), "ana", host="h3")
+    c.processar()
+    registrar("pessoa em risco que entra soma para o ativo", c.sinais(f"{c.ger}:h3", "pessoa_em_risco") == ["pessoa_em_risco"])
+    c.ev(local(fim, 11), "bia", host="h3")
+    c.processar()
+    registrar("risco repassado não se repassa de novo", c.sinais("bia", "ativo_em_risco") == [], str(c.sinais("bia")))
+
+    c.ev(local(fim, 9), "bia", host="h4")
+    c.processar()
+    ADMIN.execute(forcar, (c.id, entidade(f"{c.ger}:h4"), fim.date(), local(fim, 9, 30), evento))
+    c.ev(local(fim, 12), "bia", host="h4")
+    c.processar()
+    registrar("entrar num ativo em risco soma para a pessoa", c.sinais("bia", "ativo_em_risco") == ["ativo_em_risco"], str(c.sinais("bia")))
+
+
 def limpar():
     ids = [c.id for c in CRIADOS]
     for c in CRIADOS:
         c.motor.fechar()
-    for tabela in ("sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "entidades", "ueba_cursor",
+    for tabela in ("intel_ocorrencias", "intel_indicadores", "intel_fontes", "ativos", "sinais", "alertas_risco", "falhas_por_hora", "horas", "vistos", "pares", "silencios", "entidades", "ueba_cursor",
                    "eventos", "grupos_alerta", "quarentena"):
         ADMIN.execute(
             f"DELETE FROM {tabela} WHERE " + ("gerenciador_id = ANY(%s)" if tabela == "quarentena" else "cliente_id = ANY(%s)"),
@@ -550,6 +688,9 @@ def main():
         testar_envenenamento()
         testar_isolamento()
         testar_simulacao()
+        testar_triagem_e_pares()
+        testar_conta_grupo_arquivo_e_ioc()
+        testar_criticidade_e_repasse()
         if "--sem-real" not in sys.argv:
             testar_real()
     finally:

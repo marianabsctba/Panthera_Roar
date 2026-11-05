@@ -120,6 +120,12 @@ Primeira versão concluída, só com os logs do Wazuh. `testes/fase2/testar_ueba
 | `horario_incomum` | 15 | Hora local (no fuso do cliente) com menos de 2% do histórico |
 | `primeiro_ip` | 10 | IP nunca usado pela pessoa |
 | `host_raro_no_cliente` | 10 | Host usado por menos de 5% dos usuários do cliente |
+| `ioc_tocado` | 50 | IP de origem ou destino do evento está na inteligência do cliente. Soma para o ativo e para a pessoa |
+| `grupo_administrativo` | 40 | Entrada em grupo que manda na máquina ou no domínio (Windows 4728, 4732, 4756; usermod e gpasswd) |
+| `arquivo_sensivel` | 25 | FIM viu mudança em arquivo de contas, privilégio ou inicialização. Com whodata, soma também para quem mexeu |
+| `pessoa_em_risco` | 20 | Pessoa com risco acima de 60 entrou no ativo. Soma para o ativo |
+| `ativo_em_risco` | 15 | A pessoa entrou num ativo com risco acima de 60. Risco repassado não se repassa de novo |
+| `conta_criada` | 20 | Conta criada (Windows 4720, useradd) por quem não costuma criar contas ali; sem autor, soma para o ativo |
 
 O risco é a soma dos pesos, caindo pela metade a cada 24 horas. O alerta abre em 60, vira crítico em 100 e se encerra quando o risco cai abaixo de 30. Cada sinal conta uma vez por dia e aponta para o evento que o gerou, e assim todo alerta se explica.
 

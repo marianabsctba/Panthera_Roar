@@ -23,7 +23,10 @@ ESTADOS_DE_EXECUCAO = {"nova": "Iniciando", "executando": "Executando", "aguarda
 TIPOS_DE_FONTE = {"syslog": "Syslog", "webhook": "Webhook", "api": "API", "github": "GitHub", "office365": "Microsoft 365", "msgraph": "Microsoft Graph", "aws": "AWS CloudTrail",
                   "azure": "Azure Log Analytics", "gcp": "Google Cloud Pub/Sub", "slack": "Aviso no Slack", "pagerduty": "Aviso no PagerDuty", "virustotal": "Consulta no VirusTotal", "maltiverse": "Consulta no Maltiverse"}
 TITULOS_DE_SINAL = {"sucesso_apos_falhas": "Acesso depois de várias falhas", "viagem_impossivel": "Viagem impossível", "primeiro_privilegio": "Primeiro uso de privilégio", "pico_de_falhas": "Pico de falhas de acesso",
-                    "primeiro_host": "Ativo nunca usado", "horario_incomum": "Horário fora do padrão", "primeiro_ip": "Endereço nunca usado", "host_raro_no_cliente": "Ativo incomum na organização"}
+                    "primeiro_host": "Ativo nunca usado", "horario_incomum": "Horário fora do padrão", "primeiro_ip": "Endereço nunca usado", "host_raro_no_cliente": "Ativo incomum na organização",
+                    "ioc_tocado": "Contato com indicador de ameaça", "grupo_administrativo": "Entrada em grupo administrativo",
+                    "arquivo_sensivel": "Arquivo sensível alterado", "conta_criada": "Conta criada",
+                    "pessoa_em_risco": "Pessoa em risco entrou", "ativo_em_risco": "Entrada em ativo em risco"}
 LIMITE_DE_LINHAS = 25
 
 

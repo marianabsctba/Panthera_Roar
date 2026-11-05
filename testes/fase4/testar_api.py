@@ -90,7 +90,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -123,7 +123,116 @@ def testar_linha_do_tempo():
     registrar("sinal sem técnica conhecida fica sem", linha[2]["tecnica"] is None)
 
 
+def testar_mascara_sem_banco():
+    print("\n== Máscara de dado pessoal", flush=True)
+    from roar_api.ofuscacao import CATEGORIAS, Mascara
+    m = Mascara(CATEGORIAS, b"chave", "cliente")
+    texto = m.texto("cpf 529.982.247-25 cnpj 11.222.333/0001-81 cartao 4111 1111 1111 1111 tel (41) 99876-5432 mail fulano@exemplo.com.br de 203.0.113.5")
+    registrar("CPF, CNPJ, cartão, telefone, e-mail e IP somem do texto",
+              texto == "cpf ***.***.***-** cnpj **.***.***/****-** cartao **** **** **** 1111 tel (**) *****-**** mail f***@exemplo.com.br de 203.0.x.x", texto)
+    intacto = "versão 1.2.3.4.5, dia 2026-11-05 10:20:30, número 12345678901, cartão 4111 1111 1111 1112"
+    registrar("versão, data e número que não passam na conferência ficam", m.texto(intacto) == intacto, m.texto(intacto))
+    dado = m.dado({"usuario": "maria.silva", "bruto": {"full_log": "senha errada para maria.silva", "data": {"srcuser": "Maria.Silva"}},
+                   "riscos": [{"entidade": "maria.silva", "entidade_tipo": "usuario"}, {"entidade": "web-01", "entidade_tipo": "ativo"}], "peso": 15})
+    apelido = dado["usuario"]
+    registrar("usuário vira apelido", apelido.startswith("usuario-") and "maria" not in json.dumps(dado).lower(), json.dumps(dado))
+    registrar("o mesmo usuário tem o mesmo apelido em todo lugar", dado["bruto"]["data"]["srcuser"] == dado["riscos"][0]["entidade"] == apelido
+              and dado["bruto"]["full_log"] == f"senha errada para {apelido}")
+    registrar("ativo não é mascarado como usuário", dado["riscos"][1]["entidade"] == "web-01" and dado["peso"] == 15)
+    registrar("apelido muda de uma organização para outra", Mascara(CATEGORIAS, b"chave", "outro").apelido("maria.silva") != apelido)
+    so_ip = Mascara(["ip"], b"chave", "cliente").dado({"usuario": "maria", "ip_origem": "2001:db8::1", "texto": "maria@x.com"})
+    registrar("só o que está ligado é mascarado", so_ip == {"usuario": "maria", "ip_origem": "2001:x:x", "texto": "maria@x.com"}, str(so_ip))
+
+
+def testar_triagem(http, a):
+    print("\n== Triagem do risco e silêncios", flush=True)
+    entrar(http, a)
+    entidade = ADMIN.execute("SELECT entidade_id FROM alertas_risco WHERE id = %s", (a["alerta"],)).fetchone()[0]
+
+    ADMIN.execute("INSERT INTO horas (cliente_id, entidade_id, hora, contagem) VALUES (%s, %s, 9, 40), (%s, %s, 14, 10)",
+                  (a["id"], entidade, a["id"], entidade))
+    ADMIN.execute("INSERT INTO vistos (cliente_id, entidade_id, dimensao, valor, primeira_vez, contagem) VALUES"
+                  " (%s, %s, 'ip', '10.9.9.9', now(), 7), (%s, %s, 'privilegio', %s, now(), 2)",
+                  (a["id"], entidade, a["id"], entidade, f"{a['ger']}:001:root"))
+    normal = http.get(f"/api/entidades/{entidade}/normal").json()
+    registrar("o normal traz as 24 horas e marca as incomuns", len(normal["horas"]) == 24 and normal["horario_conhecido"]
+              and normal["horas"][3]["incomum"] and not normal["horas"][9]["incomum"] and normal["total_de_acessos"] == 50)
+    registrar("o normal traz os IPs e privilégios já vistos", normal["ips"][0]["contagem"] == 7 and normal["privilegios"][0]["como"] == "root",
+              str(normal["privilegios"]))
+    registrar("o normal de entidade de outro cliente não aparece", http.get(f"/api/entidades/{2**40}/normal").status_code == 404)
+    registrar("silêncio de sinal desconhecido é recusado", http.post("/api/silencios", json={"tipo": "inventado", "motivo": "x"}).status_code == 422)
+    registrar("silêncio sem motivo é recusado", http.post("/api/silencios", json={"tipo": "primeiro_ip", "motivo": ""}).status_code == 422)
+    criado = http.post("/api/silencios", json={"tipo": "primeiro_ip", "entidade_id": entidade, "motivo": "plantão", "dias": 7})
+    registrar("silêncio é criado", criado.status_code == 201, criado.text[:160])
+    registrar("silêncio aparece no risco", [s["tipo"] for s in http.get(f"/api/riscos/{a['alerta']}").json()["silencios"]] == ["primeiro_ip"])
+    registrar("silêncio aparece na lista", any(s["id"] == criado.json()["id"] for s in http.get("/api/silencios").json()["silencios"]))
+    registrar("silêncio de entidade de outro cliente não é criado",
+              http.post("/api/silencios", json={"tipo": "primeiro_ip", "entidade_id": 2**40, "motivo": "x"}).status_code == 404)
+    registrar("silêncio sai", http.request("DELETE", f"/api/silencios/{criado.json()['id']}").status_code == 204)
+    registrar("silêncio que não existe não sai", http.request("DELETE", f"/api/silencios/{criado.json()['id']}").status_code == 404)
+
+    registrar("motivo desconhecido é recusado", http.post(f"/api/riscos/{a['alerta']}/decisao", json={"motivo": "sei_la"}).status_code == 422)
+    r = http.post(f"/api/riscos/{a['alerta']}/decisao", json={"motivo": "esperado", "nota": "mudou de equipe"})
+    registrar("analista encerra o risco", r.status_code == 204, r.text[:160])
+    alerta = http.get(f"/api/riscos/{a['alerta']}").json()["alerta"]
+    registrar("risco guarda o motivo, a nota e quem decidiu",
+              (alerta["estado"], alerta["motivo"], alerta["nota"], alerta["decidido_por_nome"]) == ("encerrado", "esperado", "mudou de equipe", "Analista a"), str(alerta))
+    entidade_depois = ADMIN.execute("SELECT risco, risco_desde IS NOT NULL FROM entidades WHERE id = %s", (entidade,)).fetchone()
+    registrar("o risco da pessoa zera", entidade_depois == (0.0, True), str(entidade_depois))
+    registrar("o esperado vira normal para a pessoa",
+              ADMIN.execute("SELECT count(*) FROM vistos WHERE entidade_id = %s AND dimensao = 'host' AND valor = 'h'", (entidade,)).fetchone()[0] == 1)
+    registrar("risco encerrado não é encerrado de novo", http.post(f"/api/riscos/{a['alerta']}/decisao", json={"motivo": "resolvido"}).status_code == 409)
+    registrar("risco encerrado sai da fila", a["alerta"] not in [x["id"] for x in http.get("/api/fila").json()["riscos"]])
+    registrar("decisão fica na auditoria", ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'decidir_risco'",
+                                                         (a["id"],)).fetchone()[0] == 1)
+    http.post("/api/sair")
+    http.cookies.clear()
+
+
+def testar_ofuscacao(http, a):
+    print("\n== Dado pessoal mascarado", flush=True)
+    senha = secrets.token_urlsafe(18)
+    n1 = {"email": f"n1-{uuid.uuid4().hex[:8]}@exemplo.test", "senha": senha}
+    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Analista N1', %s, 'analista_n1')",
+                  (a["id"], n1["email"], PasswordHasher().hash(senha)))
+    evento = ADMIN.execute("SELECT id FROM eventos WHERE cliente_id = %s ORDER BY id LIMIT 1", (a["id"],)).fetchone()[0]
+    ADMIN.execute("UPDATE eventos SET bruto = bruto || %s WHERE id = %s",
+                  (Jsonb({"full_log": "login de fulano@exemplo.com.br, cpf 529.982.247-25", "data": {"srcuser": "fulano", "srcip": "203.0.113.5"}}), evento))
+    entrar(http, n1)
+    eu = http.get("/api/eu").json()
+    registrar("N1 sabe que vê mascarado", eu["dados_mascarados"] is True and "usuario" in eu["ofuscar"])
+    linha = next((e for e in http.get("/api/eventos").json()["eventos"] if e["id"] == evento), {})
+    registrar("N1 vê o IP mascarado na lista", linha.get("ip_origem") == "203.0.x.x", str(linha)[:160])
+    registrar("N1 vê o usuário como apelido", str(linha.get("usuario", "")).startswith("usuario-"))
+    bruto = http.get(f"/api/eventos/{evento}/bruto").text
+    registrar("N1 não vê CPF, e-mail nem usuário no bruto", "529.982.247-25" not in bruto and "fulano@" not in bruto and '"fulano"' not in bruto, bruto[:200])
+    fila = http.get("/api/fila").json()
+    registrar("N1 vê a entidade do risco como apelido", all(r["entidade"].startswith("usuario-") for r in fila["riscos"]), str(fila["riscos"])[:160])
+    registrar("N1 não gera pacote de evidência", http.post("/api/integridade/evidencia", json={"fonte": "alertas", "ids": ["e1"]}).status_code == 403)
+    registrar("N1 não muda o que é mascarado", http.request("PUT", "/api/organizacao/ofuscacao", json={"categorias": []}).status_code == 403)
+    http.post("/api/sair")
+    http.cookies.clear()
+
+    entrar(http, a)
+    registrar("administrador vê o original", "529.982.247-25" in http.get(f"/api/eventos/{evento}/bruto").text)
+    registrar("categoria desconhecida é recusada", http.request("PUT", "/api/organizacao/ofuscacao", json={"categorias": ["senha"]}).status_code == 422)
+    registrar("administrador desliga o IP", http.request("PUT", "/api/organizacao/ofuscacao", json={"categorias": ["usuario", "cpf"]}).status_code == 204)
+    http.post("/api/sair")
+    http.cookies.clear()
+
+    entrar(http, n1)
+    bruto = http.get(f"/api/eventos/{evento}/bruto").json()
+    registrar("depois de desligar, N1 vê o IP", bruto["bruto"]["data"]["srcip"] == "203.0.113.5", str(bruto["bruto"].get("data")))
+    registrar("o que continua ligado segue mascarado", bruto["bruto"]["data"]["srcuser"].startswith("usuario-") and "529.982.247-25" not in json.dumps(bruto))
+    trilha = ADMIN.execute("SELECT alvo FROM auditoria WHERE cliente_id = %s AND acao = 'definir_ofuscacao'", (a["id"],)).fetchall()
+    registrar("mudança fica na auditoria", trilha == [("cpf,usuario",)], str(trilha))
+    http.post("/api/sair")
+    http.cookies.clear()
+    ADMIN.execute("UPDATE clientes SET ofuscar = DEFAULT WHERE id = %s", (a["id"],))
+
+
 def main():
+    testar_mascara_sem_banco()
     a, b = novo_cliente("a"), novo_cliente("b")
     with TestClient(app, base_url="https://testserver") as http:
         print("\n== Sem sessão", flush=True)
@@ -221,6 +330,12 @@ def main():
         sys.path.insert(0, str(RAIZ / "ueba"))
         from roar_ueba.motor import PESOS
         registrar("pesos da tela iguais aos do motor", {r["tipo"]: r["peso"] for r in catalogo["comportamento"]} == PESOS)
+        from roar_ueba.motor import Parametros
+        from roar_api import app as aplicacao
+        p = Parametros()
+        registrar("aprendizado e horário da tela iguais aos do motor",
+                  (aplicacao.APRENDIZADO_DIAS, aplicacao.APRENDIZADO_SUCESSOS, aplicacao.HORARIO_MINIMO, aplicacao.HORARIO_PROBABILIDADE)
+                  == (p.aprendizado_dias, p.aprendizado_sucessos, p.horario_minimo, p.horario_probabilidade))
 
         print("\n== Ativos, ataque e defesa, normas e arquivos", flush=True)
         for cliente, agente, nome in ((a, "001", "servidor-a"), (b, "001", "servidor-b")):
@@ -427,6 +542,11 @@ def main():
         registrar("usuário desativado não entra", entrar(http, b).status_code == 401)
         ADMIN.execute("UPDATE usuarios SET ativo = true WHERE cliente_id = %s", (b["id"],))
         http.cookies.clear()
+        falhas_de_login.clear()
+
+        testar_ofuscacao(http, a)
+        falhas_de_login.clear()
+        testar_triagem(http, a)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

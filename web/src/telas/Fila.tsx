@@ -1,12 +1,12 @@
-import { ActionIcon, Alert, Badge, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, Radio, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, Textarea, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
 import { PainelDeContexto } from "./Contexto";
 import { useMediaQuery } from "@mantine/hooks";
 import { IconRefresh } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
-import { detalhe, enviar, useDados, useEu, usePode } from "../api";
+import { detalhe, enviar, pedir, useDados, useEu, usePode } from "../api";
 import { Busca, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Painel, Severidade, Tabela, Vazio, type FiltroDeEventos } from "../componentes";
-import { duracao, nomeDaTatica, numero, quando, SINAIS } from "../formato";
+import { CRITICIDADES, duracao, nomeDaTatica, numero, quando, SINAIS } from "../formato";
 import { SEVERIDADES } from "../tema";
 import { Fato, GavetaDoEvento, type EventoResumo } from "./Eventos";
 
@@ -19,9 +19,15 @@ interface DadosDaFila { riscos: ItemDeRisco[]; grupos: ItemDeGrupo[] }
 type Detalhes = Record<string, string | number | null | undefined>;
 interface Sinal { tipo: string; peso: number; ocorrido_em: string; detalhes: Detalhes | null; evento_id: number; regra_descricao: string | null; ativo: string | null; ip_origem: string | null; usuario: string | null; pais: string | null;
   risco_depois: number; tecnica: { codigo: string; nome: string; tatica: string } | null }
+interface Silencio { id: number; tipo: string; motivo: string; criado_por_nome: string | null; criado_em: string; expira_em: string | null }
 interface DadosDoRisco {
-  alerta: { id: number; severidade: string; risco_maximo: number; aberto_em: string; encerrado_em: string | null; estado: string; entidade_tipo: string; entidade: string; risco_atual: number };
+  alerta: {
+    id: number; entidade_id: number; severidade: string; risco_maximo: number; aberto_em: string; encerrado_em: string | null; estado: string; entidade_tipo: string; entidade: string; risco_atual: number; criticidade?: string | null;
+    motivo: string | null; nota: string | null; decidido_por_nome: string | null;
+  };
   sinais: Sinal[];
+  pares: { entidade: string; semelhanca: number }[];
+  silencios: Silencio[];
   limites: { alto: number; critico: number; meia_vida_horas: number };
 }
 interface DadosDoGrupo {
@@ -30,6 +36,24 @@ interface DadosDoGrupo {
 }
 
 const LIMITE_DE_EVENTOS_DO_GRUPO = 200;
+
+interface Visto { contagem: number; primeira_vez?: string }
+interface DadosDoNormal {
+  entidade: { entidade_tipo: string; entidade: string; primeira_vista: string; sucessos: number };
+  horas?: { hora: number; contagem: number; incomum: boolean }[];
+  total_de_acessos?: number;
+  horario_conhecido?: boolean;
+  aprendizado?: { aprendendo: boolean; ate: string; acessos_faltando: number };
+  ativos?: (Visto & { ativo: string })[];
+  total_de_ativos?: number;
+  ips?: (Visto & { ip: string })[];
+  total_de_ips?: number;
+  privilegios?: (Visto & { ativo: string; como: string })[];
+  total_de_privilegios?: number;
+  cria_conta?: (Visto & { ativo: string })[];
+  pessoas?: (Visto & { usuario: string })[];
+  total_de_pessoas?: number;
+}
 
 const TEXTOS_DOS_SINAIS: Record<string, (d: Detalhes) => string> = {
   sucesso_apos_falhas: (d) => `${d.falhas ?? "Várias"} tentativas falharam antes do acesso, vindas de ${d.ip ?? "um mesmo IP"}.`,
@@ -40,9 +64,23 @@ const TEXTOS_DOS_SINAIS: Record<string, (d: Detalhes) => string> = {
   horario_incomum: (d) => `Acesso às ${String(d.hora_local ?? "?").padStart(2, "0")}h, hora local, em ${d.host ?? "um ativo"}.`,
   primeiro_ip: (d) => `Primeiro acesso vindo de ${d.ip ?? "um novo endereço"}.`,
   host_raro_no_cliente: (d) => `Quase ninguém na organização acessa ${d.host ?? "este ativo"}.`,
+  ioc_tocado: (d) => `${d.host ?? "Um ativo"} falou com ${d.ip ?? "um endereço"}, que está na inteligência de ameaças${d.descricao ? `: ${d.descricao}` : ""}.`,
+  grupo_administrativo: (d) => `${d.membro ?? "Alguém"} entrou no grupo ${d.grupo ?? "administrativo"} em ${d.host ?? "um ativo"}${d.por ? `, por ${d.por}` : ""}.`,
+  arquivo_sensivel: (d) => `${d.arquivo ?? "Um arquivo sensível"} mudou em ${d.host ?? "um ativo"}${d.quem ? `, por ${d.quem}` : ""}.`,
+  conta_criada: (d) => `Conta ${d.conta ?? "nova"} criada em ${d.host ?? "um ativo"}.`,
+  pessoa_em_risco: (d) => `${d.usuario ?? "Uma pessoa"} entrou com risco ${d.risco ?? "alto"}.`,
+  ativo_em_risco: (d) => `Entrou em ${d.host ?? "um ativo"}, que estava com risco ${d.risco ?? "alto"}.`,
 };
 
 const tituloDoSinal = (tipo: string) => SINAIS[tipo] ?? tipo;
+
+const MOTIVOS: Record<string, { texto: string; explica: string }> = {
+  resolvido: { texto: "Era real e foi tratado", explica: "O risco zera. Nada é aprendido: se acontecer de novo, soma de novo." },
+  falso_positivo: { texto: "Falso positivo", explica: "O risco zera, e o ativo, o IP e o privilégio deste alerta passam a ser normais para a pessoa." },
+  esperado: { texto: "Esperado", explica: "Era uma mudança combinada, como troca de função. O risco zera e o que apareceu passa a ser normal." },
+  risco_caiu: { texto: "Encerrado sozinho", explica: "O risco caiu abaixo da metade do limite." },
+};
+const PRAZOS = [{ value: "7", label: "Por 7 dias" }, { value: "30", label: "Por 30 dias" }, { value: "90", label: "Por 90 dias" }, { value: "", label: "Sem prazo" }];
 const textoDaSeveridade = (s: string) => SEVERIDADES[s as keyof typeof SEVERIDADES]?.texto ?? s;
 const corDaSeveridade = (s: string) => SEVERIDADES[s as keyof typeof SEVERIDADES]?.cor ?? SEVERIDADES.baixa.cor;
 
@@ -183,18 +221,125 @@ function TopoDoDetalhe({ titulo, severidade, subtitulo, children }: { titulo: st
   );
 }
 
-function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoAbrirEvento: (e: EventoResumo) => void; aoAbrirEventos: (f: FiltroDeEventos) => void }) {
+function EncerrarRisco({ alerta, aoEncerrar }: { alerta: DadosDoRisco["alerta"]; aoEncerrar: () => void }) {
+  const [aberto, setAberto] = useState(false);
+  const [motivo, setMotivo] = useState("falso_positivo");
+  const [nota, setNota] = useState("");
+  const [erro, setErro] = useState<string | null>(null);
+  const encerrar = async () => {
+    setErro(null);
+    const r = await enviar(`/api/riscos/${alerta.id}/decisao`, { motivo, nota });
+    if (!r.ok) {
+      setErro(await detalhe(r, "Não foi possível encerrar."));
+      return;
+    }
+    setAberto(false);
+    aoEncerrar();
+  };
+  return (
+    <>
+      <Button size="xs" onClick={() => setAberto(true)}>Encerrar</Button>
+      <Modal opened={aberto} onClose={() => setAberto(false)} title={`Encerrar o risco de ${alerta.entidade}`}>
+        <Stack gap="sm">
+          <Radio.Group value={motivo} onChange={setMotivo} label="O que era">
+            <Stack gap="xs" mt={4}>
+              {["falso_positivo", "esperado", "resolvido"].map((m) => <Radio key={m} value={m} label={MOTIVOS[m].texto} description={MOTIVOS[m].explica} />)}
+            </Stack>
+          </Radio.Group>
+          <Textarea label="Nota" description="Opcional. Fica no risco e ajuda quem olhar depois." value={nota} onChange={(e) => setNota(e.currentTarget.value)} maxLength={500} autosize minRows={2} />
+          {erro && <Alert color="red" variant="light" p="xs" fz="sm">{erro}</Alert>}
+          <Group justify="flex-end">
+            <Button variant="subtle" color="gray" onClick={() => setAberto(false)}>Cancelar</Button>
+            <Button variant="filled" onClick={encerrar}>Encerrar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
+function Silencios({ entidade, nome, silencios, tipos, aoMudar }: { entidade: number; nome: string; silencios: Silencio[]; tipos: string[]; aoMudar: () => void }) {
   const eu = useEu();
-  const { dados, erro } = useDados<DadosDoRisco>(`/api/riscos/${id}`);
+  const pode = usePode();
+  const [aberto, setAberto] = useState(false);
+  const [tipo, setTipo] = useState<string | null>(tipos[0] ?? null);
+  const [motivo, setMotivo] = useState("");
+  const [prazo, setPrazo] = useState("30");
+  const [erro, setErro] = useState<string | null>(null);
+  const gerir = pode("gerir_regras");
+  if (!silencios.length && !gerir) return null;
+  const silenciar = async () => {
+    setErro(null);
+    const r = await enviar("/api/silencios", { tipo, entidade_id: entidade, motivo, dias: prazo ? Number(prazo) : null });
+    if (!r.ok) {
+      setErro(await detalhe(r, "Não foi possível silenciar."));
+      return;
+    }
+    setAberto(false);
+    setMotivo("");
+    aoMudar();
+  };
+  const remover = async (s: Silencio) => {
+    const r = await pedir(`/api/silencios/${s.id}`, { method: "DELETE" });
+    if (r.ok) aoMudar();
+  };
+  return (
+    <div>
+      <Group justify="space-between" mb="xs">
+        <Title order={3}>Sinais silenciados</Title>
+        {gerir && tipos.length > 0 && <Button size="xs" variant="subtle" onClick={() => setAberto(true)}>Silenciar um sinal</Button>}
+      </Group>
+      {!silencios.length ? <Text size="xs" c="dimmed">Nenhum. Todos os sinais somam para {nome}.</Text> : (
+        <Stack gap={4}>
+          {silencios.map((s) => (
+            <Group key={s.id} justify="space-between" wrap="nowrap" gap="xs">
+              <div style={{ minWidth: 0 }}>
+                <Text size="sm" fw={500}>{tituloDoSinal(s.tipo)}</Text>
+                <Text size="xs" c="dimmed">{s.motivo}. {s.criado_por_nome ?? "Alguém"}, {quando(s.criado_em, eu.fuso)}{s.expira_em ? `, até ${quando(s.expira_em, eu.fuso)}` : ", sem prazo"}.</Text>
+              </div>
+              {gerir && <Button size="xs" variant="subtle" color="red" onClick={() => remover(s)}>Tirar</Button>}
+            </Group>
+          ))}
+        </Stack>
+      )}
+      <Modal opened={aberto} onClose={() => setAberto(false)} title={`Silenciar um sinal de ${nome}`}>
+        <Stack gap="sm">
+          <Text size="sm">O sinal deixa de somar no risco desta pessoa daqui para frente. O que já somou continua.</Text>
+          <Select label="Sinal" data={tipos.map((t) => ({ value: t, label: tituloDoSinal(t) }))} value={tipo} onChange={setTipo} allowDeselect={false} />
+          <TextInput label="Por quê" placeholder="Ex.: trabalha de madrugada no plantão" value={motivo} onChange={(e) => setMotivo(e.currentTarget.value)} maxLength={500} />
+          <Select label="Prazo" data={PRAZOS} value={prazo} onChange={(v) => setPrazo(v ?? "")} allowDeselect={false} />
+          {erro && <Alert color="red" variant="light" p="xs" fz="sm">{erro}</Alert>}
+          <Group justify="flex-end">
+            <Button variant="subtle" color="gray" onClick={() => setAberto(false)}>Cancelar</Button>
+            <Button variant="filled" onClick={silenciar} disabled={!tipo || !motivo.trim()}>Silenciar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </div>
+  );
+}
+
+function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos, aoEncerrar }: { id: number; aoAbrirEvento: (e: EventoResumo) => void; aoAbrirEventos: (f: FiltroDeEventos) => void; aoEncerrar: () => void }) {
+  const eu = useEu();
+  const pode = usePode();
+  const { dados, erro, recarregar } = useDados<DadosDoRisco>(`/api/riscos/${id}`);
   if (!dados) return <Carregando erro={erro ? "Este item não está mais disponível." : null} />;
-  const { alerta, sinais, limites } = dados;
+  const { alerta, sinais, limites, pares, silencios } = dados;
+  const tiposDosSinais = [...new Set(sinais.map((s) => s.tipo))];
   const atual = Math.round(Number(alerta.risco_atual));
   return (
     <Stack gap="md">
-      <TopoDoDetalhe titulo={alerta.entidade} severidade={alerta.severidade} subtitulo={`${alerta.entidade_tipo === "ativo" ? "Ativo" : "Usuário"}, aberto em ${quando(alerta.aberto_em, eu.fuso)}`}>
+      <TopoDoDetalhe titulo={alerta.entidade} severidade={alerta.severidade} subtitulo={`${alerta.entidade_tipo === "ativo" ? `Ativo${alerta.criticidade && alerta.criticidade !== "normal" ? ` de criticidade ${CRITICIDADES[alerta.criticidade]?.texto.toLowerCase()}` : ""}` : "Usuário"}, aberto em ${quando(alerta.aberto_em, eu.fuso)}`}>
         <Button size="xs" onClick={() => aoAbrirEventos({ rotulo: `Eventos de ${alerta.entidade}`, consulta: { entidade: alerta.entidade } })}>Ver eventos</Button>
         <BotaoAutomatizar criar={() => rascunhoDeRisco(dados)} />
+        {alerta.estado === "aberto" && pode("triar") && <EncerrarRisco alerta={alerta} aoEncerrar={aoEncerrar} />}
       </TopoDoDetalhe>
+      {alerta.estado !== "aberto" && alerta.motivo && (
+        <Alert color="gray" variant="light" p="xs">
+          <Text size="sm" fw={500}>{MOTIVOS[alerta.motivo]?.texto ?? alerta.motivo}{alerta.encerrado_em ? `, em ${quando(alerta.encerrado_em, eu.fuso)}` : ""}{alerta.decidido_por_nome ? `, por ${alerta.decidido_por_nome}` : ""}.</Text>
+          {alerta.nota && <Text size="sm">{alerta.nota}</Text>}
+        </Alert>
+      )}
       <div>
         <Group justify="space-between" mb={4}>
           <Text size="xs" c="dimmed" className="numero">Risco atual {numero(atual)}</Text>
@@ -207,7 +352,85 @@ function DetalheDoRisco({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoA
         <Text size="xs" c="dimmed" mb="xs">Cada sinal soma ao risco, e o risco cai pela metade a cada {numero(limites.meia_vida_horas)} h. Acima de {numero(limites.alto)} abre alerta; acima de {numero(limites.critico)}, crítico.</Text>
         {!sinais.length ? <Vazio>Nenhum sinal registrado.</Vazio> : <LinhaDoTempo sinais={sinais} limites={limites} fuso={eu.fuso} aoAbrirEvento={aoAbrirEvento} />}
       </div>
+      <NormalDaEntidade entidade={alerta.entidade_id} nome={alerta.entidade} />
+      {alerta.entidade_tipo === "usuario" && (
+        <div>
+          <Title order={3} mb={2}>Pares</Title>
+          <Text size="xs" c="dimmed" mb="xs">Quem mais acessa os mesmos ativos. Quando a primeira vez de {alerta.entidade} já é rotina dos pares, soma menos.</Text>
+          {!pares.length ? <Text size="xs" c="dimmed">Ainda sem pares: são calculados uma vez por dia, com quem divide ativos.</Text> : (
+            <Group gap={6}>{pares.map((p) => <Badge key={p.entidade} size="sm" radius="sm" variant="light" color="gray" tt="none" fw={500}>{p.entidade} · {numero(Math.round(p.semelhanca * 100))}%</Badge>)}</Group>
+          )}
+        </div>
+      )}
+      <Silencios entidade={alerta.entidade_id} nome={alerta.entidade} silencios={silencios} tipos={tiposDosSinais} aoMudar={recarregar} />
     </Stack>
+  );
+}
+
+function Fichas({ rotulo, itens, total }: { rotulo: string; itens: { texto: string; contagem: number }[]; total?: number }) {
+  if (!itens.length) return null;
+  const resto = (total ?? itens.length) - itens.length;
+  return (
+    <div>
+      <Text size="xs" c="dimmed" mb={4}>{rotulo}</Text>
+      <Group gap={6}>
+        {itens.map((i) => <Badge key={i.texto} size="sm" radius="sm" variant="light" color="gray" tt="none" fw={500}>{i.texto} · {numero(i.contagem)}</Badge>)}
+        {resto > 0 && <Text size="xs" c="dimmed">e mais {numero(resto)}</Text>}
+      </Group>
+    </div>
+  );
+}
+
+function HorasDoNormal({ horas, conhecido }: { horas: NonNullable<DadosDoNormal["horas"]>; conhecido: boolean }) {
+  const maior = Math.max(1, ...horas.map((h) => h.contagem));
+  return (
+    <div>
+      <Text size="xs" c="dimmed" mb={4}>Horário dos acessos, na hora local da organização{conhecido ? ". As horas apagadas soam estranhas para o motor." : ". Ainda poucos acessos para dizer o que é estranho."}</Text>
+      <Group gap={2} align="flex-end" wrap="nowrap" h={48} role="img" aria-label="Acessos por hora do dia">
+        {horas.map((h) => (
+          <Tooltip key={h.hora} label={`${String(h.hora).padStart(2, "0")}h: ${numero(h.contagem)} acesso${h.contagem === 1 ? "" : "s"}${h.incomum ? ", incomum" : ""}`}>
+            <Box style={{ flex: 1, height: `${Math.max(4, (h.contagem / maior) * 100)}%`, borderRadius: 2,
+              background: h.contagem ? "var(--mantine-color-rosa-5)" : "var(--mantine-color-dark-5)", opacity: h.incomum ? 0.35 : 1 }} />
+          </Tooltip>
+        ))}
+      </Group>
+      <Group justify="space-between" mt={2}>{[0, 6, 12, 18, 23].map((h) => <Text key={h} size="xs" c="dimmed">{String(h).padStart(2, "0")}h</Text>)}</Group>
+    </div>
+  );
+}
+
+function NormalDaEntidade({ entidade, nome }: { entidade: number; nome: string }) {
+  const eu = useEu();
+  const { dados, erro } = useDados<DadosDoNormal>(`/api/entidades/${entidade}/normal`);
+  if (!dados) return <Carregando erro={erro} />;
+  if (dados.pessoas) {
+    return (
+      <div>
+        <Title order={3} mb={2}>Quem costuma entrar</Title>
+        <Text size="xs" c="dimmed" mb="xs">Pessoas para quem {nome} já é rotina. Para elas, entrar aqui não é primeira vez.</Text>
+        {!dados.pessoas.length ? <Text size="xs" c="dimmed">Ninguém ainda: nenhum acesso aprendido neste ativo.</Text>
+          : <Fichas rotulo="Pessoa e acessos" itens={dados.pessoas.map((p) => ({ texto: p.usuario, contagem: p.contagem }))} total={dados.total_de_pessoas} />}
+      </div>
+    );
+  }
+  const aprendizado = dados.aprendizado;
+  return (
+    <div>
+      <Title order={3} mb={2}>O normal de {nome}</Title>
+      <Text size="xs" c="dimmed" mb="xs">
+        {aprendizado?.aprendendo
+          ? `Ainda aprendendo: primeira vez e horário só somam a partir de ${quando(aprendizado.ate, eu.fuso)}${aprendizado.acessos_faltando ? ` e depois de mais ${numero(aprendizado.acessos_faltando)} acessos` : ""}.`
+          : `Aprendido com ${numero(dados.entidade.sucessos)} acessos desde ${quando(dados.entidade.primeira_vista, eu.fuso)}. Cada sinal de primeira vez é medido contra isto.`}
+      </Text>
+      <Stack gap="sm">
+        {dados.horas && dados.total_de_acessos ? <HorasDoNormal horas={dados.horas} conhecido={!!dados.horario_conhecido} /> : null}
+        <Fichas rotulo="Ativos" itens={(dados.ativos ?? []).map((a) => ({ texto: a.ativo, contagem: a.contagem }))} total={dados.total_de_ativos} />
+        <Fichas rotulo="Endereços de origem" itens={(dados.ips ?? []).map((i) => ({ texto: i.ip, contagem: i.contagem }))} total={dados.total_de_ips} />
+        <Fichas rotulo="Executa como outro usuário" itens={(dados.privilegios ?? []).map((p) => ({ texto: `${p.como} em ${p.ativo}`, contagem: p.contagem }))} total={dados.total_de_privilegios} />
+        <Fichas rotulo="Cria contas em" itens={(dados.cria_conta ?? []).map((c) => ({ texto: c.ativo, contagem: c.contagem }))} />
+        {!dados.total_de_acessos && !dados.total_de_ativos && <Text size="xs" c="dimmed">Nada aprendido ainda.</Text>}
+      </Stack>
+    </div>
   );
 }
 
@@ -245,6 +468,8 @@ function LinhaDoTempo({ sinais, limites, fuso, aoAbrirEvento }: { sinais: Sinal[
                   <Text size="xs" className="numero" fw={500}>+{numero(Math.round(Number(s.peso)))}</Text>
                 </Group>
                 <Text size="xs">{TEXTOS_DOS_SINAIS[s.tipo]?.(s.detalhes ?? {}) ?? s.regra_descricao ?? ""}</Text>
+                {s.detalhes?.criticidade && <Text size="xs" c="dimmed">Ativo de criticidade {CRITICIDADES[s.detalhes.criticidade]?.texto.toLowerCase() ?? s.detalhes.criticidade}: pesa {CRITICIDADES[s.detalhes.criticidade]?.fator ?? "diferente"}.</Text>}
+                {Number(s.detalhes?.pares) > 0 && <Text size="xs" c="dimmed">{s.detalhes?.pares === 1 ? "Um par já faz isto" : `${s.detalhes?.pares} pares já fazem isto`}: soma menos.</Text>}
                 {s.tecnica && (
                   <Tooltip label={`${s.tecnica.codigo}, ${s.tecnica.nome}`}>
                     <Badge mt={4} size="sm" radius="sm" variant="light" color="gray" tt="none" fw={500}>{nomeDaTatica(s.tecnica.tatica)}: {s.tecnica.nome}</Badge>
@@ -375,7 +600,7 @@ export function Fila() {
 
   const detalheAberto = selecionado && (
     selecionado.aba === "riscos"
-      ? <DetalheDoRisco key={`r${selecionado.id}-${versao}`} id={selecionado.id} aoAbrirEvento={setEvento} aoAbrirEventos={setFiltro} />
+      ? <DetalheDoRisco key={`r${selecionado.id}-${versao}`} id={selecionado.id} aoAbrirEvento={setEvento} aoAbrirEventos={setFiltro} aoEncerrar={() => { setSelecionado(null); recarregar(); }} />
       : <DetalheDoGrupo key={`g${selecionado.id}-${versao}`} id={selecionado.id} aoAbrirEvento={setEvento} aoAbrirEventos={setFiltro} />
   );
 

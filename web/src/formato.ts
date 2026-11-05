@@ -76,5 +76,12 @@ export function nomeDaCidade(c: { cidade: string; regiao?: string | null; pais?:
 export const SINAIS: Record<string, string> = {
   sucesso_apos_falhas: "Acesso depois de várias falhas", viagem_impossivel: "Viagem impossível", primeiro_privilegio: "Primeiro uso deste privilégio",
   pico_de_falhas: "Pico de falhas de acesso", primeiro_host: "Ativo nunca usado", horario_incomum: "Horário fora do padrão", primeiro_ip: "Endereço nunca usado",
-  host_raro_no_cliente: "Ativo incomum na organização",
+  host_raro_no_cliente: "Ativo incomum na organização", ioc_tocado: "Contato com indicador de ameaça",
+  grupo_administrativo: "Entrada em grupo administrativo", arquivo_sensivel: "Arquivo sensível alterado", conta_criada: "Conta criada",
+  pessoa_em_risco: "Pessoa em risco entrou", ativo_em_risco: "Entrada em ativo em risco",
+};
+
+export const CRITICIDADES: Record<string, { texto: string; fator: string }> = {
+  baixa: { texto: "Baixa", fator: "metade" }, normal: { texto: "Normal", fator: "o normal" },
+  alta: { texto: "Alta", fator: "1,5 vez" }, critica: { texto: "Crítica", fator: "o dobro" },
 };

@@ -18,7 +18,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | MITRE ATT&CK | 2 | Feito: matriz completa com regras e D3FEND |
 | Busca | Linguagem de consulta | 4 | Feito: em português e inglês |
 | | Hunting | 2 | Parcial: busca em eventos e logs brutos, sem IOC |
-| UEBA | Análise de comportamento | 5 | Feito, primeira versão |
+| UEBA | Análise de comportamento | 5 | Feito: login, privilégio, conta criada, grupo administrativo, arquivo sensível e indicador de ameaça, com pares e triagem pelo analista |
 | | Score de risco | 3 | Feito |
 | SOAR | Resposta automatizada | 5 | Feito: bloquear, desativar conta, avisar e registrar, com prova em agente real; catálogo de integrações por ligar |
 | | Playbooks | 3 | Pronto: blocos, modelos, simulação e YAML |
@@ -28,7 +28,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Log bruto | 3 | Feito |
 | Relatórios | Dashboards e exportação | 5 | Parcial: panorama, sem exportar |
 | Compliance | Relatório por norma | 2 | Parcial: aba Normas na tela, sem relatório |
-| | Ofuscar campos sensíveis | 2 | Falta |
+| | Ofuscar campos sensíveis | 2 | Feito: usuário vira apelido, IP, CPF, CNPJ, e-mail, cartão e telefone mascarados na saída para quem não é administrador nem N2, com liga e desliga por organização; o log guardado não muda. IPv6 só é mascarado em campo de IP, não no meio do texto |
 | Acesso | Separação por unidade | 3 | Feito: isolamento por cliente |
 | | Papéis (RBAC) | 5 | Feito: cinco perfis, checados em cada rota |
 | | MFA | 2 | Feito: aplicativo autenticador, códigos de recuperação e exigência por organização; SSO e passkeys faltam |

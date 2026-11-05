@@ -1,4 +1,4 @@
-import { Alert, Box, Button, CopyButton, Drawer, Group, Modal, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
+import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconCopy, IconPlus } from "@tabler/icons-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 
@@ -12,19 +12,57 @@ const NOMES_DE_PERFIL: Record<string, string> = { administrador: "Administraçã
 const OPCOES_DE_PERFIL = Object.entries(NOMES_DE_PERFIL).map(([value, label]) => ({ value, label }));
 
 const O_QUE_CADA_UM_FAZ: [string, string][] = [
-  ["Ver painéis, fila, eventos, regras e fontes", "ver"], ["Ver log e alerta brutos", "ver_bruto"], ["Decidir aprovações da automação", "aprovar"],
+  ["Ver painéis, fila, eventos, regras e fontes", "ver"], ["Ver log e alerta brutos", "ver_bruto"], ["Ver dados pessoais sem máscara", "ver_dado_pessoal"], ["Encerrar risco dizendo o que era", "triar"], ["Decidir aprovações da automação", "aprovar"],
   ["Criar e mudar regras", "gerir_regras"], ["Criar e mudar playbooks", "gerir_playbooks"], ["Criar e mudar fontes de dados", "gerir_fontes"],
   ["Ver o comando de instalação de agente", "instalar_agente"], ["Gerir usuários", "gerir_usuarios"], ["Ver a trilha de auditoria e os avisos", "ver_auditoria"], ["Gerir varreduras, pesos e aceite de risco", "gerir_vulnerabilidades"],
 ];
 const PERMISSOES_POR_PERFIL: Record<string, string[]> = {
-  administrador: ["ver", "ver_bruto", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"],
+  administrador: ["ver", "ver_bruto", "ver_dado_pessoal", "triar", "aprovar", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"],
   engenharia: ["ver", "ver_bruto", "gerir_regras", "gerir_playbooks", "gerir_fontes", "instalar_agente", "gerir_vulnerabilidades"],
-  analista_n2: ["ver", "ver_bruto", "aprovar"],
-  analista_n1: ["ver", "ver_bruto"],
+  analista_n2: ["ver", "ver_bruto", "ver_dado_pessoal", "triar", "aprovar"],
+  analista_n1: ["ver", "ver_bruto", "triar"],
   auditor: ["ver", "ver_auditoria"],
 };
 
-// api.ts só sabe enviar POST, e estas duas rotas são PUT.
+const CATEGORIAS_DE_DADO: [string, string, string][] = [
+  ["usuario", "Nome de usuário", "Vira um apelido, como usuario-3f9a2c: o mesmo usuário tem sempre o mesmo apelido."],
+  ["ip", "Endereço IP", "Ficam só os dois primeiros números, como 203.0.x.x."],
+  ["email", "E-mail", "Fica a primeira letra e o domínio, como m***@exemplo.com."],
+  ["cpf", "CPF", "Só os números válidos, achados em qualquer texto do log."],
+  ["cnpj", "CNPJ", "Só os números válidos, achados em qualquer texto do log."],
+  ["cartao", "Cartão de pagamento", "Ficam os quatro últimos dígitos."],
+  ["telefone", "Telefone", "Números no formato brasileiro, como (41) 99876-5432."],
+];
+
+function DadosPessoais() {
+  const { dados, recarregar } = useDados<{ ofuscar: string[] }>("/api/eu");
+  const [erro, setErro] = useState<string | null>(null);
+  if (!dados) return <Carregando />;
+  const marcadas = new Set(dados.ofuscar);
+  const mudar = async (categoria: string, ligar: boolean) => {
+    setErro(null);
+    const categorias = CATEGORIAS_DE_DADO.map(([c]) => c).filter((c) => (c === categoria ? ligar : marcadas.has(c)));
+    const r = await colocar("/api/organizacao/ofuscacao", { categorias });
+    if (!r.ok) setErro(await detalhe(r, "Não foi possível mudar."));
+    recarregar();
+  };
+  return (
+    <Painel titulo="Dados pessoais mascarados">
+      <Stack gap="sm">
+        <Text size="sm">
+          Para quem não tem o perfil {NOMES_DE_PERFIL.administrador} ou {NOMES_DE_PERFIL.analista_n2}, o que estiver marcado aparece mascarado em eventos, logs, fila, riscos e relatórios.
+          O log guardado não muda, então a prova de integridade continua valendo. Quem vê mascarado não gera pacote de evidência, porque o pacote leva o log original.
+        </Text>
+        <Erro texto={erro} />
+        {CATEGORIAS_DE_DADO.map(([c, rotulo, explicacao]) => (
+          <Checkbox key={c} label={rotulo} description={explicacao} checked={marcadas.has(c)} onChange={(e) => mudar(c, e.currentTarget.checked)} />
+        ))}
+      </Stack>
+    </Painel>
+  );
+}
+
+// api.ts só sabe enviar POST, e estas rotas são PUT.
 async function colocar(rota: string, corpo: unknown) {
   const r = await fetch(rota, { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
   if (r.status === 401) window.location.assign("/");
@@ -211,6 +249,7 @@ export function Usuarios() {
           <Tabs.List mb="md">
             <Tabs.Tab value="pessoas">Pessoas</Tabs.Tab>
             <Tabs.Tab value="perfis">O que cada perfil pode fazer</Tabs.Tab>
+            <Tabs.Tab value="dados">Dados pessoais</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="pessoas">
             <Stack gap="md">
@@ -254,6 +293,7 @@ export function Usuarios() {
             </Stack>
           </Tabs.Panel>
           <Tabs.Panel value="perfis"><TabelaDePerfis /></Tabs.Panel>
+          <Tabs.Panel value="dados"><DadosPessoais /></Tabs.Panel>
         </Tabs>
       )}
 

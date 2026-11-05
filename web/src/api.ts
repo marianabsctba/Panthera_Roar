@@ -16,6 +16,8 @@ export interface Eu {
   mfa_obrigatorio: boolean;
   mfa_codigos_restantes: number;
   trocar_senha: boolean;
+  ofuscar: string[];
+  dados_mascarados: boolean;
 }
 
 export const ContextoEu = createContext<Eu | null>(null);

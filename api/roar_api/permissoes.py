@@ -2,20 +2,22 @@
 
 VER = "ver"                          # Painéis, fila, eventos, regras, ativos, fontes, automação.
 VER_BRUTO = "ver_bruto"              # Log e alerta como chegaram: podem ter dado pessoal.
+VER_DADO_PESSOAL = "ver_dado_pessoal"  # Sem ela, usuário, IP, CPF e afins saem mascarados, se a organização pedir.
 GERIR_REGRAS = "gerir_regras"
 GERIR_FONTES = "gerir_fontes"
 INSTALAR_AGENTE = "instalar_agente"  # O comando traz a senha de inscrição do cliente.
 GERIR_PLAYBOOKS = "gerir_playbooks"
 APROVAR = "aprovar"
+TRIAR = "triar"                      # Encerrar um risco dizendo se era real, falso positivo ou esperado.
 GERIR_USUARIOS = "gerir_usuarios"
 GERIR_VULNERABILIDADES = "gerir_vulnerabilidades"  # Alvos, varreduras, pesos e aceite de risco.
 VER_AUDITORIA = "ver_auditoria"      # Quem fez o quê, e as tentativas recusadas.
 
 PERFIS = {
-    "administrador": {VER, VER_BRUTO, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS, APROVAR, GERIR_USUARIOS, VER_AUDITORIA, GERIR_VULNERABILIDADES},
+    "administrador": {VER, VER_BRUTO, VER_DADO_PESSOAL, TRIAR, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS, APROVAR, GERIR_USUARIOS, VER_AUDITORIA, GERIR_VULNERABILIDADES},
     "engenharia": {VER, VER_BRUTO, GERIR_REGRAS, GERIR_FONTES, INSTALAR_AGENTE, GERIR_PLAYBOOKS, GERIR_VULNERABILIDADES},
-    "analista_n2": {VER, VER_BRUTO, APROVAR},
-    "analista_n1": {VER, VER_BRUTO},
+    "analista_n2": {VER, VER_BRUTO, VER_DADO_PESSOAL, TRIAR, APROVAR},
+    "analista_n1": {VER, VER_BRUTO, TRIAR},
     "auditor": {VER, VER_AUDITORIA},
 }
 

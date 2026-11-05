@@ -45,7 +45,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import evidencia, mfa, modulos, permissoes, relatorios  # noqa: E402
+from roar_api import evidencia, mfa, modulos, ofuscacao, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -81,9 +81,15 @@ LIMITE_DE_SIMULACAO = 5000
 # Os mesmos pesos do UEBA; o teste confere que não divergem.
 REGRAS_DE_COMPORTAMENTO = [
     {"tipo": "sucesso_apos_falhas", "peso": 50.0},
+    {"tipo": "ioc_tocado", "peso": 50.0},
+    {"tipo": "grupo_administrativo", "peso": 40.0},
     {"tipo": "viagem_impossivel", "peso": 40.0},
     {"tipo": "primeiro_privilegio", "peso": 30.0},
+    {"tipo": "arquivo_sensivel", "peso": 25.0},
     {"tipo": "pico_de_falhas", "peso": 20.0},
+    {"tipo": "conta_criada", "peso": 20.0},
+    {"tipo": "pessoa_em_risco", "peso": 20.0},
+    {"tipo": "ativo_em_risco", "peso": 15.0},
     {"tipo": "primeiro_host", "peso": 15.0},
     {"tipo": "horario_incomum", "peso": 15.0},
     {"tipo": "primeiro_ip", "peso": 10.0},
@@ -134,12 +140,14 @@ async def ciclo_de_vida(app):
            f"{os.getenv('ROAR_BANCO_ENDERECO', '127.0.0.1:5433')}/roar")
     app.state.banco = ConnectionPool(url, min_size=1, max_size=10, open=True, kwargs={"row_factory": dict_row})
     app.state.indexer = _sessao_do_indexer(valores)
+    # O apelido de cada usuário não pode ser refeito por quem só vê a tela: vem de um segredo do servidor.
+    app.state.chave_de_apelido = hashlib.sha256(b"apelido:" + valores["ROAR_API_SENHA"].encode()).digest()
     yield
     app.state.banco.close()
 
 
 MODULOS = modulos.do_ambiente()
-app = FastAPI(title="Panthera Roar", lifespan=ciclo_de_vida, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Panthera Roar", description="SIEM open source. Powered by Mariana BS.", lifespan=ciclo_de_vida, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -153,6 +161,9 @@ async def cabecalhos(request: Request, chamada):
         resposta.headers.update(SEGURANCA)
         return resposta
     resposta = await chamada(request)
+    mascara = getattr(request.state, "mascara", None)
+    if mascara and resposta.status_code == 200:
+        resposta = await _mascarar_resposta(resposta, mascara)
     resposta.headers.update(SEGURANCA)
     chave = getattr(request.state, "chave_de_estilo", None)
     if chave:
@@ -163,6 +174,19 @@ async def cabecalhos(request: Request, chamada):
     # Dado de alerta nunca fica guardado; a tela sempre confere se há versão nova.
     resposta.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
     return resposta
+
+
+async def _mascarar_resposta(resposta, mascara):
+    tipo = resposta.headers.get("content-type", "")
+    if not tipo.startswith(("application/json", "text/csv", "application/xml")):
+        return resposta
+    corpo = b"".join([parte async for parte in resposta.body_iterator])
+    if tipo.startswith("application/json"):
+        corpo = json.dumps(mascara.dado(json.loads(corpo)), ensure_ascii=False, separators=(",", ":")).encode()
+    else:
+        corpo = mascara.texto(corpo.decode("utf-8")).encode()
+    cabecalhos = {k: v for k, v in resposta.headers.items() if k.lower() not in ("content-length", "x-resumo-sha256")}
+    return Response(corpo, status_code=resposta.status_code, headers=cabecalhos, media_type=tipo)
 
 
 def _hash_do_token(token):
@@ -191,15 +215,32 @@ def _sessao_liberada(sessao):
         raise HTTPException(status_code=403, detail="Sua organização exige o autenticador: configure-o para continuar.")
 
 
-def exige(permissao):
-    """Toda rota com dado declara o que pede. O teste de perfis confere cada uma contra a tabela esperada."""
-    def verificar(sessao=Depends(sessao_atual)):
+def exige(permissao, mascarar=False):
+    """Toda rota com dado declara o que pede. O teste de perfis confere cada uma contra a tabela esperada.
+
+    `mascarar` vai só nas rotas que mostram o que foi monitorado: em tela de configuração, um valor mascarado
+    poderia voltar salvo por cima do verdadeiro.
+    """
+    def verificar(request: Request, sessao=Depends(sessao_atual)):
         _sessao_liberada(sessao)
         if not permissoes.pode(sessao["perfil"], permissao):
             raise HTTPException(status_code=403, detail="Seu perfil não permite esta ação.")
+        if mascarar and _ve_mascarado(sessao):
+            request.state.mascara = ofuscacao.Mascara(sessao["ofuscar"], request.app.state.chave_de_apelido, sessao["cliente_id"])
         return sessao
     verificar.permissao = permissao
+    verificar.mascarar = mascarar
     return verificar
+
+
+def _ve_mascarado(sessao):
+    return bool(sessao["ofuscar"]) and not permissoes.pode(sessao["perfil"], permissoes.VER_DADO_PESSOAL)
+
+
+def _exige_o_original(sessao):
+    """Pacote de prova leva o log como chegou: mascarado, deixaria de bater com o selo."""
+    if _ve_mascarado(sessao):
+        raise HTTPException(status_code=403, detail="Seu perfil vê dados pessoais mascarados, e o pacote precisa do log original.")
 
 
 @contextmanager
@@ -304,7 +345,8 @@ def eu(request: Request, sessao=Depends(sessao_atual)):
             "cliente_id": str(sessao["cliente_id"]), "cliente_proprio": sessao["cliente_proprio_nome"], "em_outra_organizacao": sessao["cliente_id"] != sessao["cliente_proprio"],
             "trocar_senha": sessao["trocar_senha"], "permissoes": sorted(permissoes.PERFIS.get(sessao["perfil"], ())),
             "mfa_pendente": sessao["mfa_pendente"], "mfa_ativo": sessao["mfa_ativo"], "mfa_obrigatorio": sessao["mfa_obrigatorio"],
-            "mfa_codigos_restantes": restantes, "modulos": sorted(MODULOS)}
+            "mfa_codigos_restantes": restantes, "modulos": sorted(MODULOS),
+            "ofuscar": sessao["ofuscar"], "dados_mascarados": _ve_mascarado(sessao)}
 
 
 class CodigoDeMfa(BaseModel):
@@ -322,6 +364,16 @@ class DesligarMfa(BaseModel):
 
 class PoliticaDeMfa(BaseModel):
     obrigatorio: bool
+
+
+class CriticidadeDoAtivo(BaseModel):
+    gerenciador_id: str = Field(max_length=64)
+    agente_id: str = Field(max_length=16)
+    criticidade: str = Field(pattern="^(baixa|normal|alta|critica)$")
+
+
+class PoliticaDeOfuscacao(BaseModel):
+    categorias: list[str] = Field(max_length=len(ofuscacao.CATEGORIAS))
 
 
 def _chave_de_mfa():
@@ -568,6 +620,17 @@ def definir_politica_de_mfa(dados: PoliticaDeMfa, request: Request, sessao=Depen
                     (sessao["cliente_id"], sessao["usuario_id"], str(dados.obrigatorio)))
 
 
+@app.put("/api/organizacao/ofuscacao", status_code=204)
+def definir_ofuscacao(dados: PoliticaDeOfuscacao, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    if not set(dados.categorias) <= set(ofuscacao.CATEGORIAS):
+        raise HTTPException(status_code=422, detail="Categoria desconhecida.")
+    categorias = [c for c in ofuscacao.CATEGORIAS if c in dados.categorias]
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_ofuscacao(%s)", (categorias,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_ofuscacao', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], ",".join(categorias) or "nenhuma"))
+
+
 @app.post("/api/usuarios/{identificador}/nova-senha")
 def redefinir_senha(identificador: uuid.UUID, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     temporaria = secrets.token_urlsafe(18)
@@ -652,7 +715,7 @@ def pedir_remocao_de_organizacao(cliente: uuid.UUID, dados: RemocaoDeOrganizacao
 
 
 @app.get("/api/fila")
-def fila(request: Request, sessao=Depends(exige(permissoes.VER)), limite: int = 200):
+def fila(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), limite: int = 200):
     limite = max(1, min(limite, 500))
     with do_cliente(request, sessao) as con:
         riscos = con.execute(
@@ -679,7 +742,7 @@ def fila(request: Request, sessao=Depends(exige(permissoes.VER)), limite: int = 
 
 
 @app.get("/api/panorama")
-def panorama(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
+def panorama(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30):
     dias = max(1, min(dias, 90))
     fuso = sessao["fuso"]
     with do_cliente(request, sessao) as con:
@@ -740,7 +803,7 @@ def _sem_curinga(texto):
 
 
 @app.get("/api/eventos")
-def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", severidade: str = "",
+def eventos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), busca: str = "", severidade: str = "",
             dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
             sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = "", gerenciador: str = "", operadora: str = ""):
     """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
@@ -810,7 +873,7 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER)), busca: str 
 
 
 @app.get("/api/eventos/{identificador}/contexto")
-def contexto_do_evento(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+def contexto_do_evento(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
     """Só resultados de comparação: quem não pode ver o log bruto também pode saber que a origem é uma saída Tor."""
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
@@ -849,7 +912,7 @@ def contexto_do_evento(identificador: int, request: Request, sessao=Depends(exig
 
 
 @app.get("/api/eventos/{identificador}/bruto")
-def evento_bruto(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+def evento_bruto(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=True))):
     """O alerta como chegou. Pode ter dado pessoal, então cada acesso fica registrado."""
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
@@ -898,7 +961,7 @@ def _consulta_de_logs(busca, filtros):
 
 
 @app.get("/api/logs")
-def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO)), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
+def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=True)), busca: str = "", dias: int = 7, depois_de: str = "", filtros: str = ""):
     """Logs como chegaram, inclusive os que não viraram alerta. Cada busca fica registrada."""
     dias = max(1, min(dias, 90))
     busca = busca.strip()
@@ -977,6 +1040,7 @@ class PacoteDePericia(BaseModel):
 @app.post("/api/logs/evidencia")
 def pacote_de_pericia(dados: PacoteDePericia, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
     """Tudo o que a busca de Logs brutos acha no período, com a prova de cada log. Sai com dado pessoal: fica na auditoria com o resumo do arquivo."""
+    _exige_o_original(sessao)
     busca = dados.busca.strip()
     pedido, condicoes, exclusoes = _consulta_de_logs(busca, dados.filtros)
     if pedido.contar or pedido.contar_por:
@@ -1039,11 +1103,23 @@ def ativos(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
         linhas = con.execute(
             """SELECT a.gerenciador_id, a.agente_id, a.nome, a.ip, a.sistema, a.versao, a.estado, a.grupos, a.ultima_conexao, a.sca_politica,
-                      a.sca_nota, a.sca_aprovados, a.sca_reprovados,
+                      a.sca_nota, a.sca_aprovados, a.sca_reprovados, a.criticidade,
                       (SELECT count(*) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id
                         AND e.nivel >= %s AND e.ocorrido_em >= now() - interval '7 days') AS alertas_7_dias
                FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (NIVEL_MINIMO_NA_FILA,)).fetchall()
     return {"ativos": linhas}
+
+
+@app.put("/api/ativos/criticidade", status_code=204)
+def definir_criticidade(dados: CriticidadeDoAtivo, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    """Muda quanto pesa todo sinal de comportamento que acontece no ativo, a partir de agora."""
+    with do_cliente(request, sessao) as con:
+        ativo = con.execute("UPDATE ativos SET criticidade = %s WHERE gerenciador_id = %s AND agente_id = %s RETURNING nome",
+                            (dados.criticidade, dados.gerenciador_id, dados.agente_id)).fetchone()
+        if not ativo:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_criticidade', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{ativo['nome'] or dados.agente_id} {dados.criticidade}"))
 
 
 @app.get("/api/mitre/matriz")
@@ -1075,7 +1151,7 @@ def matriz_mitre(request: Request, sessao=Depends(exige(permissoes.VER)), dias: 
 
 
 @app.get("/api/mitre/tecnicas/{tecnica}")
-def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30):
+def tecnica_mitre(tecnica: str, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30):
     """As regras que deram match com a técnica, as que cobrem e ainda não dispararam, e as defesas."""
     if not re.fullmatch(r"T\d{4}(\.\d{3})?", tecnica):
         raise HTTPException(status_code=404)
@@ -1129,7 +1205,7 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
 
 
 @app.get("/api/arquivos")
-def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, busca: str = "", mudanca: str = ""):
+def arquivos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30, busca: str = "", mudanca: str = ""):
     """Mudanças em arquivos monitorados."""
     dias = max(1, min(dias, 90))
     condicao, parametros = "", [dias]
@@ -1152,13 +1228,18 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int 
 
 
 @app.get("/api/relatorios")
-def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 30, tipo: str = "completo", formato: str = "pdf"):
+def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30, tipo: str = "completo", formato: str = "pdf"):
     """Reúne nomes e endereços em um arquivo que sai do sistema: toda geração fica registrada, com o resumo do arquivo."""
     if tipo not in ("completo", "executivo") or formato not in ("pdf", "json"):
         raise HTTPException(status_code=422, detail="Tipo ou formato desconhecido.")
     dias = max(1, min(dias, 365))
     with do_cliente(request, sessao) as con:
         dados = relatorios.coletar(con, dias)
+    mascara = getattr(request.state, "mascara", None)
+    if mascara:
+        # O PDF não passa pela máscara da resposta: os dados são mascarados antes de virar página.
+        dados = mascara.dado(dados)
+        request.state.mascara = None
     if formato == "json":
         conteudo, tipo_midia, extensao = relatorios.dados_em_json(dados), "application/json", "json"
     else:
@@ -1194,6 +1275,7 @@ def integridade(request: Request, sessao=Depends(exige(permissoes.VER))):
 @app.post("/api/integridade/evidencia")
 def gerar_evidencia(dados: PedidoDeEvidencia, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
     """Sai do sistema com dado pessoal: quem gerou, quais eventos e o resumo do arquivo ficam na auditoria."""
+    _exige_o_original(sessao)
     ids = list(dict.fromkeys(dados.ids))
     if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", i) for i in ids):
         raise HTTPException(status_code=422, detail="Identificador de evento inválido.")
@@ -1897,7 +1979,7 @@ def visao_de_fim(request: Request, sessao=Depends(exige(permissoes.VER))):
 
 
 @app.get("/api/fim/ativos/{agente}/arquivos")
-def base_de_arquivos(agente: str, request: Request, sessao=Depends(exige(permissoes.VER)), busca: str = "", deslocamento: int = 0, gerenciador: str = ""):
+def base_de_arquivos(agente: str, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), busca: str = "", deslocamento: int = 0, gerenciador: str = ""):
     if not re.fullmatch(r"[0-9]{3,8}", agente):
         raise HTTPException(status_code=404)
     termo = f"%{_sem_curinga(busca.strip()[:200])}%"
@@ -2859,12 +2941,20 @@ def _inteiro_valido(identificador):
 MEIA_VIDA_DO_RISCO_HORAS = 24.0
 LIMITE_DO_RISCO_ALTO = 60.0
 LIMITE_DO_RISCO_CRITICO = 100.0
+# Os mesmos do motor do UEBA; o teste confere que não divergem.
+APRENDIZADO_DIAS = 14
+APRENDIZADO_SUCESSOS = 20
+HORARIO_MINIMO = 30
+HORARIO_PROBABILIDADE = 0.02
+LIMITE_DO_NORMAL = 15
 
 # A técnica do ATT&CK que cada sinal sugere. A do próprio evento, quando houver, vem antes.
 TECNICA_DO_SINAL = {
     "sucesso_apos_falhas": "T1110", "pico_de_falhas": "T1110",
     "viagem_impossivel": "T1078", "horario_incomum": "T1078", "primeiro_ip": "T1078",
     "primeiro_privilegio": "T1548", "primeiro_host": "T1021", "host_raro_no_cliente": "T1021",
+    "ioc_tocado": "T1071", "grupo_administrativo": "T1098", "conta_criada": "T1136", "arquivo_sensivel": "T1222",
+    "pessoa_em_risco": "T1078", "ativo_em_risco": "T1021",
 }
 
 
@@ -2880,43 +2970,214 @@ def _linha_do_tempo(sinais, tecnicas):
                 risco += float(anterior["peso"]) * 0.5 ** (idade.total_seconds() / 3600 / MEIA_VIDA_DO_RISCO_HORAS)
         s["risco_depois"] = round(risco, 1)
         do_evento = [t for t in (s.pop("mitre") or []) if t.split(".")[0] in tecnicas]
-        codigo = do_evento[0] if do_evento else TECNICA_DO_SINAL.get(s["tipo"])
+        codigo = do_evento[0] if do_evento else (s.get("detalhes") or {}).get("tecnica") or TECNICA_DO_SINAL.get(s["tipo"])
         tecnica = tecnicas.get(codigo) or tecnicas.get((codigo or "").split(".")[0])
         s["tecnica"] = {"codigo": codigo, **tecnica} if tecnica else None
     return ordenados
 
 
 @app.get("/api/riscos/{identificador}")
-def risco(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+def risco(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         alerta = con.execute(
             """SELECT a.id, a.entidade_id, a.severidade, a.risco_maximo, a.aberto_em, a.encerrado_em, a.estado,
+                      a.motivo, a.nota, a.decidido_por_nome,
                       e.tipo AS entidade_tipo, coalesce(e.nome, e.chave) AS entidade, e.risco AS risco_atual,
-                      e.primeira_vista, e.sucessos
+                      e.primeira_vista, e.sucessos, e.risco_desde,
+                      (SELECT t.criticidade FROM ativos t WHERE e.tipo = 'ativo'
+                        AND t.gerenciador_id || ':' || t.agente_id = e.chave) AS criticidade
                FROM alertas_risco a JOIN entidades e ON e.id = a.entidade_id WHERE a.id = %s""",
             (identificador,)).fetchone()
         if not alerta:
             raise HTTPException(status_code=404)
+        # Alerta aberto depois de uma decisão só conta o que veio depois dela, como o motor.
+        desde = alerta.pop("risco_desde")
+        desde = desde if desde and desde <= alerta["aberto_em"] else None
         sinais = con.execute(
             """SELECT s.tipo, s.peso, s.ocorrido_em, s.detalhes, v.id AS evento_id, v.regra_descricao,
                       v.agente_nome AS ativo, host(v.ip_origem) AS ip_origem, v.usuario, v.mitre, v.pais
                FROM sinais s JOIN eventos v ON v.id = s.evento_id
                WHERE s.entidade_id = %s AND s.ocorrido_em >= %s::timestamptz - interval '7 days'
+                 AND s.ocorrido_em > coalesce(%s, '-infinity'::timestamptz)
                ORDER BY s.ocorrido_em DESC LIMIT 200""",
-            (alerta["entidade_id"], alerta["aberto_em"])).fetchall()
-        do_evento = {t for s in sinais for t in (s["mitre"] or [])}
+            (alerta["entidade_id"], alerta["aberto_em"], desde)).fetchall()
+        pares = con.execute(
+            """SELECT coalesce(e.nome, e.chave) AS entidade, e.tipo AS entidade_tipo, round(p.semelhanca::numeric, 2) AS semelhanca
+               FROM pares p JOIN entidades e ON e.id = p.par_id WHERE p.entidade_id = %s ORDER BY p.semelhanca DESC""",
+            (alerta["entidade_id"],)).fetchall()
+        silencios = con.execute(
+            """SELECT id, tipo, motivo, criado_por_nome, criado_em, expira_em FROM silencios
+               WHERE entidade_id = %s AND (expira_em IS NULL OR expira_em > now()) ORDER BY criado_em DESC""",
+            (alerta["entidade_id"],)).fetchall()
+        do_evento = {t for s in sinais for t in (s["mitre"] or [])} | {s["detalhes"]["tecnica"] for s in sinais if (s["detalhes"] or {}).get("tecnica")}
         codigos = sorted(do_evento | {t.split(".")[0] for t in do_evento} | set(TECNICA_DO_SINAL.values()))
         tecnicas = {t["tecnica"]: {"nome": t["nome"], "tatica": t["tatica"]} for t in con.execute(
             """SELECT a.tecnica, a.nome, coalesce(t.nome, a.taticas[1]) AS tatica
                FROM tecnicas_attack a LEFT JOIN taticas_attack t ON t.tatica = a.taticas[1]
                WHERE a.tecnica = ANY(%s)""", (codigos,)).fetchall()}
-    return {"alerta": alerta, "sinais": _linha_do_tempo(sinais, tecnicas),
+    return {"alerta": alerta, "sinais": _linha_do_tempo(sinais, tecnicas), "pares": pares, "silencios": silencios,
             "limites": {"alto": LIMITE_DO_RISCO_ALTO, "critico": LIMITE_DO_RISCO_CRITICO, "meia_vida_horas": MEIA_VIDA_DO_RISCO_HORAS}}
 
 
+def _horas_do_normal(contagens):
+    """As 24 horas, marcando as que o motor acharia incomuns, pela mesma conta dele."""
+    total = sum(contagens.values())
+    conhecido = total >= HORARIO_MINIMO
+    horas = []
+    for hora in range(24):
+        vizinhas = sum(contagens.get((hora + d) % 24, 0) for d in (-1, 0, 1))
+        horas.append({"hora": hora, "contagem": contagens.get(hora, 0),
+                      "incomum": conhecido and (vizinhas + 1) / (total + 24) < HORARIO_PROBABILIDADE})
+    return horas, total, conhecido
+
+
+@app.get("/api/entidades/{identificador}/normal")
+def normal_da_entidade(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """O que o UEBA aprendeu como normal: é contra isso que cada sinal de "primeira vez" é medido."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        entidade = con.execute(
+            """SELECT id, tipo AS entidade_tipo, coalesce(nome, chave) AS entidade, chave, primeira_vista, ultima_vista, sucessos, risco
+               FROM entidades WHERE id = %s""", (identificador,)).fetchone()
+        if not entidade:
+            raise HTTPException(status_code=404)
+        chave = entidade.pop("chave")
+        nomes = {}
+
+        def nome_do_ativo(valor):
+            if valor not in nomes:
+                linha = con.execute("SELECT coalesce(nome, chave) AS nome FROM entidades WHERE tipo = 'ativo' AND chave = %s", (valor,)).fetchone()
+                nomes[valor] = linha["nome"] if linha else valor
+            return nomes[valor]
+
+        def vistos(dimensao):
+            linhas = con.execute(
+                """SELECT valor, contagem, primeira_vez, count(*) OVER () AS total FROM vistos
+                   WHERE entidade_id = %s AND dimensao = %s ORDER BY contagem DESC, valor LIMIT %s""",
+                (identificador, dimensao, LIMITE_DO_NORMAL)).fetchall()
+            return linhas, (linhas[0]["total"] if linhas else 0)
+
+        if entidade["entidade_tipo"] == "ativo":
+            # O ativo não tem rotina própria: o normal dele é quem costuma entrar.
+            pessoas = con.execute(
+                """SELECT coalesce(e.nome, e.chave) AS usuario, v.contagem, v.primeira_vez, count(*) OVER () AS total
+                   FROM vistos v JOIN entidades e ON e.id = v.entidade_id
+                   WHERE v.dimensao = 'host' AND v.valor = %s ORDER BY v.contagem DESC LIMIT %s""",
+                (chave, LIMITE_DO_NORMAL)).fetchall()
+            return {"entidade": entidade, "pessoas": [{k: v for k, v in p.items() if k != "total"} for p in pessoas],
+                    "total_de_pessoas": pessoas[0]["total"] if pessoas else 0}
+
+        contagens = {h["hora"]: h["contagem"] for h in con.execute(
+            "SELECT hora, contagem FROM horas WHERE entidade_id = %s", (identificador,)).fetchall()}
+        ativos, total_de_ativos = vistos("host")
+        ips, total_de_ips = vistos("ip")
+        privilegios, total_de_privilegios = vistos("privilegio")
+        cria_conta, _ = vistos("cria_conta")
+        ativos = [{"ativo": nome_do_ativo(v["valor"]), "contagem": v["contagem"], "primeira_vez": v["primeira_vez"]} for v in ativos]
+        ips = [{"ip": v["valor"], "contagem": v["contagem"], "primeira_vez": v["primeira_vez"]} for v in ips]
+        privilegios = [{"ativo": nome_do_ativo(":".join(v["valor"].split(":", 2)[:2])), "como": v["valor"].split(":", 2)[-1],
+                        "contagem": v["contagem"], "primeira_vez": v["primeira_vez"]} for v in privilegios]
+        cria_conta = [{"ativo": nome_do_ativo(v["valor"]), "contagem": v["contagem"]} for v in cria_conta]
+    horas, total_de_acessos, conhecido = _horas_do_normal(contagens)
+    ate = entidade["primeira_vista"] + timedelta(days=APRENDIZADO_DIAS)
+    faltam = max(0, APRENDIZADO_SUCESSOS - entidade["sucessos"])
+    return {"entidade": entidade, "horas": horas, "total_de_acessos": total_de_acessos, "horario_conhecido": conhecido,
+            "aprendizado": {"aprendendo": faltam > 0 or ate > datetime.now(timezone.utc), "ate": ate, "acessos_faltando": faltam},
+            "ativos": ativos, "total_de_ativos": total_de_ativos, "ips": ips, "total_de_ips": total_de_ips,
+            "privilegios": privilegios, "total_de_privilegios": total_de_privilegios, "cria_conta": cria_conta}
+
+
+class DecisaoDeRisco(BaseModel):
+    motivo: str = Field(pattern="^(resolvido|falso_positivo|esperado)$")
+    nota: str = Field(default="", max_length=500)
+
+
+# O sinal de "primeira vez" e o que ele ensina quando o analista diz que era esperado.
+APRENDE_COM_O_SINAL = {"primeiro_host": "host", "host_raro_no_cliente": "host", "primeiro_ip": "ip", "primeiro_privilegio": "privilegio",
+                       "conta_criada": "cria_conta"}
+
+
+@app.post("/api/riscos/{identificador}/decisao", status_code=204)
+def decidir_risco(identificador: int, dados: DecisaoDeRisco, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    """Encerra o risco e zera o que o abriu. "Falso positivo" e "esperado" também ensinam: aquilo vira normal para a pessoa."""
+    _inteiro_valido(identificador)
+    nota = dados.nota.strip()
+    with do_cliente(request, sessao) as con:
+        alerta = con.execute("SELECT id, entidade_id, aberto_em FROM alertas_risco WHERE id = %s AND estado = 'aberto' FOR UPDATE",
+                             (identificador,)).fetchone()
+        if not alerta:
+            raise HTTPException(status_code=409, detail="Este risco já foi encerrado.")
+        agora = datetime.now(timezone.utc)
+        anterior = con.execute("SELECT risco_desde FROM entidades WHERE id = %s", (alerta["entidade_id"],)).fetchone()["risco_desde"]
+        con.execute("""UPDATE alertas_risco SET estado = 'encerrado', encerrado_em = %s, motivo = %s, nota = %s,
+                         decidido_por = %s, decidido_por_nome = %s WHERE id = %s""",
+                    (agora, dados.motivo, nota or None, sessao["usuario_id"], sessao["nome"], identificador))
+        con.execute("UPDATE entidades SET risco = 0, risco_em = %s, risco_desde = %s WHERE id = %s", (agora, agora, alerta["entidade_id"]))
+        aprendidos = 0
+        if dados.motivo in ("falso_positivo", "esperado"):
+            for tipo, dimensao in APRENDE_COM_O_SINAL.items():
+                aprendidos += con.execute(
+                    """INSERT INTO vistos (cliente_id, entidade_id, dimensao, valor, primeira_vez)
+                       SELECT DISTINCT ON (valor) cliente_id, entidade_id, %s, valor, ocorrido_em FROM sinais
+                       WHERE entidade_id = %s AND tipo = %s AND ocorrido_em >= %s::timestamptz - interval '7 days'
+                         AND ocorrido_em > coalesce(%s, '-infinity'::timestamptz)
+                       ORDER BY valor, ocorrido_em
+                       ON CONFLICT DO NOTHING""",
+                    (dimensao, alerta["entidade_id"], tipo, alerta["aberto_em"], anterior)).rowcount
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'decidir_risco', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {dados.motivo}" + (f" ({aprendidos} aprendidos)" if aprendidos else "")))
+
+
+class NovoSilencio(BaseModel):
+    tipo: str = Field(max_length=64)
+    entidade_id: int | None = None
+    motivo: str = Field(min_length=1, max_length=500)
+    dias: int | None = Field(default=None, ge=1, le=365)
+
+
+@app.get("/api/silencios")
+def silencios(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(
+            """SELECT s.id, s.tipo, s.motivo, s.criado_por_nome, s.criado_em, s.expira_em, s.entidade_id,
+                      coalesce(e.nome, e.chave) AS entidade, e.tipo AS entidade_tipo
+               FROM silencios s LEFT JOIN entidades e ON e.id = s.entidade_id
+               WHERE s.expira_em IS NULL OR s.expira_em > now() ORDER BY s.criado_em DESC""").fetchall()
+    return {"silencios": linhas}
+
+
+@app.post("/api/silencios", status_code=201)
+def silenciar(dados: NovoSilencio, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    """Um tipo de sinal deixa de somar, para uma pessoa ou para todas. Vale daqui para frente: o que já somou fica."""
+    if dados.tipo not in {r["tipo"] for r in REGRAS_DE_COMPORTAMENTO}:
+        raise HTTPException(status_code=422, detail="Sinal desconhecido.")
+    expira = datetime.now(timezone.utc) + timedelta(days=dados.dias) if dados.dias else None
+    with do_cliente(request, sessao) as con:
+        if dados.entidade_id is not None and not con.execute("SELECT 1 FROM entidades WHERE id = %s", (dados.entidade_id,)).fetchone():
+            raise HTTPException(status_code=404)
+        novo = con.execute(
+            """INSERT INTO silencios (cliente_id, entidade_id, tipo, motivo, criado_por, criado_por_nome, expira_em)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (sessao["cliente_id"], dados.entidade_id, dados.tipo, dados.motivo.strip(), sessao["usuario_id"], sessao["nome"], expira)).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'silenciar_sinal', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.tipo} {'entidade ' + str(dados.entidade_id) if dados.entidade_id else 'todos'}"))
+    return {"id": novo}
+
+
+@app.delete("/api/silencios/{identificador}", status_code=204)
+def remover_silencio(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("DELETE FROM silencios WHERE id = %s RETURNING tipo", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'remover_silencio', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} {linha['tipo']}"))
+
+
 @app.get("/api/grupos/{identificador}")
-def grupo(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+def grupo(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
     _inteiro_valido(identificador)
     with do_cliente(request, sessao) as con:
         dados = con.execute(

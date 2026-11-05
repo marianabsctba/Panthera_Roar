@@ -1,9 +1,9 @@
-import { Button, Drawer, Group, SimpleGrid, Stack, Text, Title, Tooltip } from "@mantine/core";
+import { Button, Drawer, Group, SegmentedControl, SimpleGrid, Stack, Text, Title, Tooltip } from "@mantine/core";
 import { useMemo, useState, type ReactNode } from "react";
 
-import { useDados } from "../api";
+import { pedir, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDeEventos, Numero, Painel, Tabela, type FiltroDeEventos } from "../componentes";
-import { numero } from "../formato";
+import { CRITICIDADES, numero } from "../formato";
 
 interface Ativo {
   gerenciador_id: string;
@@ -20,6 +20,7 @@ interface Ativo {
   sca_aprovados: number | null;
   sca_reprovados: number | null;
   alertas_7_dias: number;
+  criticidade: string;
 }
 
 const SITUACOES: Record<string, { texto: string; tipo: string; plural: string }> = {
@@ -54,7 +55,35 @@ function Fato({ rotulo, children }: { rotulo: string; children: ReactNode }) {
   );
 }
 
-function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos }: { ativo: Ativo | null; aoFechar: () => void; aoVerEventos: (a: Ativo, soAlertas: boolean) => void }) {
+function Criticidade({ ativo, aoMudar }: { ativo: Ativo; aoMudar: (criticidade: string) => void }) {
+  const pode = usePode();
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const mudar = async (criticidade: string) => {
+    setSalvando(true);
+    setErro(null);
+    const resposta = await pedir("/api/ativos/criticidade", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gerenciador_id: ativo.gerenciador_id, agente_id: ativo.agente_id, criticidade }),
+    });
+    setSalvando(false);
+    if (resposta.ok) aoMudar(criticidade);
+    else setErro("Não foi possível mudar a criticidade.");
+  };
+  return (
+    <Stack gap={8}>
+      <Title order={2}>Criticidade</Title>
+      <Text size="xs" c="dimmed">Todo sinal de comportamento neste ativo pesa {CRITICIDADES[ativo.criticidade]?.fator ?? "o normal"} no risco, para a pessoa e para o ativo.</Text>
+      <SegmentedControl size="xs" value={ativo.criticidade} onChange={mudar} disabled={!pode("gerir_regras") || salvando}
+        data={Object.entries(CRITICIDADES).map(([valor, c]) => ({ value: valor, label: c.texto }))} />
+      {erro && <Text size="xs" c="red">{erro}</Text>}
+    </Stack>
+  );
+}
+
+function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos, aoMudarCriticidade }: {
+  ativo: Ativo | null; aoFechar: () => void; aoVerEventos: (a: Ativo, soAlertas: boolean) => void; aoMudarCriticidade: (a: Ativo, criticidade: string) => void;
+}) {
   return (
     <Drawer opened={ativo !== null} onClose={aoFechar} title={ativo ? nomeDoAtivo(ativo) : ""} size="md">
       {ativo && (
@@ -73,6 +102,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos }: { ativo: Ativo | null;
             <Fato rotulo="Grupos">{ativo.grupos?.length ? ativo.grupos.join(", ") : "-"}</Fato>
             <Fato rotulo="Última conexão"><Data valor={ativo.ultima_conexao} /></Fato>
           </Stack>
+          <Criticidade ativo={ativo} aoMudar={(c) => aoMudarCriticidade(ativo, c)} />
           {ativo.sca_nota !== null && (
             <Stack gap={8}>
               <Title order={2}>Configuração segura</Title>
@@ -90,7 +120,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos }: { ativo: Ativo | null;
 }
 
 export function Ativos() {
-  const { dados, erro } = useDados<{ ativos: Ativo[] }>("/api/ativos");
+  const { dados, erro, recarregar } = useDados<{ ativos: Ativo[] }>("/api/ativos");
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState<string | null>(null);
   const [aberto, setAberto] = useState<Ativo | null>(null);
@@ -111,6 +141,10 @@ export function Ativos() {
       : { rotulo: `Eventos de ${a.nome} em 30 dias`, consulta: { dias: "30", agente: a.agente_id, gerenciador: a.gerenciador_id } });
   };
   const contar = (estado: string) => ativos.filter((a) => a.estado === estado).length;
+  const mudarCriticidade = (a: Ativo, criticidade: string) => {
+    setAberto({ ...a, criticidade });
+    recarregar();
+  };
 
   return (
     <>
@@ -132,6 +166,8 @@ export function Ativos() {
               colunas={[
                 { titulo: "Ativo", celula: (a) => <Text size="sm" fw={500}>{nomeDoAtivo(a)}</Text> },
                 { titulo: "Situação", largura: 130, celula: (a) => <Situacao estado={a.estado} /> },
+                { titulo: "Criticidade", largura: 110, celula: (a) => (a.criticidade === "normal" ? <Text size="sm" c="dimmed">Normal</Text>
+                  : <Estado tipo={a.criticidade === "baixa" ? "outro" : "problema"}>{CRITICIDADES[a.criticidade]?.texto ?? a.criticidade}</Estado>) },
                 { titulo: "Sistema", celula: (a) => <Text size="sm" c="dimmed">{a.sistema ?? "-"}</Text> },
                 { titulo: "Endereço", celula: (a) => <span className="mono">{a.ip ?? "-"}</span> },
                 { titulo: "Configuração segura", largura: 160, celula: (a) => (a.sca_nota === null ? "-" : (
@@ -155,7 +191,7 @@ export function Ativos() {
           </Painel>
         </Stack>
       )}
-      <GavetaDoAtivo ativo={aberto} aoFechar={() => setAberto(null)} aoVerEventos={verEventos} />
+      <GavetaDoAtivo ativo={aberto} aoFechar={() => setAberto(null)} aoVerEventos={verEventos} aoMudarCriticidade={mudarCriticidade} />
       <GavetaDeEventos filtro={filtro} aoFechar={() => setFiltro(null)} />
     </>
   );

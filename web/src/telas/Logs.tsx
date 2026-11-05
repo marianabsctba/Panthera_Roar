@@ -364,6 +364,7 @@ function celulaDeCampo(plano: Plano, campo: string) {
 
 export function Logs() {
   const pode = usePode();
+  const eu = useEu();
   const [texto, setTexto] = useState("");
   // A consulta só vai quando a pessoa confirma: cada busca entra na auditoria, e meia consulta seria um erro de escrita.
   const [consulta, setConsulta] = useState("");
@@ -453,7 +454,7 @@ export function Logs() {
 
   return (
     <>
-      <Cabecalho titulo="Logs brutos" ajuda="Logs como chegaram, inclusive os que não viraram alerta. Clique numa linha para ver os campos. Cada busca fica registrada na auditoria." />
+      <Cabecalho titulo="Logs brutos" ajuda={`Logs como chegaram, inclusive os que não viraram alerta. Clique numa linha para ver os campos. Cada busca fica registrada na auditoria.${eu.dados_mascarados ? " Para o seu perfil, os dados pessoais aparecem mascarados." : ""}`} />
       <Stack gap="sm">
         <Group gap="xs" wrap="wrap" align="flex-start">
           <Box component="form" onSubmit={enviarConsulta} role="search" style={{ flex: "1 1 320px", maxWidth: 640 }}>
@@ -486,7 +487,7 @@ export function Logs() {
           <AjudaDaConsulta aoEscolher={setTexto} />
           <Select w={130} aria-label="Período" value={dias} onChange={(v) => setDias(v ?? "7")} allowDeselect={false} data={PERIODOS} />
           <Button onClick={() => setEscolhendo(true)} disabled={Boolean(colunasDaConsulta) || Boolean(contagem)} title={colunasDaConsulta ? "A consulta já escolhe as colunas" : undefined}>Colunas</Button>
-          <Button onClick={() => setPericia(true)} disabled={!resposta || Boolean(contagem) || !resposta.total} title={contagem ? "Tire a contagem da consulta" : undefined}>Pacote para perícia</Button>
+          {!eu.dados_mascarados && <Button onClick={() => setPericia(true)} disabled={!resposta || Boolean(contagem) || !resposta.total} title={contagem ? "Tire a contagem da consulta" : undefined}>Pacote para perícia</Button>}
         </Group>
 
         {filtros.length > 0 && (
