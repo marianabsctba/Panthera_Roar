@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 
 import { detalhe, enviar, pedir, useDados, useEu, usePode } from "../api";
 import { Busca, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Painel, Severidade, Tabela, Vazio, type FiltroDeEventos } from "../componentes";
-import { CRITICIDADES, duracao, nomeDaTatica, numero, quando, SINAIS } from "../formato";
+import { CRITICIDADES, duracao, nomeDaTatica, nomeDaTaticaPorId, numero, quando, SINAIS } from "../formato";
 import { SEVERIDADES } from "../tema";
 import { Fato, GavetaDoEvento, type EventoResumo } from "./Eventos";
 
@@ -17,7 +17,8 @@ interface ItemDeRisco { id: number; severidade: string; risco_maximo: number; qu
 interface ItemDeGrupo { id: number; severidade: string; nivel: number; total: number; regras: string[] | null; quando: string; primeira_em: string; ip_origem: string | null; agente_id: string; ativo: string | null; descricao: string | null }
 interface DadosDaFila { riscos: ItemDeRisco[]; grupos: ItemDeGrupo[] }
 
-type Detalhes = Record<string, string | number | null | undefined>;
+type Detalhes = Record<string, string | number | string[] | null | undefined>;
+const listaDeTaticas = (d: Detalhes) => (Array.isArray(d.taticas) ? d.taticas.map(nomeDaTaticaPorId).join(", ") : "");
 interface Sinal { tipo: string; peso: number; ocorrido_em: string; detalhes: Detalhes | null; evento_id: number; regra_descricao: string | null; ativo: string | null; ip_origem: string | null; usuario: string | null; pais: string | null;
   risco_depois: number; tecnica: { codigo: string; nome: string; tatica: string } | null }
 interface Silencio { id: number; tipo: string; motivo: string; criado_por_nome: string | null; criado_em: string; expira_em: string | null }
@@ -71,6 +72,8 @@ const TEXTOS_DOS_SINAIS: Record<string, (d: Detalhes) => string> = {
   conta_criada: (d) => `Conta ${d.conta ?? "nova"} criada em ${d.host ?? "um ativo"}.`,
   pessoa_em_risco: (d) => `${d.usuario ?? "Uma pessoa"} entrou com risco ${d.risco ?? "alto"}.`,
   ativo_em_risco: (d) => `Entrou em ${d.host ?? "um ativo"}, que estava com risco ${d.risco ?? "alto"}.`,
+  regra_disparada: (d) => `Regra ${d.regra ?? "?"}, nível ${d.nivel ?? "?"}: ${d.descricao || "sem descrição"}${d.host ? `, em ${d.host}` : ""}.`,
+  taticas_em_sequencia: (d) => `${Array.isArray(d.taticas) ? d.taticas.length : "Várias"} táticas em 24 h: ${listaDeTaticas(d)}. Parece um ataque andando.`,
 };
 
 const tituloDoSinal = (tipo: string) => SINAIS[tipo] ?? tipo;
@@ -470,7 +473,7 @@ function LinhaDoTempo({ sinais, limites, fuso, aoAbrirEvento }: { sinais: Sinal[
                   <Text size="xs" className="numero" fw={500}>+{numero(Math.round(Number(s.peso)))}</Text>
                 </Group>
                 <Text size="xs">{TEXTOS_DOS_SINAIS[s.tipo]?.(s.detalhes ?? {}) ?? s.regra_descricao ?? ""}</Text>
-                {s.detalhes?.criticidade && <Text size="xs" c="dimmed">Ativo de criticidade {CRITICIDADES[s.detalhes.criticidade]?.texto.toLowerCase() ?? s.detalhes.criticidade}: pesa {CRITICIDADES[s.detalhes.criticidade]?.fator ?? "diferente"}.</Text>}
+                {typeof s.detalhes?.criticidade === "string" && <Text size="xs" c="dimmed">Ativo de criticidade {CRITICIDADES[s.detalhes.criticidade]?.texto.toLowerCase() ?? s.detalhes.criticidade}: pesa {CRITICIDADES[s.detalhes.criticidade]?.fator ?? "diferente"}.</Text>}
                 {Number(s.detalhes?.pares) > 0 && <Text size="xs" c="dimmed">{s.detalhes?.pares === 1 ? "Um par já faz isto" : `${s.detalhes?.pares} pares já fazem isto`}: soma menos.</Text>}
                 {s.tecnica && (
                   <Tooltip label={`${s.tecnica.codigo}, ${s.tecnica.nome}`}>

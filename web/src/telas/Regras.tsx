@@ -433,6 +433,8 @@ const DESCRICAO_COMPORTAMENTO: Record<string, string> = {
   conta_criada: "Conta criada por quem não costuma criar contas naquele ativo. Sem saber quem criou, soma para o ativo.",
   pessoa_em_risco: "Pessoa com risco acima do limite de alerta entrou no ativo. Soma para o ativo.",
   ativo_em_risco: "Entrada num ativo com risco acima do limite de alerta. Soma para a pessoa. Risco repassado não se repassa de novo.",
+  regra_disparada: "Toda regra de nível 7 ou mais soma no ativo e na pessoa do evento: média 5, alta 15, crítica 30, uma vez por dia por regra. Checagem de configuração, integridade de arquivo e login ficam de fora, porque já têm sinal próprio.",
+  taticas_em_sequencia: "Regras de 3 táticas diferentes do ATT&CK na mesma entidade em 24 horas.",
 };
 
 interface SilencioDoUeba { id: number; tipo: string; motivo: string; criado_por_nome: string | null; criado_em: string; expira_em: string | null; entidade: string | null }

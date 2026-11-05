@@ -123,6 +123,8 @@ Primeira versão concluída, só com os logs do Wazuh. `testes/fase2/testar_ueba
 | `ioc_tocado` | 50 | IP de origem ou destino do evento está na inteligência do cliente. Soma para o ativo e para a pessoa |
 | `grupo_administrativo` | 40 | Entrada em grupo que manda na máquina ou no domínio (Windows 4728, 4732, 4756; usermod e gpasswd) |
 | `arquivo_sensivel` | 25 | FIM viu mudança em arquivo de contas, privilégio ou inicialização. Com whodata, soma também para quem mexeu |
+| `regra_disparada` | 5, 15 ou 30 | Regra de nível 7 ou mais no ativo e na pessoa do evento, pela severidade (média, alta, crítica), uma vez por dia por regra. Fora: SCA, FIM e login, que já têm sinal próprio |
+| `taticas_em_sequencia` | 30 | Regras de 3 táticas diferentes do ATT&CK na mesma entidade em 24 horas |
 | `pessoa_em_risco` | 20 | Pessoa com risco acima de 60 entrou no ativo. Soma para o ativo |
 | `ativo_em_risco` | 15 | A pessoa entrou num ativo com risco acima de 60. Risco repassado não se repassa de novo |
 | `conta_criada` | 20 | Conta criada (Windows 4720, useradd) por quem não costuma criar contas ali; sem autor, soma para o ativo |

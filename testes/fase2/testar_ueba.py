@@ -66,17 +66,17 @@ class Cliente:
         self.seq = 0
         self.linhas = []
 
-    def ev(self, quando, usuario, grupos=SUCESSO, host="h1", ip="10.0.0.1", bruto=None, nivel=3):
+    def ev(self, quando, usuario, grupos=SUCESSO, host="h1", ip="10.0.0.1", bruto=None, nivel=3, regra="5715", mitre=()):
         self.seq += 1
-        self.linhas.append((self.id, self.ger, "wazuh", f"e{self.seq}", quando, nivel, "baixa", "5715", grupos, host,
-                            f"nome-{host}", ip, usuario, Jsonb(bruto or {})))
+        self.linhas.append((self.id, self.ger, "wazuh", f"e{self.seq}", quando, nivel, "baixa", regra, grupos, host,
+                            f"nome-{host}", ip, usuario, Jsonb(bruto or {}), list(mitre)))
 
     def gravar(self):
         with ADMIN.cursor() as c:
             c.executemany(
                 "INSERT INTO eventos (cliente_id, gerenciador_id, origem, origem_id, ocorrido_em, nivel, severidade,"
-                " regra_id, regra_grupos, agente_id, agente_nome, ip_origem, usuario, bruto)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", self.linhas)
+                " regra_id, regra_grupos, agente_id, agente_nome, ip_origem, usuario, bruto, mitre)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", self.linhas)
         self.linhas = []
 
     def processar(self):
@@ -666,6 +666,40 @@ def testar_criticidade_e_repasse():
     registrar("entrar num ativo em risco soma para a pessoa", c.sinais("bia", "ativo_em_risco") == ["ativo_em_risco"], str(c.sinais("bia")))
 
 
+def testar_risco_das_regras():
+    print("\n== Risco somado a partir das regras", flush=True)
+    t = base()
+    fim = t + timedelta(days=21)
+    c = Cliente()
+    c.rotina("ana", t)
+    c.processar()
+    web = ["web", "attack"]
+    c.ev(local(fim, 9), "ana", web, nivel=10, regra="31106", mitre=["T1190"])
+    c.ev(local(fim, 9, 30), "ana", web, nivel=10, regra="31106", mitre=["T1190"])
+    c.ev(local(fim, 9), None, ["sca"], host="h2", nivel=7, regra="19007")
+    c.ev(local(fim, 9), "ana", ["sshd", "authentication_failed"], host="h3", nivel=10, regra="5712", mitre=["T1110"])
+    c.ev(local(fim, 9), "ana", ["syslog"], host="h4", nivel=5, regra="2502")
+    c.processar()
+    peso = dict(ADMIN.execute("""SELECT e.chave, s.peso FROM sinais s JOIN entidades e ON e.id = s.entidade_id
+                                 WHERE s.cliente_id = %s AND s.tipo = 'regra_disparada'""", (c.id,)).fetchall())
+    registrar("regra média soma para a pessoa e para o ativo, uma vez por dia",
+              peso == {"ana": 5.0, f"{c.ger}:h1": 5.0} and c.sinais("ana", "regra_disparada") == ["regra_disparada"], str(peso))
+    registrar("checagem de configuração, falha de login e nível baixo não somam",
+              um("SELECT count(*) FROM sinais WHERE cliente_id = %s AND tipo = 'regra_disparada' AND valor IN ('19007', '5712', '2502')", c.id) == 0)
+    registrar("o sinal guarda a tática da técnica", um("SELECT detalhes->'taticas'->>0 FROM sinais WHERE cliente_id = %s"
+                                                       " AND tipo = 'regra_disparada' LIMIT 1", c.id) == "initial-access")
+    registrar("ainda sem sequência de táticas", c.sinais("ana", "taticas_em_sequencia") == [])
+
+    c.ev(local(fim, 10), "ana", ["windows"], nivel=12, regra="92052", mitre=["T1059.001"])
+    c.ev(local(fim, 11), "ana", ["windows"], nivel=15, regra="92900", mitre=["T1003"])
+    c.processar()
+    pesos = sorted(r[0] for r in ADMIN.execute("""SELECT s.peso FROM sinais s JOIN entidades e ON e.id = s.entidade_id
+                                                  WHERE s.cliente_id = %s AND e.chave = 'ana' AND s.tipo = 'regra_disparada'""", (c.id,)).fetchall())
+    registrar("alta soma 15 e crítica soma 30", pesos == [5.0, 15.0, 30.0], str(pesos))
+    registrar("três táticas em 24 horas viram sequência, uma vez", c.sinais("ana", "taticas_em_sequencia") == ["taticas_em_sequencia"]
+              and c.sinais(f"{c.ger}:h1", "taticas_em_sequencia") == ["taticas_em_sequencia"])
+
+
 def limpar():
     ids = [c.id for c in CRIADOS]
     for c in CRIADOS:
@@ -691,6 +725,7 @@ def main():
         testar_triagem_e_pares()
         testar_conta_grupo_arquivo_e_ioc()
         testar_criticidade_e_repasse()
+        testar_risco_das_regras()
         if "--sem-real" not in sys.argv:
             testar_real()
     finally:

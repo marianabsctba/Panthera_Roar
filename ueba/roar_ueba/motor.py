@@ -28,6 +28,8 @@ GRUPOS_SUCESSO = {"authentication_success"}
 GRUPOS_FALHA = {"authentication_failed", "authentication_failures", "invalid_login"}
 GRUPOS_PRIVILEGIO = {"sudo"}
 GRUPOS_ARQUIVO = {"syscheck"}
+# Já viram sinal de comportamento próprio, ou disparam o tempo todo sem dizer nada de uma pessoa.
+GRUPOS_FORA_DO_RISCO_DAS_REGRAS = {"sca", "syscheck"} | GRUPOS_SUCESSO | GRUPOS_FALHA | GRUPOS_PRIVILEGIO
 GRUPOS_CONTA_CRIADA = {"adduser"}
 # Windows: conta criada; membro posto em grupo global, local e universal.
 EVENTOS_CONTA_CRIADA = {"4720"}
@@ -87,6 +89,10 @@ class Parametros:
     pares_semelhanca_minima: float = 0.2
     # Ativo que mais da metade usa (o servidor de e-mail, por exemplo) não diz quem trabalha com quem.
     pares_ativo_popular: float = 0.5
+    regra_nivel_minimo: int = 7
+    # Táticas diferentes na mesma entidade em pouco tempo parecem um ataque andando.
+    taticas_minimas: int = 3
+    taticas_janela_horas: int = 24
     # Primeira vez para a pessoa, mas os pares já fazem: pesa menos.
     fracao_com_pares: float = 1 / 3
 
@@ -106,7 +112,12 @@ PESOS = {
     "conta_criada": 20.0,
     "pessoa_em_risco": 20.0,
     "ativo_em_risco": 15.0,
+    # O de alta; o peso de cada regra vem da severidade dela, em PESO_DA_REGRA.
+    "regra_disparada": 15.0,
+    "taticas_em_sequencia": 30.0,
 }
+# Muita regra fraca junta vira risco: média soma pouco, crítica soma muito.
+PESO_DA_REGRA = ((15, 30.0), (12, 15.0), (7, 5.0))
 # Multiplica o peso de todo sinal que acontece no ativo.
 FATOR_DA_CRITICIDADE = {"baixa": 0.5, "normal": 1.0, "alta": 1.5, "critica": 2.0}
 # Sinais que só repassam o risco de outra entidade. O risco repassado não se repassa de novo,
@@ -194,6 +205,7 @@ class Motor:
         # A criticidade do ativo do evento em processamento, que pesa em todo sinal dele.
         self._criticidade = "normal"
         self._criticidades = {}
+        self._taticas = None
 
     def fechar(self):
         self.con.close()
@@ -574,6 +586,38 @@ class Motor:
         alvos = self._ativo_e_pessoa(cliente, ev, usuario, criar=False)
         self._sinal_em_todos(cliente, alvos, "ioc_tocado", indicador[0], momento, evento_id, detalhes)
 
+    def _taticas_de(self, tecnicas):
+        if self._taticas is None:
+            self._taticas = {t: list(ts) for t, ts in self.con.execute("SELECT tecnica, taticas FROM tecnicas_attack").fetchall()}
+        return sorted({tatica for t in tecnicas for tatica in self._taticas.get(t, self._taticas.get(t.split(".")[0], []))})
+
+    def _regra(self, cliente, ev):
+        """Toda regra que dispara soma um pouco no ativo e na pessoa: o risco junta o que cada uma sozinha não diria."""
+        evento_id, momento, nivel, regra_id, descricao, mitre = ev[0], ev[1], ev[9], ev[10], ev[11], ev[12] or []
+        peso = next((p for minimo, p in PESO_DA_REGRA if nivel >= minimo), None)
+        if nivel < self.p.regra_nivel_minimo or peso is None:
+            return
+        taticas = self._taticas_de(mitre)
+        detalhes = {"regra": regra_id, "descricao": (descricao or "")[:200], "nivel": nivel, "host": ev[4]}
+        if mitre:
+            detalhes["tecnicas"] = list(mitre)[:10]
+        if taticas:
+            detalhes["taticas"] = taticas
+        for entidade in self._ativo_e_pessoa(cliente, ev, ev[6], criar=False):
+            if not self._sinal(cliente, entidade, "regra_disparada", regra_id, momento, evento_id, detalhes, peso=peso):
+                continue
+            vistas = [t for (t,) in self.con.execute(
+                """SELECT DISTINCT jsonb_array_elements_text(detalhes->'taticas') FROM sinais
+                   WHERE cliente_id = %s AND entidade_id = %s AND tipo = 'regra_disparada'
+                     AND ocorrido_em > %s::timestamptz - make_interval(hours => %s) AND ocorrido_em <= %s
+                     AND ocorrido_em > coalesce((SELECT risco_desde FROM entidades WHERE id = %s), '-infinity')""",
+                (cliente, entidade, momento, self.p.taticas_janela_horas, momento, entidade)).fetchall()]
+            if len(vistas) >= self.p.taticas_minimas:
+                # Uma vez por dia: a soma das regras já cresce com cada tática nova.
+                self._sinal(cliente, entidade, "taticas_em_sequencia", "taticas", momento, evento_id,
+                            {"taticas": sorted(vistas), "host": ev[4]})
+            self._atualizar_risco(cliente, entidade, momento)
+
     def processar_cliente(self, cliente, fuso):
         """Processa um lote. Sinais, baseline e cursor avançam juntos, ou nada avança."""
         with self.con.transaction():
@@ -582,7 +626,8 @@ class Motor:
             cursor = self.con.execute("SELECT ultimo_evento_id FROM ueba_cursor WHERE cliente_id = %s",
                                       (cliente,)).fetchone()[0]
             eventos = self.con.execute(
-                """SELECT id, ocorrido_em, gerenciador_id, agente_id, agente_nome, ip_origem, usuario, bruto, regra_grupos
+                """SELECT id, ocorrido_em, gerenciador_id, agente_id, agente_nome, ip_origem, usuario, bruto, regra_grupos,
+                          nivel, regra_id, regra_descricao, mitre
                    FROM eventos WHERE cliente_id = %s AND id > %s
                      AND recebido_em <= now() - make_interval(secs => %s)
                    ORDER BY id LIMIT %s""",
@@ -606,6 +651,8 @@ class Motor:
                 if admin:
                     self._grupo_administrativo(cliente, ev, admin)
                 self._ioc(cliente, ev)
+                if not grupos & GRUPOS_FORA_DO_RISCO_DAS_REGRAS:
+                    self._regra(cliente, ev)
             self._criticidade = "normal"
             if eventos:
                 self.con.execute("UPDATE ueba_cursor SET ultimo_evento_id = %s WHERE cliente_id = %s",

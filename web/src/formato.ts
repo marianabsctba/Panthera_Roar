@@ -39,6 +39,8 @@ const TATICAS: Record<string, string> = {
 };
 
 export const nomeDaTatica = (nome: string) => TATICAS[nome] ?? nome;
+// O motor guarda o identificador do ATT&CK, como "command-and-control".
+export const nomeDaTaticaPorId = (id: string) => nomeDaTatica(id.split("-").map((p) => (p === "and" ? p : p[0].toUpperCase() + p.slice(1))).join(" "));
 
 export function diaCurto(valor: string) {
   const [, mes, dia] = valor.slice(0, 10).split("-");
@@ -79,6 +81,7 @@ export const SINAIS: Record<string, string> = {
   host_raro_no_cliente: "Ativo incomum na organização", ioc_tocado: "Contato com indicador de ameaça",
   grupo_administrativo: "Entrada em grupo administrativo", arquivo_sensivel: "Arquivo sensível alterado", conta_criada: "Conta criada",
   pessoa_em_risco: "Pessoa em risco entrou", ativo_em_risco: "Entrada em ativo em risco",
+  regra_disparada: "Regra disparada", taticas_em_sequencia: "Várias táticas do ATT&CK",
 };
 
 export const CRITICIDADES: Record<string, { texto: string; fator: string }> = {

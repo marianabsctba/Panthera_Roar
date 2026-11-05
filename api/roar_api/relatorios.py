@@ -26,7 +26,8 @@ TITULOS_DE_SINAL = {"sucesso_apos_falhas": "Acesso depois de várias falhas", "v
                     "primeiro_host": "Ativo nunca usado", "horario_incomum": "Horário fora do padrão", "primeiro_ip": "Endereço nunca usado", "host_raro_no_cliente": "Ativo incomum na organização",
                     "ioc_tocado": "Contato com indicador de ameaça", "grupo_administrativo": "Entrada em grupo administrativo",
                     "arquivo_sensivel": "Arquivo sensível alterado", "conta_criada": "Conta criada",
-                    "pessoa_em_risco": "Pessoa em risco entrou", "ativo_em_risco": "Entrada em ativo em risco"}
+                    "pessoa_em_risco": "Pessoa em risco entrou", "ativo_em_risco": "Entrada em ativo em risco",
+                    "regra_disparada": "Regra disparada", "taticas_em_sequencia": "Várias táticas do ATT&CK"}
 LIMITE_DE_LINHAS = 25
 
 
