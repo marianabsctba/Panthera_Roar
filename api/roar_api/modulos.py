@@ -9,7 +9,7 @@ SIEM = "siem"
 VULNERABILIDADES = "vulnerabilidades"
 PERFIS = {"completo": {SIEM, VULNERABILIDADES}, "siem": {SIEM}, "vulnerabilidades": {VULNERABILIDADES}}
 ROTAS_DE_TODOS = ("/api/entrar", "/api/sair", "/api/eu", "/api/saude", "/api/minha-senha", "/api/mfa/", "/api/usuarios", "/api/organizacoes", "/api/organizacao/", "/api/auditoria", "/api/notificacoes",
-                  "/api/chaves", "/api/openapi.json")
+                  "/api/chaves", "/api/openapi.json", "/api/passkeys", "/api/sso/")
 ROTAS_DE_VULNERABILIDADES = ("/api/vuln/", "/api/cves")
 
 

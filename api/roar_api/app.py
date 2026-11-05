@@ -22,6 +22,7 @@ from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 from xml.etree.ElementTree import Element as ElementoXml
 from xml.etree.ElementTree import SubElement as SubElementoXml
 from xml.etree.ElementTree import tostring as xml_em_texto
@@ -38,6 +39,7 @@ from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -47,7 +49,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
+from roar_api import entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -145,6 +147,7 @@ async def ciclo_de_vida(app):
     app.state.banco = ConnectionPool(url, min_size=1, max_size=10, open=True, kwargs={"row_factory": dict_row})
     app.state.indexer = _sessao_do_indexer(valores)
     # O apelido de cada usuário não pode ser refeito por quem só vê a tela: vem de um segredo do servidor.
+    app.state.cofre_do_sso = outras_entradas.Cofre(valores["ROAR_API_SENHA"])
     app.state.chave_de_apelido = hashlib.sha256(b"apelido:" + valores["ROAR_API_SENHA"].encode()).digest()
     yield
     app.state.banco.close()
@@ -333,6 +336,10 @@ def entrar(dados: Entrada, request: Request):
                             background=BackgroundTask(_registrar_recusa_de_login, request.app.state.banco, email, _origem(request)))
 
     falhas_de_login.pop(email, None)
+    with request.app.state.banco.connection() as con:
+        quem = con.execute("SELECT * FROM roar_entrada_por_email(%s)", (email,)).fetchone()
+    if quem and quem["sso_exigido"] and quem["perfil"] != "administrador":
+        raise HTTPException(status_code=403, detail="Sua organização entra pelo login único (SSO).")
     token = secrets.token_urlsafe(32)
     with request.app.state.banco.connection() as con:
         precisa_de_codigo = con.execute("SELECT roar_mfa_ativo(%s) AS a", (usuario["id"],)).fetchone()["a"]
@@ -346,6 +353,247 @@ def entrar(dados: Entrada, request: Request):
     saida.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/", secure=os.getenv("ROAR_COOKIE_SEGURO", "1") == "1",
                      max_age=MINUTOS_PARA_O_CODIGO * 60 if precisa_de_codigo else HORAS_DE_SESSAO * 3600)
     return saida
+
+
+def _abrir_sessao(request, usuario_id, acao, resposta):
+    """Sessão completa: passkey e login único já valem como os dois fatores."""
+    token = secrets.token_urlsafe(32)
+    with request.app.state.banco.connection() as con:
+        con.execute("SELECT roar_criar_sessao(%s, %s, %s)", (_hash_do_token(token), usuario_id, HORAS_DE_SESSAO))
+        con.execute("SELECT roar_registrar_acesso(%s, %s, %s)", (usuario_id, acao, _origem(request)))
+    resposta.set_cookie(COOKIE, token, httponly=True, samesite="lax" if acao == "logon_sso" else "strict", path="/",
+                        secure=os.getenv("ROAR_COOKIE_SEGURO", "1") == "1", max_age=HORAS_DE_SESSAO * 3600)
+    return resposta
+
+
+def _endereco_publico(request):
+    endereco = ENDERECO_PUBLICO if ENDERECO_PUBLICO != "ENDERECO_DESTE_SERVIDOR" else request.url.netloc
+    return outras_entradas.parte_confiavel(endereco, request.headers.get("origin", ""))
+
+
+def _retorno_do_sso(request):
+    """Para onde o provedor manda a pessoa de volta: o endereço em que ela abriu a tela."""
+    esquema = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"{esquema}://{request.headers.get('host', request.url.netloc)}/api/sso/retorno"
+
+
+class SenhaParaPasskey(BaseModel):
+    senha: str = Field(max_length=256)
+
+
+class FimDoCadastro(BaseModel):
+    pedido: str = Field(max_length=100)
+    credencial: dict
+    nome: str = Field(min_length=1, max_length=80)
+
+
+class FimDaEntrada(BaseModel):
+    pedido: str = Field(max_length=100)
+    credencial: dict
+
+
+@app.get("/api/passkeys")
+def minhas_passkeys(request: Request, sessao=Depends(sessao_atual)):
+    _sessao_liberada(sessao)
+    with request.app.state.banco.connection() as con:
+        linhas = con.execute("SELECT id, nome, transportes, criada_em, ultima_vez FROM roar_passkeys_do_usuario(%s)", (sessao["usuario_id"],)).fetchall()
+    return {"passkeys": linhas}
+
+
+@app.post("/api/passkeys/cadastro/inicio")
+def iniciar_cadastro_de_passkey(dados: SenhaParaPasskey, request: Request, sessao=Depends(sessao_atual)):
+    """Passkey nova é uma forma nova de entrar: pede a senha, como o autenticador."""
+    _sessao_liberada(sessao)
+    if not _senha_confere(request, sessao["usuario_id"], dados.senha):
+        raise HTTPException(status_code=403, detail="Senha incorreta.")
+    rp_id, _ = _endereco_publico(request)
+    with do_cliente(request, sessao) as con:
+        email = con.execute("SELECT email FROM roar_listar_usuarios() WHERE id = %s", (sessao["usuario_id"],)).fetchone()
+    with request.app.state.banco.connection() as con:
+        ja = [l["credencial"] for l in con.execute("SELECT credencial FROM roar_passkeys_do_usuario(%s)", (sessao["usuario_id"],)).fetchall()]
+        opcoes, desafio = outras_entradas.opcoes_de_cadastro(rp_id, sessao["usuario_id"], email["email"] if email else sessao["nome"], sessao["nome"], ja)
+        pedido, resumo = outras_entradas.novo_pedido()
+        con.execute("SELECT roar_guardar_pedido(%s, 'passkey_cadastro', %s, %s)",
+                    (resumo, Jsonb({"usuario": str(sessao["usuario_id"]), "desafio": outras_entradas.para_texto(desafio)}), outras_entradas.MINUTOS_DO_PEDIDO))
+    return {"pedido": pedido, "opcoes": opcoes}
+
+
+@app.post("/api/passkeys/cadastro/fim", status_code=201)
+def concluir_cadastro_de_passkey(dados: FimDoCadastro, request: Request, sessao=Depends(sessao_atual)):
+    _sessao_liberada(sessao)
+    rp_id, origens = _endereco_publico(request)
+    with request.app.state.banco.connection() as con:
+        pedido = con.execute("SELECT roar_tomar_pedido(%s, 'passkey_cadastro') AS d", (outras_entradas.resumo_do_pedido(dados.pedido),)).fetchone()["d"]
+        if not pedido or pedido["usuario"] != str(sessao["usuario_id"]):
+            raise HTTPException(status_code=409, detail="O pedido venceu. Comece de novo.")
+        try:
+            credencial, chave, contador, transportes = outras_entradas.conferir_cadastro(dados.credencial, outras_entradas.de_texto(pedido["desafio"]), rp_id, origens)
+        except outras_entradas.EntradaRecusada as erro:
+            raise HTTPException(status_code=422, detail=str(erro))
+        try:
+            identificador = con.execute("SELECT roar_criar_passkey(%s, %s, %s, %s, %s, %s) AS id",
+                                        (sessao["usuario_id"], credencial, chave, contador, dados.nome.strip()[:80], transportes)).fetchone()["id"]
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(status_code=409, detail="Esta passkey já está cadastrada.")
+        con.execute("SELECT roar_registrar_acesso(%s, 'criar_passkey', %s)", (sessao["usuario_id"], _origem(request)))
+    return {"id": identificador}
+
+
+@app.delete("/api/passkeys/{identificador}", status_code=204)
+def apagar_passkey(identificador: int, request: Request, sessao=Depends(sessao_atual)):
+    _sessao_liberada(sessao)
+    _inteiro_valido(identificador)
+    with request.app.state.banco.connection() as con:
+        if not con.execute("SELECT roar_apagar_passkey(%s, %s) AS ok", (sessao["usuario_id"], identificador)).fetchone()["ok"]:
+            raise HTTPException(status_code=404)
+        con.execute("SELECT roar_registrar_acesso(%s, 'apagar_passkey', %s)", (sessao["usuario_id"], _origem(request)))
+
+
+@app.post("/api/passkeys/entrar/inicio")
+def iniciar_entrada_por_passkey(request: Request):
+    if _bloqueado(f"passkey:{_origem(request)}"):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    rp_id, _ = _endereco_publico(request)
+    opcoes, desafio = outras_entradas.opcoes_de_entrada(rp_id)
+    pedido, resumo = outras_entradas.novo_pedido()
+    with request.app.state.banco.connection() as con:
+        con.execute("SELECT roar_guardar_pedido(%s, 'passkey_entrada', %s, %s)",
+                    (resumo, Jsonb({"desafio": outras_entradas.para_texto(desafio)}), outras_entradas.MINUTOS_DO_PEDIDO))
+    return {"pedido": pedido, "opcoes": opcoes}
+
+
+@app.post("/api/passkeys/entrar/fim", status_code=204, response_model=None)
+def concluir_entrada_por_passkey(dados: FimDaEntrada, request: Request):
+    origem = f"passkey:{_origem(request)}"
+    if _bloqueado(origem):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    rp_id, origens = _endereco_publico(request)
+    with request.app.state.banco.connection() as con:
+        pedido = con.execute("SELECT roar_tomar_pedido(%s, 'passkey_entrada') AS d", (outras_entradas.resumo_do_pedido(dados.pedido),)).fetchone()["d"]
+        try:
+            if not pedido:
+                raise outras_entradas.EntradaRecusada("O pedido venceu. Tente de novo.")
+            passkey = con.execute("SELECT * FROM roar_passkey_para_entrar(%s)", (outras_entradas.credencial_usada(dados.credencial),)).fetchone()
+            if not passkey:
+                raise outras_entradas.EntradaRecusada("Passkey não reconhecida.")
+            contador = outras_entradas.conferir_entrada(dados.credencial, outras_entradas.de_texto(pedido["desafio"]), rp_id, origens,
+                                                        passkey["chave_publica"], passkey["contador"])
+        except outras_entradas.EntradaRecusada as erro:
+            falhas_de_login[origem].append(time.monotonic())
+            raise HTTPException(status_code=401, detail=str(erro))
+        if passkey["sso_exigido"] and passkey["perfil"] != "administrador":
+            raise HTTPException(status_code=403, detail="Sua organização entra pelo login único (SSO).")
+        con.execute("SELECT roar_passkey_usada(%s, %s)", (passkey["id"], contador))
+    return _abrir_sessao(request, passkey["usuario_id"], "logon_passkey", Response(status_code=204))
+
+
+@app.get("/api/sso/inicio")
+def iniciar_sso(request: Request, email: str = ""):
+    """Devolve o endereço do provedor da organização de quem vai entrar. A tela leva a pessoa até lá."""
+    email = email.strip().lower()[:254]
+    if _bloqueado(f"sso:{_origem(request)}"):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    with request.app.state.banco.connection() as con:
+        quem = con.execute("SELECT * FROM roar_entrada_por_email(%s)", (email,)).fetchone() if "@" in email else None
+        config = con.execute("SELECT * FROM roar_sso_da_organizacao(%s)", (quem["cliente_id"],)).fetchone() if quem and quem["sso_ativo"] else None
+    if not config:
+        falhas_de_login[f"sso:{_origem(request)}"].append(time.monotonic())
+        raise HTTPException(status_code=404, detail="Este e-mail não entra por login único. Use a senha ou a passkey.")
+    try:
+        documento = outras_entradas.descobrir(config["emissor"])
+    except outras_entradas.EntradaRecusada as erro:
+        raise HTTPException(status_code=502, detail=str(erro))
+    estado, resumo = outras_entradas.novo_pedido()
+    nonce = secrets.token_urlsafe(24)
+    verificador, desafio = outras_entradas.pkce()
+    retorno = _retorno_do_sso(request)
+    with request.app.state.banco.connection() as con:
+        con.execute("SELECT roar_guardar_pedido(%s, 'sso', %s, %s)", (resumo, Jsonb({
+            "cliente": str(quem["cliente_id"]), "email": email, "nonce": nonce, "verificador": verificador, "retorno": retorno}), 10))
+    return {"url": outras_entradas.endereco_de_autorizacao(documento, config["client_id"], retorno, estado, nonce, desafio, email)}
+
+
+@app.get("/api/sso/retorno", response_model=None)
+def retorno_do_sso(request: Request, code: str = "", state: str = "", error: str = ""):
+    """O provedor devolve a pessoa aqui. Qualquer falha volta para a tela de entrada com o motivo, nunca com detalhe interno."""
+    def falhou(motivo):
+        return RedirectResponse(f"/?{urlencode({'sso': motivo[:200]})}", status_code=303)
+
+    with request.app.state.banco.connection() as con:
+        pedido = con.execute("SELECT roar_tomar_pedido(%s, 'sso') AS d", (outras_entradas.resumo_do_pedido(state[:100]),)).fetchone()["d"] if state else None
+        if not pedido:
+            return falhou("O pedido de login único venceu. Tente de novo.")
+        if error or not code:
+            return falhou("O provedor de login não liberou a entrada.")
+        config = con.execute("SELECT * FROM roar_sso_da_organizacao(%s)", (pedido["cliente"],)).fetchone()
+    if not config:
+        return falhou("O login único desta organização foi desligado.")
+    try:
+        documento = outras_entradas.descobrir(config["emissor"])
+        segredo = request.app.state.cofre_do_sso.abrir(config["segredo"]) if config["segredo"] else None
+        id_token = outras_entradas.trocar_codigo(documento, config["client_id"], segredo, code[:2000], pedido["retorno"], pedido["verificador"])
+        email = outras_entradas.conferir_token(documento, config["client_id"], id_token, pedido["nonce"])
+    except outras_entradas.EntradaRecusada as erro:
+        return falhou(str(erro))
+    if config["dominios"] and email.split("@")[1] not in config["dominios"]:
+        return falhou("Este e-mail não é de um domínio aceito pela organização.")
+    with request.app.state.banco.connection() as con:
+        quem = con.execute("SELECT * FROM roar_entrada_por_email(%s)", (email,)).fetchone()
+    # A conta tem de existir e ser da mesma organização: o login único não cria pessoa nem muda ninguém de lugar.
+    if not quem or str(quem["cliente_id"]) != pedido["cliente"]:
+        return falhou("Não há usuário ativo com este e-mail nesta organização. Peça à administração.")
+    return _abrir_sessao(request, quem["usuario_id"], "logon_sso", RedirectResponse("/", status_code=303))
+
+
+class ConfiguracaoDeSso(BaseModel):
+    emissor: str = Field(pattern=r"^https://[^\s]{3,500}$")
+    client_id: str = Field(min_length=1, max_length=300)
+    # Ausente mantém o guardado; vazio apaga, para cliente público com PKCE.
+    segredo: str | None = Field(default=None, max_length=2000)
+    dominios: list[str] = Field(default=[], max_length=20)
+    ativo: bool = True
+    exigir: bool = False
+
+
+@app.get("/api/organizacao/sso")
+def ver_sso(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        config = con.execute("SELECT emissor, client_id, segredo IS NOT NULL AS tem_segredo, dominios, ativo, exigir, atualizado_em FROM sso").fetchone()
+    return {"config": config, "retorno": _retorno_do_sso(request)}
+
+
+@app.put("/api/organizacao/sso", status_code=204)
+def definir_sso(dados: ConfiguracaoDeSso, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Confere o provedor antes de guardar: configuração que não funciona trancaria a organização se fosse exigida."""
+    emissor = dados.emissor.strip().rstrip("/")
+    dominios = sorted({d.strip().lower().lstrip("@") for d in dados.dominios if d.strip()})
+    if any(not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", d) for d in dominios):
+        raise HTTPException(status_code=422, detail="Domínio inválido. Use só o domínio, como empresa.com.br.")
+    if dados.ativo:
+        try:
+            outras_entradas.descobrir(emissor)
+        except outras_entradas.EntradaRecusada as erro:
+            raise HTTPException(status_code=422, detail=str(erro))
+    with do_cliente(request, sessao) as con:
+        atual = con.execute("SELECT segredo FROM sso").fetchone()
+        if dados.segredo is None:
+            segredo = atual["segredo"] if atual else None
+        else:
+            segredo = request.app.state.cofre_do_sso.fechar(dados.segredo) if dados.segredo else None
+        con.execute("""INSERT INTO sso (cliente_id, emissor, client_id, segredo, dominios, ativo, exigir, atualizado_por) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (cliente_id) DO UPDATE SET emissor = EXCLUDED.emissor, client_id = EXCLUDED.client_id, segredo = EXCLUDED.segredo,
+                         dominios = EXCLUDED.dominios, ativo = EXCLUDED.ativo, exigir = EXCLUDED.exigir, atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
+                    (sessao["cliente_id"], emissor, dados.client_id.strip(), segredo, dominios, dados.ativo, dados.exigir and dados.ativo, sessao["usuario_id"]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_sso', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{emissor} {'ligado' if dados.ativo else 'desligado'}{', exigido' if dados.exigir and dados.ativo else ''}"))
+
+
+@app.delete("/api/organizacao/sso", status_code=204)
+def remover_sso(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        if not con.execute("DELETE FROM sso RETURNING emissor").fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'remover_sso', '-')", (sessao["cliente_id"], sessao["usuario_id"]))
 
 
 @app.post("/api/sair", status_code=204)

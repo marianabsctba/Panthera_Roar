@@ -7,7 +7,7 @@ import {
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 
 import { ContextoEu, enviar, ler, type Eu } from "./api";
-import { Autenticador, TrocaDeSenha } from "./Conta";
+import { Autenticador, Passkeys, TrocaDeSenha } from "./Conta";
 import { Entrada } from "./Entrada";
 import { trocarDeOrganizacao } from "./trocarDeOrganizacao";
 import { Ajuda } from "./telas/Ajuda";
@@ -166,6 +166,7 @@ export function Aplicacao() {
   const [fase, setFase] = useState<"carregando" | "entrada" | "codigo" | "dentro">("carregando");
   const [verSenha, setVerSenha] = useState(false);
   const [verMfa, setVerMfa] = useState(false);
+  const [verPasskeys, setVerPasskeys] = useState(false);
   const [violada, setViolada] = useState(false);
   const [vista, setVista] = useState(vistaDaUrl);
   const [aberto, { toggle, close }] = useDisclosure();
@@ -237,6 +238,7 @@ export function Aplicacao() {
               <Menu.Dropdown>
                 <Menu.Item fz="sm" leftSection={<IconKey size={14} />} onClick={() => setVerSenha(true)}>Trocar senha</Menu.Item>
                 <Menu.Item fz="sm" leftSection={<IconDeviceMobile size={14} />} onClick={() => setVerMfa(true)}>Autenticador</Menu.Item>
+                <Menu.Item fz="sm" leftSection={<IconFingerprint size={14} />} onClick={() => setVerPasskeys(true)}>Passkeys</Menu.Item>
                 <Menu.Divider />
                 <Menu.Item fz="sm" leftSection={<IconLogout size={14} />} onClick={sair}>Sair</Menu.Item>
               </Menu.Dropdown>
@@ -270,6 +272,7 @@ export function Aplicacao() {
         </AppShell.Navbar>
 
         <TrocaDeSenha aberta={verSenha || eu.trocar_senha} obrigatoria={eu.trocar_senha} aoFechar={() => setVerSenha(false)} aoTrocar={() => { setVerSenha(false); abrir(); }} />
+        <Passkeys aberto={verPasskeys} aoFechar={() => setVerPasskeys(false)} />
         <Autenticador aberto={verMfa || (!eu.trocar_senha && eu.mfa_obrigatorio && !eu.mfa_ativo)} eu={eu} aoFechar={() => setVerMfa(false)} aoMudar={abrir} />
         <AppShell.Main style={{ background: "var(--mantine-color-dark-8)" }}>
           <Box maw={1400} mx="auto">

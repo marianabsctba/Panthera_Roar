@@ -1,9 +1,9 @@
-import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
+import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, PasswordInput, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconCopy, IconPlus } from "@tabler/icons-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { detalhe, enviar, useDados } from "../api";
-import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela } from "../componentes";
+import { AcoesDaLinha, BlocoDeComando, Busca, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela } from "../componentes";
 import { numero } from "../formato";
 
 interface Usuario { id: string; email: string; nome: string; perfil: string; ativo: boolean; criado_em: string | null; mfa_ativo: boolean }
@@ -57,6 +57,74 @@ function DadosPessoais() {
         {CATEGORIAS_DE_DADO.map(([c, rotulo, explicacao]) => (
           <Checkbox key={c} label={rotulo} description={explicacao} checked={marcadas.has(c)} onChange={(e) => mudar(c, e.currentTarget.checked)} />
         ))}
+      </Stack>
+    </Painel>
+  );
+}
+
+interface ConfigDoSso { emissor: string; client_id: string; tem_segredo: boolean; dominios: string[]; ativo: boolean; exigir: boolean; atualizado_em: string }
+
+function LoginUnico() {
+  const { dados, erro: erroAoLer, recarregar } = useDados<{ config: ConfigDoSso | null; retorno: string }>("/api/organizacao/sso");
+  const [emissor, setEmissor] = useState<string | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [segredo, setSegredo] = useState("");
+  const [dominios, setDominios] = useState("");
+  const [ativo, setAtivo] = useState(true);
+  const [exigir, setExigir] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState(false);
+  if (!dados) return <Carregando erro={erroAoLer} />;
+  // O formulário começa com o que está guardado, e passa a ser da pessoa assim que ela mexe.
+  if (emissor === null) {
+    setEmissor(dados.config?.emissor ?? "");
+    setClientId(dados.config?.client_id ?? "");
+    setDominios((dados.config?.dominios ?? []).join(", "));
+    setAtivo(dados.config?.ativo ?? true);
+    setExigir(dados.config?.exigir ?? false);
+    return null;
+  }
+  const salvar = async () => {
+    setErro(null);
+    setAviso(null);
+    setSalvando(true);
+    const r = await colocar("/api/organizacao/sso", {
+      emissor: emissor.trim(), client_id: clientId.trim(), segredo: segredo ? segredo : undefined, ativo, exigir,
+      dominios: dominios.split(/[\s,;]+/).filter(Boolean),
+    }).finally(() => setSalvando(false));
+    if (!r.ok) return setErro(await detalhe(r, "Não foi possível salvar."));
+    setSegredo("");
+    setAviso("Salvo. O provedor respondeu e a configuração foi conferida.");
+    recarregar();
+  };
+  const remover = async () => {
+    const r = await fetch("/api/organizacao/sso", { method: "DELETE", credentials: "same-origin" });
+    if (r.ok) {
+      setEmissor(null);
+      recarregar();
+    }
+  };
+  return (
+    <Painel titulo="Login único (SSO)">
+      <Stack gap="sm" maw={680}>
+        <Text size="sm">Pelo padrão OpenID Connect: Microsoft Entra ID, Google Workspace, Okta, Keycloak e outros. Só entra quem já é usuário ativo desta organização, com o mesmo e-mail: o login único não cria pessoas.</Text>
+        <Stack gap={4}>
+          <Text size="xs" c="dimmed">Cadastre este endereço de retorno no provedor:</Text>
+          <BlocoDeComando texto={dados.retorno} />
+        </Stack>
+        <TextInput label="Emissor" description="O endereço do provedor, como https://login.microsoftonline.com/ID-DO-LOCATÁRIO/v2.0." value={emissor} onChange={(e) => setEmissor(e.currentTarget.value)} spellCheck={false} placeholder="https://" />
+        <TextInput label="Client ID" value={clientId} onChange={(e) => setClientId(e.currentTarget.value)} spellCheck={false} />
+        <PasswordInput label="Client secret" description={dados.config?.tem_segredo ? "Guardado e cifrado. Deixe em branco para manter." : "Opcional para aplicativo público, que usa só PKCE."} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} />
+        <TextInput label="Domínios de e-mail aceitos" description="Separados por vírgula. Em branco, vale qualquer domínio dos usuários desta organização." value={dominios} onChange={(e) => setDominios(e.currentTarget.value)} placeholder="empresa.com.br" />
+        <Switch label="Ligado" description="Mostra a entrada por login único para os e-mails desta organização." checked={ativo} onChange={(e) => setAtivo(e.currentTarget.checked)} />
+        <Switch label="Exigir o login único" description="Senha e passkey param de valer para quem não administra. Quem administra continua com a senha, para não ficar trancado fora se o provedor cair." checked={exigir} disabled={!ativo} onChange={(e) => setExigir(e.currentTarget.checked)} />
+        <Erro texto={erro} />
+        {aviso && <Alert color="green" variant="light" p="xs" fz="sm">{aviso}</Alert>}
+        <Group justify="space-between">
+          {dados.config ? <Button variant="subtle" color="red" onClick={remover}>Remover o login único</Button> : <span />}
+          <Button variant="filled" loading={salvando} disabled={!emissor.trim() || !clientId.trim()} onClick={salvar}>Salvar</Button>
+        </Group>
       </Stack>
     </Painel>
   );
@@ -250,6 +318,7 @@ export function Usuarios() {
             <Tabs.Tab value="pessoas">Pessoas</Tabs.Tab>
             <Tabs.Tab value="perfis">O que cada perfil pode fazer</Tabs.Tab>
             <Tabs.Tab value="dados">Dados pessoais</Tabs.Tab>
+            <Tabs.Tab value="sso">Login único (SSO)</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="pessoas">
             <Stack gap="md">
@@ -294,6 +363,7 @@ export function Usuarios() {
           </Tabs.Panel>
           <Tabs.Panel value="perfis"><TabelaDePerfis /></Tabs.Panel>
           <Tabs.Panel value="dados"><DadosPessoais /></Tabs.Panel>
+          <Tabs.Panel value="sso"><LoginUnico /></Tabs.Panel>
         </Tabs>
       )}
 

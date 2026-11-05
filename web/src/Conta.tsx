@@ -1,8 +1,9 @@
 import { Alert, Button, Center, CopyButton, Group, Image, Modal, PasswordInput, Stack, Text, TextInput } from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { detalhe, enviar, type Eu } from "./api";
+import { detalhe, enviar, pedir, type Eu } from "./api";
 import { BlocoDeComando } from "./componentes";
+import { criarPasskey, passkeyDisponivel } from "./passkey";
 
 function Erro({ texto }: { texto: string | null }) {
   return texto ? <Alert color="red" variant="light" p="xs"><Text size="sm">{texto}</Text></Alert> : null;
@@ -152,6 +153,84 @@ export function Autenticador({ aberto, eu, aoFechar, aoMudar }: { aberto: boolea
               <Button disabled={!senha || !codigo} onClick={async () => { const r = await mudar("/api/mfa/novos-codigos"); if (r) { setCodigos((await r.json()).codigos_de_recuperacao); setEtapa("recuperacao"); } }}>Novos códigos</Button>
             </Group>
           </Stack>
+        )}
+      </Stack>
+    </Modal>
+  );
+}
+
+interface Passkey { id: number; nome: string; transportes: string[]; criada_em: string; ultima_vez: string | null }
+
+/** Passkey entra sem senha nem código, presa a este site: um site falso não consegue usar. */
+export function Passkeys({ aberto, aoFechar }: { aberto: boolean; aoFechar: () => void }) {
+  const [lista, setLista] = useState<Passkey[] | null>(null);
+  const [senha, setSenha] = useState("");
+  const [nome, setNome] = useState("");
+  const [erro, setErro] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [enviando, setEnviando] = useState(false);
+  const carregar = async () => {
+    const r = await pedir("/api/passkeys");
+    if (r.ok) setLista((await r.json()).passkeys);
+  };
+  useEffect(() => {
+    if (aberto) carregar();
+    setErro(null);
+    setAviso(null);
+  }, [aberto]);
+  const adicionar = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setErro(null);
+    setAviso(null);
+    setEnviando(true);
+    try {
+      const inicio = await enviar("/api/passkeys/cadastro/inicio", { senha });
+      if (!inicio.ok) return setErro(await detalhe(inicio));
+      const { pedido, opcoes } = await inicio.json();
+      const credencial = await criarPasskey(opcoes);
+      const r = await enviar("/api/passkeys/cadastro/fim", { pedido, credencial, nome: nome.trim() || "Passkey" });
+      if (!r.ok) return setErro(await detalhe(r));
+      setSenha("");
+      setNome("");
+      setAviso("Pronto. Na próxima vez, use \"Entrar com passkey\".");
+      carregar();
+    } catch {
+      setErro("O aparelho não criou a passkey. Tente de novo.");
+    } finally {
+      setEnviando(false);
+    }
+  };
+  const apagar = async (p: Passkey) => {
+    if ((await pedir(`/api/passkeys/${p.id}`, { method: "DELETE" })).ok) carregar();
+  };
+  return (
+    <Modal opened={aberto} onClose={aoFechar} title="Passkeys" size="lg">
+      <Stack gap="sm">
+        <Text size="sm">A passkey fica guardada no celular, no computador ou numa chave de segurança, e entra sem senha nem código. Ela só funciona neste endereço: um site falso não consegue usar.</Text>
+        {!passkeyDisponivel() && <Alert color="yellow" variant="light" p="xs" fz="sm">Este navegador, ou este endereço sem HTTPS, não oferece passkey.</Alert>}
+        {lista && (lista.length ? (
+          <Stack gap={6}>
+            {lista.map((p) => (
+              <Group key={p.id} justify="space-between" wrap="nowrap" p="xs" style={{ border: "1px solid var(--roar-borda)", borderRadius: 6 }}>
+                <div>
+                  <Text size="sm" fw={500}>{p.nome}</Text>
+                  <Text size="xs" c="dimmed">Criada em {new Date(p.criada_em).toLocaleDateString("pt-BR")}{p.ultima_vez ? `, último uso em ${new Date(p.ultima_vez).toLocaleString("pt-BR")}` : ", ainda não usada"}</Text>
+                </div>
+                <Button size="xs" variant="subtle" color="red" onClick={() => apagar(p)}>Apagar</Button>
+              </Group>
+            ))}
+          </Stack>
+        ) : <Text size="sm" c="dimmed">Nenhuma passkey ainda.</Text>)}
+        {passkeyDisponivel() && (
+          <form onSubmit={adicionar} noValidate>
+            <Stack gap="xs">
+              <TextInput label="Nome" description="Para reconhecer depois, como Celular ou Notebook do trabalho." value={nome} onChange={(e) => setNome(e.currentTarget.value)} maxLength={80} />
+              <PasswordInput label="Senha atual" autoComplete="current-password" value={senha} onChange={(e) => setSenha(e.currentTarget.value)} />
+              <Erro texto={erro} />
+              {aviso && <Alert color="green" variant="light" p="xs" fz="sm">{aviso}</Alert>}
+              <Group justify="flex-end"><Button type="submit" loading={enviando} disabled={!senha}>Adicionar passkey</Button></Group>
+            </Stack>
+          </form>
         )}
       </Stack>
     </Modal>

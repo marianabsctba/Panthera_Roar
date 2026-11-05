@@ -8,10 +8,12 @@ Usa o banco de verdade e apaga no final tudo o que criou.
 
 import hashlib
 import json
+import os
 import random
 import re
 import secrets
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -90,7 +92,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("chaves_api", "relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("sso", "chaves_api", "relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -173,6 +175,204 @@ def testar_ocsf_sem_banco():
     registrar("checagem de configuração vira Compliance Finding", (sca["class_uid"], sca["compliance"]["status"], sca["compliance"]["standards"],
               sca["finding_info"]["title"]) == (2003, "Fail", ["CIS Debian 12"], "Garantir /tmp separado"), str(sca)[:200])
     registrar("campo vazio não aparece", "status" not in converter({**base, "regra_grupos": [], "bruto": {}, "usuario": None}).get("user", {}))
+
+
+def _b64(dado):
+    import base64
+    return base64.urlsafe_b64encode(dado).decode().rstrip("=")
+
+
+def _de_b64(texto):
+    import base64
+    return base64.urlsafe_b64decode(texto + "=" * (-len(texto) % 4))
+
+
+class Autenticador:
+    """Um aparelho de passkey em software: chave P-256, resposta WebAuthn montada e assinada como um celular faria."""
+
+    def __init__(self):
+        from cryptography.hazmat.primitives.asymmetric import ec
+        self.privada = ec.generate_private_key(ec.SECP256R1())
+        self.credencial = os.urandom(16)
+        self.contador = 0
+        self.usuario = None
+
+    def _dados(self, rp_id, flags, extra=b""):
+        return hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + self.contador.to_bytes(4, "big") + extra
+
+    def criar(self, opcoes, origem):
+        import cbor2
+        numeros = self.privada.public_key().public_numbers()
+        cose = cbor2.dumps({1: 2, 3: -7, -1: 1, -2: numeros.x.to_bytes(32, "big"), -3: numeros.y.to_bytes(32, "big")})
+        anexo = bytes(16) + len(self.credencial).to_bytes(2, "big") + self.credencial + cose
+        self.usuario = opcoes["user"]["id"]
+        cliente = json.dumps({"type": "webauthn.create", "challenge": opcoes["challenge"], "origin": origem, "crossOrigin": False}).encode()
+        atestado = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": self._dados(opcoes["rp"]["id"], 0x45, anexo)})
+        return {"id": _b64(self.credencial), "rawId": _b64(self.credencial), "type": "public-key",
+                "response": {"clientDataJSON": _b64(cliente), "attestationObject": _b64(atestado), "transports": ["internal"]}}
+
+    def assinar(self, opcoes, origem, contador=None):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        self.contador = self.contador + 1 if contador is None else contador
+        cliente = json.dumps({"type": "webauthn.get", "challenge": opcoes["challenge"], "origin": origem, "crossOrigin": False}).encode()
+        dados = self._dados(opcoes["rpId"], 0x05)
+        assinatura = self.privada.sign(dados + hashlib.sha256(cliente).digest(), ec.ECDSA(hashes.SHA256()))
+        return {"id": _b64(self.credencial), "rawId": _b64(self.credencial), "type": "public-key",
+                "response": {"clientDataJSON": _b64(cliente), "authenticatorData": _b64(dados), "signature": _b64(assinatura), "userHandle": self.usuario}}
+
+
+def testar_passkeys(http, a):
+    print("\n== Passkeys", flush=True)
+    origem = "https://testserver"
+    aparelho = Autenticador()
+    entrar(http, a)
+    registrar("cadastrar passkey pede a senha", http.post("/api/passkeys/cadastro/inicio", json={"senha": "errada"}).status_code == 403)
+    inicio = http.post("/api/passkeys/cadastro/inicio", json={"senha": a["senha"]}).json()
+    registrar("o pedido exige passkey guardada no aparelho e verificação da pessoa",
+              inicio["opcoes"]["authenticatorSelection"]["residentKey"] == "required" and inicio["opcoes"]["authenticatorSelection"]["userVerification"] == "required")
+    outro = Autenticador()
+    registrar("resposta de outro site é recusada", http.post("/api/passkeys/cadastro/fim", json={
+        "pedido": inicio["pedido"], "credencial": outro.criar(inicio["opcoes"], "https://phishing.exemplo"), "nome": "x"}).status_code == 422)
+    inicio = http.post("/api/passkeys/cadastro/inicio", json={"senha": a["senha"]}).json()
+    fim = http.post("/api/passkeys/cadastro/fim", json={"pedido": inicio["pedido"], "credencial": aparelho.criar(inicio["opcoes"], origem), "nome": "Celular"})
+    registrar("passkey cadastrada", fim.status_code == 201, fim.text[:160])
+    registrar("o mesmo pedido não serve duas vezes", http.post("/api/passkeys/cadastro/fim", json={
+        "pedido": inicio["pedido"], "credencial": aparelho.criar(inicio["opcoes"], origem), "nome": "Celular"}).status_code == 409)
+    registrar("a passkey aparece na conta", [p["nome"] for p in http.get("/api/passkeys").json()["passkeys"]] == ["Celular"])
+    http.post("/api/sair")
+    http.cookies.clear()
+
+    pedido = http.post("/api/passkeys/entrar/inicio").json()
+    entrada = http.post("/api/passkeys/entrar/fim", json={"pedido": pedido["pedido"], "credencial": aparelho.assinar(pedido["opcoes"], origem)})
+    registrar("entra com a passkey, sem senha nem código", entrada.status_code == 204 and http.get("/api/eu").status_code == 200, entrada.text[:160])
+    http.post("/api/sair")
+    http.cookies.clear()
+    pedido = http.post("/api/passkeys/entrar/inicio").json()
+    registrar("contador que volta para trás é recusado, como credencial clonada", http.post("/api/passkeys/entrar/fim", json={
+        "pedido": pedido["pedido"], "credencial": aparelho.assinar(pedido["opcoes"], origem, contador=1)}).status_code == 401)
+    pedido = http.post("/api/passkeys/entrar/inicio").json()
+    registrar("passkey desconhecida é recusada", http.post("/api/passkeys/entrar/fim", json={
+        "pedido": pedido["pedido"], "credencial": Autenticador().assinar(pedido["opcoes"], origem)}).status_code == 401)
+    pedido = http.post("/api/passkeys/entrar/inicio").json()
+    registrar("assinatura feita para outro site é recusada", http.post("/api/passkeys/entrar/fim", json={
+        "pedido": pedido["pedido"], "credencial": aparelho.assinar(pedido["opcoes"], "https://phishing.exemplo")}).status_code == 401)
+    registrar("entrar por passkey fica na trilha", ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao IN ('criar_passkey', 'logon_passkey')",
+                                                                 (a["id"],)).fetchone()[0] == 2)
+    entrar(http, a)
+    registrar("a pessoa apaga a própria passkey", http.request("DELETE", f"/api/passkeys/{fim.json()['id']}").status_code == 204
+              and http.get("/api/passkeys").json()["passkeys"] == [])
+    http.post("/api/sair")
+    http.cookies.clear()
+    falhas_de_login.clear()
+
+
+class ProvedorFalso:
+    """Um provedor OpenID em memória: assina com a própria chave e guarda o que recebeu."""
+
+    def __init__(self, emissor):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import jwt as pyjwt
+        self.emissor, self.privada, self.recebido, self.conteudo = emissor, rsa.generate_private_key(public_exponent=65537, key_size=2048), [], {}
+        publica = json.loads(pyjwt.algorithms.RSAAlgorithm.to_jwk(self.privada.public_key()))
+        self.jwks = {"keys": [{**publica, "kid": "k1", "alg": "RS256", "use": "sig"}]}
+
+    def __call__(self, metodo, endereco, **kwargs):
+        import jwt as pyjwt
+        self.recebido.append((metodo, endereco, kwargs))
+        if endereco.endswith("/.well-known/openid-configuration"):
+            return 200, {"issuer": self.emissor, "authorization_endpoint": f"{self.emissor}/autorizar", "token_endpoint": f"{self.emissor}/token",
+                         "jwks_uri": f"{self.emissor}/chaves", "token_endpoint_auth_methods_supported": ["client_secret_basic"]}
+        if endereco.endswith("/chaves"):
+            return 200, self.jwks
+        if endereco.endswith("/token"):
+            agora = int(time.time())
+            conteudo = {"iss": self.emissor, "aud": "roar", "sub": "pessoa-1", "iat": agora, "exp": agora + 300, "email_verified": True, **self.conteudo}
+            return 200, {"id_token": pyjwt.encode(conteudo, self.privada, algorithm="RS256", headers={"kid": "k1"})}
+        return 404, {}
+
+
+def testar_sso(http, a, b):
+    print("\n== Login único (SSO)", flush=True)
+    from urllib.parse import parse_qs, urlsplit
+    from roar_api import entrada as modulo
+    emissor = "https://idp.exemplo.test"
+    provedor = ProvedorFalso(emissor)
+    original, modulo._buscar = modulo._buscar, provedor
+    modulo._descobertas.clear()
+    senha_n1 = secrets.token_urlsafe(18)
+    email_n1 = f"n1sso-{uuid.uuid4().hex[:6]}@exemplo.test"
+    ADMIN.execute("INSERT INTO usuarios (cliente_id, email, nome, senha_hash, perfil) VALUES (%s, %s, 'Pessoa N1', %s, 'analista_n1')",
+                  (a["id"], email_n1, PasswordHasher().hash(senha_n1)))
+    try:
+        entrar(http, a)
+        registrar("emissor sem https é recusado", http.request("PUT", "/api/organizacao/sso", json={"emissor": "http://idp", "client_id": "roar"}).status_code == 422)
+        r = http.request("PUT", "/api/organizacao/sso", json={"emissor": emissor, "client_id": "roar", "segredo": "s3gredo", "dominios": ["exemplo.test"]})
+        registrar("o administrador configura o SSO", r.status_code == 204, r.text[:160])
+        visto = http.get("/api/organizacao/sso").json()
+        registrar("o segredo não volta para a tela", visto["config"]["tem_segredo"] is True and "s3gredo" not in json.dumps(visto)
+                  and visto["retorno"].endswith("/api/sso/retorno"))
+        registrar("o segredo fica cifrado no banco", b"s3gredo" not in bytes(ADMIN.execute("SELECT segredo FROM sso WHERE cliente_id = %s", (a["id"],)).fetchone()[0]))
+        http.post("/api/sair")
+        http.cookies.clear()
+
+        def iniciar(email):
+            resposta = http.get("/api/sso/inicio", params={"email": email})
+            return resposta, {k: v[0] for k, v in parse_qs(urlsplit(resposta.json().get("url", "")).query).items()} if resposta.status_code == 200 else {}
+
+        registrar("e-mail sem SSO não inicia", iniciar(b["email"])[0].status_code == 404)
+        resposta, parametros = iniciar(a["email"])
+        registrar("o início leva ao provedor com PKCE, nonce e estado", resposta.status_code == 200 and parametros["code_challenge_method"] == "S256"
+                  and parametros["nonce"] and parametros["state"] and parametros["client_id"] == "roar", str(parametros)[:200])
+        provedor.conteudo = {"email": a["email"], "nonce": parametros["nonce"]}
+        volta = http.get("/api/sso/retorno", params={"code": "codigo-1", "state": parametros["state"]}, follow_redirects=False)
+        registrar("o retorno abre a sessão e volta para a tela", volta.status_code == 303 and volta.headers["location"] == "/"
+                  and http.get("/api/eu").json()["nome"] == "Analista a", str(volta.headers)[:200])
+        troca_de_codigo = next(k for m, e, k in provedor.recebido if e.endswith("/token"))
+        verificador = troca_de_codigo["data"]["code_verifier"]
+        import base64
+        registrar("o PKCE confere e o segredo vai na autenticação do cliente",
+                  base64.urlsafe_b64encode(hashlib.sha256(verificador.encode()).digest()).decode().rstrip("=") == parametros["code_challenge"]
+                  and troca_de_codigo["auth"] == ("roar", "s3gredo"))
+        http.post("/api/sair")
+        http.cookies.clear()
+        repetido = http.get("/api/sso/retorno", params={"code": "codigo-1", "state": parametros["state"]}, follow_redirects=False)
+        registrar("o mesmo retorno não serve duas vezes", "venceu" in repetido.headers["location"] or "venceu" in __import__("urllib.parse").parse.unquote_plus(repetido.headers["location"]))
+
+        def tentar(conteudo):
+            _, p = iniciar(a["email"])
+            provedor.conteudo = {"nonce": p["nonce"], **conteudo}
+            volta = http.get("/api/sso/retorno", params={"code": "c", "state": p["state"]}, follow_redirects=False)
+            entrou = http.get("/api/eu").status_code == 200
+            http.post("/api/sair")
+            http.cookies.clear()
+            return entrou
+
+        registrar("token de outro pedido é recusado", not tentar({"email": a["email"], "nonce": "outro"}))
+        registrar("token para outro cliente é recusado", not tentar({"email": a["email"], "aud": "outro-sistema"}))
+        registrar("token de outro emissor é recusado", not tentar({"email": a["email"], "iss": "https://falso.exemplo"}))
+        registrar("e-mail não confirmado é recusado", not tentar({"email": a["email"], "email_verified": False}))
+        registrar("pessoa de outra organização não entra por este SSO", not tentar({"email": b["email"]}))
+        registrar("domínio fora da lista é recusado", not tentar({"email": "alguem@outro.exemplo"}))
+
+        entrar(http, a)
+        registrar("exigir o SSO", http.request("PUT", "/api/organizacao/sso", json={"emissor": emissor, "client_id": "roar", "dominios": ["exemplo.test"],
+                                                                                     "exigir": True}).status_code == 204)
+        http.post("/api/sair")
+        http.cookies.clear()
+        registrar("com o SSO exigido, a senha não entra", http.post("/api/entrar", json={"email": email_n1, "senha": senha_n1}).status_code == 403)
+        registrar("quem administra continua entrando com senha", entrar(http, a).status_code == 204)
+        registrar("configurar o SSO fica na auditoria", ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'definir_sso'",
+                                                                      (a["id"],)).fetchone()[0] == 2)
+        registrar("o SSO sai", http.request("DELETE", "/api/organizacao/sso").status_code == 204)
+        http.post("/api/sair")
+        http.cookies.clear()
+        registrar("sem SSO, a senha volta a valer", http.post("/api/entrar", json={"email": email_n1, "senha": senha_n1}).status_code == 204)
+        http.post("/api/sair")
+        http.cookies.clear()
+    finally:
+        modulo._buscar = original
+        modulo._descobertas.clear()
 
 
 def testar_chaves(http, a, b):
@@ -734,6 +934,10 @@ def main():
         testar_caca(http, a)
         falhas_de_login.clear()
         testar_chaves(http, a, b)
+        falhas_de_login.clear()
+        testar_passkeys(http, a)
+        falhas_de_login.clear()
+        testar_sso(http, a, b)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

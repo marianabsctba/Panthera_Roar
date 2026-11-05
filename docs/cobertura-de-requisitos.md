@@ -31,7 +31,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Ofuscar campos sensíveis | 2 | Feito: usuário vira apelido, IP, CPF, CNPJ, e-mail, cartão e telefone mascarados na saída para quem não é administrador nem N2, com liga e desliga por organização; o log guardado não muda. IPv6 só é mascarado em campo de IP, não no meio do texto |
 | Acesso | Separação por unidade | 3 | Feito: isolamento por cliente |
 | | Papéis (RBAC) | 5 | Feito: cinco perfis, checados em cada rota |
-| | MFA | 2 | Feito: aplicativo autenticador, códigos de recuperação e exigência por organização; SSO e passkeys faltam |
+| | MFA | 2 | Feito: aplicativo autenticador, códigos de recuperação e exigência por organização; passkeys (WebAuthn) para entrar sem senha; login único por OpenID Connect por organização, com opção de exigir. SAML falta |
 | Auditoria | Registro de ações | 4 | Feito: logon, logoff, recusas, acessos e ativos, com tela, exportação em CSV e aviso na tela; aviso por e-mail falta |
 | | Integridade do log | 3 | Feito para volume pequeno: selos encadeados, assinados e ancorados, conferência por evento e pacote de evidência; armazenamento da prova não escala para terabytes por dia |
 | Disponibilidade | Tolerância a falhas | 3 | Falta |

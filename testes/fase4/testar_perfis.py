@@ -30,7 +30,10 @@ SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/e
                  ("GET", "/api/saude"), ("POST", "/api/mfa/verificar"), ("POST", "/api/mfa/iniciar"), ("POST", "/api/mfa/confirmar"), ("POST", "/api/mfa/novos-codigos"), ("POST", "/api/mfa/desligar"),
                  # Não dependem do perfil, e sim de administrar a instalação: testar_organizacoes.py cobra quem pode.
                  ("GET", "/api/organizacoes"), ("POST", "/api/organizacoes"), ("POST", "/api/organizacoes/{cliente}/remover"),
-                 ("POST", "/api/organizacoes/{cliente}/entrar"), ("POST", "/api/organizacoes/voltar")}
+                 ("POST", "/api/organizacoes/{cliente}/entrar"), ("POST", "/api/organizacoes/voltar"),
+                 # Entrada e conta da própria pessoa: valem para qualquer perfil, e testar_api.py cobra cada uma.
+                 ("GET", "/api/passkeys"), ("POST", "/api/passkeys/cadastro/inicio"), ("POST", "/api/passkeys/cadastro/fim"), ("DELETE", "/api/passkeys/{identificador}"),
+                 ("POST", "/api/passkeys/entrar/inicio"), ("POST", "/api/passkeys/entrar/fim"), ("GET", "/api/sso/inicio"), ("GET", "/api/sso/retorno")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
     "administrador": {"ver", "ver_bruto", "ver_dado_pessoal", "triar", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
@@ -69,6 +72,7 @@ ROTAS = {
     ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios", ("PUT", "/api/organizacao/ofuscacao"): "gerir_usuarios", ("PUT", "/api/ativos/criticidade"): "gerir_regras", ("GET", "/api/entidades/{identificador}/normal"): "ver",
+    ("GET", "/api/organizacao/sso"): "gerir_usuarios", ("PUT", "/api/organizacao/sso"): "gerir_usuarios", ("DELETE", "/api/organizacao/sso"): "gerir_usuarios",
     ("GET", "/api/chaves"): "gerir_usuarios", ("POST", "/api/chaves"): "gerir_usuarios", ("DELETE", "/api/chaves/{identificador}"): "gerir_usuarios",
     ("GET", "/api/openapi.json"): "ver", ("GET", "/api/normas/relatorio"): "ver", ("GET", "/api/relatorios/historico"): "ver", ("GET", "/api/relatorios/historico/{identificador}"): "ver",
     ("DELETE", "/api/relatorios/historico/{identificador}"): "ver", ("GET", "/api/eventos/ocsf"): "ver", ("GET", "/api/eventos/{identificador}/ocsf"): "ver",

@@ -1,7 +1,15 @@
-import { Alert, Anchor, Button, Card, Center, Image, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Alert, Anchor, Button, Card, Center, Divider, Image, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { detalhe, enviar } from "./api";
+import { passkeyDisponivel, usarPasskey } from "./passkey";
+
+/** O login único volta para a tela com o motivo da falha no endereço: mostra uma vez e limpa. */
+function erroDoSso() {
+  const motivo = new URLSearchParams(window.location.search).get("sso");
+  if (motivo) window.history.replaceState(null, "", window.location.pathname);
+  return motivo;
+}
 
 function Moldura({ children, aoEnviar }: { children: ReactNode; aoEnviar: (e: FormEvent<HTMLFormElement>) => void }) {
   return (
@@ -31,7 +39,7 @@ export function Entrada({ aoEntrar, pedirCodigo }: { aoEntrar: () => void; pedir
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [codigo, setCodigo] = useState("");
-  const [erro, setErro] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(erroDoSso);
   const [voltou, setVoltou] = useState(false);
   const [enviando, setEnviando] = useState(false);
 
@@ -67,6 +75,34 @@ export function Entrada({ aoEntrar, pedirCodigo }: { aoEntrar: () => void; pedir
     aoEntrar();
   };
 
+  const entrarComPasskey = async () => {
+    setErro(null);
+    setEnviando(true);
+    try {
+      const inicio = await enviar("/api/passkeys/entrar/inicio");
+      if (!inicio.ok) return setErro(await detalhe(inicio, "Não foi possível entrar."));
+      const { pedido, opcoes } = await inicio.json();
+      const credencial = await usarPasskey(opcoes);
+      const r = await enviar("/api/passkeys/entrar/fim", { pedido, credencial });
+      if (!r.ok) return setErro(await detalhe(r, "Passkey não reconhecida."));
+      setVoltou(false);
+      aoEntrar();
+    } catch {
+      setErro("A passkey não foi usada. Tente de novo, ou entre com a senha.");
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const entrarComSso = async () => {
+    setErro(null);
+    if (!email.trim()) return setErro("Digite o seu e-mail para achar o login único da sua organização.");
+    setEnviando(true);
+    const r = await fetch(`/api/sso/inicio?${new URLSearchParams({ email: email.trim() })}`, { credentials: "same-origin" }).finally(() => setEnviando(false));
+    if (!r.ok) return setErro(await detalhe(r, "Não foi possível iniciar o login único."));
+    window.location.assign((await r.json()).url);
+  };
+
   const voltar = async () => {
     await enviar("/api/sair");
     setErro(null);
@@ -89,6 +125,9 @@ export function Entrada({ aoEntrar, pedirCodigo }: { aoEntrar: () => void; pedir
       <PasswordInput label="Senha" autoComplete="current-password" value={senha} onChange={(e) => setSenha(e.currentTarget.value)} />
       <Erro texto={erro} />
       <Button type="submit" variant="filled" loading={enviando} disabled={!email.trim() || !senha} fullWidth>Entrar</Button>
+      <Divider label="ou" labelPosition="center" />
+      {passkeyDisponivel() && <Button variant="default" onClick={entrarComPasskey} disabled={enviando} fullWidth>Entrar com passkey</Button>}
+      <Button variant="default" onClick={entrarComSso} disabled={enviando} fullWidth>Entrar com login único (SSO)</Button>
     </Moldura>
   );
 }
