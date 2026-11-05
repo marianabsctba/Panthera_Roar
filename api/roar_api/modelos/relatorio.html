@@ -4,73 +4,15 @@
 <meta charset="utf-8">
 <title>Relatório de segurança - {{ cliente }}</title>
 <style>
-  @page { size: A4; margin: 22mm 16mm 20mm;
-    @top-left { content: "Panthera Roar"; font: 600 8pt "DejaVu Sans"; color: #c2185b; }
-    @top-right { content: string(capitulo); font: 8pt "DejaVu Sans"; color: #666; }
-    @bottom-left { content: "Confidencial: contém dados pessoais e de segurança"; font: 7pt "DejaVu Sans"; color: #888; }
-    @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt "DejaVu Sans"; color: #666; }
-  }
-  @page capa { margin: 0; @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
-  body { margin: 0; color: #1c1c1c; font: 9.5pt/1.45 "DejaVu Sans", sans-serif; }
-  .capa { page: capa; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; height: 297mm; padding: 34mm 22mm 22mm; color: #f4f4f4; background: #0b0b0b; break-after: page; }
-  .capa h1 { margin: 0 0 6mm; color: #ff1fa8; font-size: 30pt; line-height: 1.1; }
-  .capa .marca { color: #ff6cc6; font-size: 11pt; font-weight: 700; letter-spacing: .03em; }
-  .capa .sub { font-size: 14pt; }
-  .capa dl { display: grid; grid-template-columns: 34mm auto; gap: 2mm 4mm; margin: 0; font-size: 9.5pt; }
-  .capa dt { color: #b5b5b5; }
-  .capa dd { margin: 0; overflow-wrap: anywhere; }
-  .capa .aviso { padding-top: 5mm; color: #b5b5b5; font-size: 8pt; border-top: 1px solid #444; }
-  h1.capitulo { string-set: capitulo content(); break-before: page; margin: 0 0 4mm; padding-bottom: 2mm; color: #0b0b0b; font-size: 17pt; border-bottom: 2.5px solid #ff1fa8; }
-  h2 { margin: 6mm 0 2mm; color: #8e1466; font-size: 11.5pt; break-after: avoid; }
-  p { margin: 0 0 2.5mm; }
-  .nota { color: #555; font-size: 8.5pt; }
-  table { width: 100%; margin: 1mm 0 3mm; border-collapse: collapse; font-size: 8.3pt; }
-  thead { display: table-header-group; }
-  th { padding: 1.5mm 2mm; color: #fff; font-weight: 600; text-align: left; background: #1c1c1c; }
-  td { padding: 1.2mm 2mm; overflow-wrap: anywhere; border-bottom: .5px solid #ddd; vertical-align: top; }
-  tr { break-inside: avoid; }
-  tbody tr:nth-child(even) td { background: #f7f7f7; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 7.6pt; }
-  .vazio { padding: 3mm; color: #666; background: #f5f5f5; border-radius: 1.5mm; }
-  .sumario ol { margin: 0; padding: 0; list-style: none; }
-  .sumario li { margin-bottom: 1.8mm; }
-  .sumario li.sub { margin-left: 6mm; color: #555; font-size: 8.8pt; }
-  .sumario a { display: block; color: inherit; text-decoration: none; }
-  .sumario a::after { content: leader(dotted) target-counter(attr(href), page); }
-  .numeros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2.5mm; margin: 3mm 0; }
-  .numero { padding: 3mm; background: #f7f7f7; border-left: 3px solid #ff1fa8; }
-  .numero b { display: block; font-size: 15pt; line-height: 1.2; }
-  .numero span { color: #555; font-size: 7.6pt; }
-  .numero i { display: block; margin-top: 1mm; color: #8e1466; font-size: 7.4pt; font-style: normal; }
-  .legenda { display: flex; flex-wrap: wrap; gap: 4mm; margin: 1mm 0; font-size: 8pt; }
-  .legenda span::before { content: ""; display: inline-block; width: 2.6mm; height: 2.6mm; margin-right: 1mm; background: var(--cor); border-radius: .5mm; }
-  .grafico { width: 100%; height: auto; }
-  .barra { margin-bottom: 1.2mm; font-size: 8.2pt; }
-  .barra div { display: flex; justify-content: space-between; gap: 3mm; }
-  .barra u { display: block; height: 2mm; margin-top: .4mm; text-decoration: none; background: #eee; border-radius: 1mm; }
-  .barra s { display: block; height: 100%; text-decoration: none; border-radius: 1mm; }
-  .achado { margin: 0 0 2mm; padding: 2mm 3mm; background: #fdf1f8; border-left: 3px solid #c2185b; break-inside: avoid; }
-  .selo { font-weight: 600; white-space: nowrap; }
+{% include "estilo.css" %}
 </style>
 </head>
 <body>
 {% set completo = tipo == "completo" %}
-<section class="capa">
-  <div>
-    <div class="marca">PANTHERA ROAR</div>
-    <h1 style="margin-top:44mm">Relatório {{ "completo" if completo else "executivo" }} de segurança</h1>
-    <div class="sub">{{ cliente }}</div>
-  </div>
-  <div>
-    <dl>
-      <dt>Período</dt><dd>{{ inicio|data(false) }} a {{ agora|data(false) }} ({{ dias }} dias)</dd>
-      <dt>Gerado em</dt><dd>{{ agora|data }}</dd>
-      <dt>Gerado por</dt><dd>{{ autor }}</dd>
-    </dl>
-    <p class="aviso" style="margin-top:8mm">Documento confidencial. Pode conter nomes de pessoas, contas e endereços: compartilhe apenas com quem precisa, e guarde pelo tempo da sua política de retenção.</p>
-  </div>
-</section>
+{% with capa_tipo="Segurança", capa_titulo="Relatório " ~ ("completo" if completo else "executivo") ~ " de segurança",
+        capa_aviso="Documento confidencial. Pode conter nomes de pessoas, contas e endereços: compartilhe apenas com quem precisa, e guarde pelo tempo da sua política de retenção." %}
+{% include "capa.html" %}
+{% endwith %}
 
 <section class="sumario">
   <h1 class="capitulo" id="sumario">Sumário</h1>
@@ -109,7 +51,8 @@
 {% if resumo.critica %}<p class="achado"><b>{{ resumo.critica|n }} alertas críticos</b> no período. Comece pelo capítulo 2.</p>{% endif %}
 {% if riscos_abertos %}<p class="achado"><b>{{ riscos_abertos|length }} alertas de risco de comportamento abertos</b>, o mais alto em {{ riscos_abertos[0].entidade }}.</p>{% endif %}
 {% if desconectados %}<p class="achado"><b>{{ desconectados|length }} ativos sem conexão.</b> Ativo desconectado não manda log: a ausência de alerta nele não significa que está tudo bem.</p>{% endif %}
-{% if not resumo.critica and not riscos_abertos and not desconectados %}<p>Nenhum destes pontos apareceu: alerta crítico, risco aberto ou ativo desconectado. Isso vale só para o que as fontes conectadas enxergam.</p>{% endif %}
+{% if vuln.abertos.critica + vuln.abertos.alta %}<p class="achado"><b>{{ (vuln.abertos.critica + vuln.abertos.alta)|n }} vulnerabilidades críticas e altas abertas</b>{% if vuln.periodo.urgentes %}, {{ vuln.periodo.urgentes|n }} para corrigir agora pela chance de exploração{% endif %}, em {{ vuln.periodo.ativos_expostos|n }} ativos.</p>{% endif %}
+{% if not resumo.critica and not riscos_abertos and not desconectados and not (vuln.abertos.critica + vuln.abertos.alta) %}<p>Nenhum destes pontos apareceu: alerta crítico, risco aberto, ativo desconectado ou vulnerabilidade crítica ou alta. Isso vale só para o que as fontes conectadas enxergam.</p>{% endif %}
 <h2>Alertas por dia</h2>
 {% if grafico %}
 <div class="legenda">{% for f in faixas %}<span style="--cor:{{ cores[f] }}">{{ rotulos[f] }}</span>{% endfor %}</div>
@@ -179,7 +122,30 @@
 </tbody></table>{% else %}<p class="vazio">Só o monitoramento padrão de cada sistema.</p>{% endif %}
 
 <h1 class="capitulo" id="c-vuln">6. Vulnerabilidades</h1>
-<p class="vazio">A detecção de vulnerabilidades nos seus ativos ainda não está ligada, então este relatório não diz o que está vulnerável aí. A ausência de achados aqui não significa ausência de vulnerabilidades.</p>
+{% if vuln.varreduras.total %}
+<div class="numeros">
+  <div class="numero"><b>{{ (vuln.abertos.critica + vuln.abertos.alta)|n }}</b><span>críticas e altas abertas</span></div>
+  <div class="numero"><b>{{ vuln.periodo.urgentes|n }}</b><span>para corrigir agora, pela chance de exploração</span></div>
+  <div class="numero"><b>{{ vuln.periodo.corrigidos|n }}</b><span>corrigidas no período</span>{% if vuln.periodo.dias_para_corrigir is not none %}<i>em {{ vuln.periodo.dias_para_corrigir }} dias, em média</i>{% endif %}</div>
+  <div class="numero"><b>{{ vuln.periodo.ativos_expostos|n }}</b><span>ativos com vulnerabilidade aberta</span></div>
+</div>
+<p class="nota">{{ vuln.varreduras.total|n }} varreduras concluídas, a última em {{ vuln.varreduras.ultima|data }}. {{ vuln.periodo.descobertos|n }} vulnerabilidades descobertas no período, {{ vuln.periodo.aceitos|n }} aceitas como risco ou falso positivo. Correção informada e ainda não confirmada por varredura conta como aberta.</p>
+<h2>Abertas por severidade</h2>
+<table><thead><tr>{% for s in faixas %}<th class="num">{{ rotulos[s] }}</th>{% endfor %}<th class="num">Informativa</th></tr></thead><tbody>
+<tr>{% for s in faixas %}<td class="num selo" style="color:{{ cores[s] }}">{{ vuln.abertos[s]|n }}</td>{% endfor %}<td class="num">{{ vuln.abertos.informativa|n }}</td></tr>
+</tbody></table>
+{% if completo %}
+<h2>Para corrigir primeiro</h2>
+<p class="nota">Pela prioridade do CVE (chance de exploração e exploração conhecida), depois pela severidade e pelo peso do ativo.</p>
+{% if vuln.achados %}<table><thead><tr><th>Ativo</th><th>Vulnerabilidade</th><th>CVE</th><th class="num">CVSS</th><th>Severidade</th><th>Prioridade</th><th>Desde</th></tr></thead><tbody>
+{% for a in vuln.achados %}<tr><td>{{ a.ativo }}</td><td>{{ a.titulo }}</td><td class="mono">{{ (a.cves or [])[:2]|join(", ") or "-" }}</td><td class="num">{{ a.cvss if a.cvss is not none else "-" }}</td><td class="selo" style="color:{{ cores.get(a.severidade, '#666') }}">{{ rotulos.get(a.severidade, "Informativa") }}</td><td>{{ {"agora": "Agora", "alta": "Alta", "media": "Média", "baixa": "Baixa"}.get(a.prioridade, "Sem dados") }}</td><td style="white-space:nowrap">{{ a.primeira_vez|data(false) }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma vulnerabilidade aberta.</p>{% endif %}
+<h2>Ativos mais expostos</h2>
+{% if vuln.ativos %}<table><thead><tr><th>Ativo</th><th class="num">Peso</th><th class="num">Críticas</th><th class="num">Altas</th><th class="num">Abertas</th></tr></thead><tbody>
+{% for a in vuln.ativos %}<tr><td>{{ a.ativo }}</td><td class="num">{{ a.peso }}</td><td class="num">{{ a.criticas|n }}</td><td class="num">{{ a.altas|n }}</td><td class="num">{{ a.total|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum ativo com vulnerabilidade aberta.</p>{% endif %}
+{% endif %}
+{% else %}<p class="vazio">Nenhuma varredura de vulnerabilidade foi concluída, então este relatório não diz o que está vulnerável nos seus ativos. A ausência de achados aqui não significa ausência de vulnerabilidades.</p>{% endif %}
 {% if cves %}<p class="nota">Base pública consultada na tela: {{ cves.total|n }} registros, carregados em {{ cves.carregada_em|data }}.{% if cves.falha %} A última atualização falhou.{% endif %}</p>{% endif %}
 
 <h1 class="capitulo" id="c-auto">7. Automação e resposta</h1>

@@ -1,0 +1,68 @@
+  @page { size: A4; margin: 22mm 16mm 20mm;
+    @top-left { content: "Panthera Roar"; font: 600 8pt "DejaVu Sans"; color: #c2185b; }
+    @top-right { content: string(capitulo); font: 8pt "DejaVu Sans"; color: #666; }
+    @bottom-left { content: "Confidencial: contém dados pessoais e de segurança"; font: 7pt "DejaVu Sans"; color: #888; }
+    @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt "DejaVu Sans"; color: #666; }
+  }
+  @page capa { margin: 0; @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
+  body { margin: 0; color: #1c1c1c; font: 9.5pt/1.45 "DejaVu Sans", sans-serif; }
+  @font-face { font-family: "Mr De Haviland"; src: url("roar:assinatura"); }
+  /* Furta-cor: rosa que puxa para o violeta, o azul e o dourado, como a luz batendo no metal. */
+  .capa { page: capa; position: relative; box-sizing: border-box; height: 297mm; overflow: hidden; color: #f6eef3; break-after: page;
+    background:
+      radial-gradient(circle at 88% 14%, rgba(255, 31, 168, .55) 0, rgba(255, 31, 168, 0) 42%),
+      radial-gradient(circle at 12% 88%, rgba(150, 70, 255, .45) 0, rgba(150, 70, 255, 0) 48%),
+      radial-gradient(circle at 70% 62%, rgba(70, 215, 255, .20) 0, rgba(70, 215, 255, 0) 38%),
+      radial-gradient(circle at 30% 30%, rgba(255, 205, 110, .14) 0, rgba(255, 205, 110, 0) 34%),
+      linear-gradient(160deg, #1a0614 0%, #0a0509 45%, #120617 100%); }
+  .capa-faixa { position: absolute; top: 0; left: 0; width: 210mm; height: 3.2mm;
+    background: linear-gradient(90deg, #ff1fa8, #c04bff 25%, #5fd6ff 45%, #ffd36e 62%, #ff6cc6 80%, #ff1fa8); }
+  .capa-marca { position: absolute; top: 20mm; left: 22mm; color: #ffc4e8; font-size: 10.5pt; font-weight: 700; letter-spacing: .32em; }
+  .capa-pantera { position: absolute; top: 26mm; right: -12mm; width: 146mm; }
+  .capa-texto { position: absolute; top: 176mm; left: 22mm; width: 160mm; }
+  .capa-tipo { color: #ff9ad8; font-size: 9pt; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; }
+  .capa h1 { margin: 3mm 0 4mm; color: #ffffff; font-size: 29pt; line-height: 1.12; text-shadow: 0 0 6mm rgba(255, 31, 168, .65); }
+  .capa-cliente { color: #ffd7ef; font-size: 14pt; }
+  .capa-traco { width: 62mm; height: 1.2mm; margin-top: 6mm; border-radius: .6mm;
+    background: linear-gradient(90deg, #ff1fa8, #c04bff 35%, #5fd6ff 65%, #ffd36e); }
+  .capa-rodape { position: absolute; left: 22mm; right: 22mm; bottom: 16mm; }
+  .capa dl { display: grid; grid-template-columns: 30mm auto; gap: 1.6mm 4mm; margin: 0; font-size: 9pt; }
+  .capa dt { color: #c9a9bd; }
+  .capa dd { margin: 0; overflow-wrap: anywhere; }
+  .capa .aviso { margin: 5mm 0 0; padding-top: 4mm; color: #c9a9bd; font-size: 7.6pt; border-top: .4mm solid rgba(255, 108, 198, .45); }
+  .capa-assinatura { position: absolute; right: 0; bottom: 21mm; color: #c9a9bd; font-size: 7.5pt; text-align: right; }
+  .capa-assinatura b { display: block; color: #ff8fd2; font-family: "Mr De Haviland", cursive; font-size: 24pt; font-weight: 400; line-height: 1; }
+  h1.capitulo { string-set: capitulo content(); break-before: page; margin: 0 0 4mm; color: #0b0b0b; font-size: 17pt; border-bottom: 0; }
+  h1.capitulo::after { content: ""; display: block; height: 2.2px; margin-top: 2mm;
+    background: linear-gradient(90deg, #ff1fa8, #c04bff 35%, #5fd6ff 65%, #ffd36e 85%, #ff6cc6); }
+  h2 { margin: 6mm 0 2mm; color: #8e1466; font-size: 11.5pt; break-after: avoid; }
+  p { margin: 0 0 2.5mm; }
+  .nota { color: #555; font-size: 8.5pt; }
+  table { width: 100%; margin: 1mm 0 3mm; border-collapse: collapse; font-size: 8.3pt; }
+  thead { display: table-header-group; }
+  th { padding: 1.5mm 2mm; color: #fff; font-weight: 600; text-align: left; background: #1c1c1c; }
+  td { padding: 1.2mm 2mm; overflow-wrap: anywhere; border-bottom: .5px solid #ddd; vertical-align: top; }
+  tr { break-inside: avoid; }
+  tbody tr:nth-child(even) td { background: #f7f7f7; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 7.6pt; }
+  .vazio { padding: 3mm; color: #666; background: #f5f5f5; border-radius: 1.5mm; }
+  .sumario ol { margin: 0; padding: 0; list-style: none; }
+  .sumario li { margin-bottom: 1.8mm; }
+  .sumario li.sub { margin-left: 6mm; color: #555; font-size: 8.8pt; }
+  .sumario a { display: block; color: inherit; text-decoration: none; }
+  .sumario a::after { content: leader(dotted) target-counter(attr(href), page); }
+  .numeros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2.5mm; margin: 3mm 0; }
+  .numero { padding: 3mm; background: #f7f7f7; border-left: 3px solid #ff1fa8; }
+  .numero b { display: block; font-size: 15pt; line-height: 1.2; }
+  .numero span { color: #555; font-size: 7.6pt; }
+  .numero i { display: block; margin-top: 1mm; color: #8e1466; font-size: 7.4pt; font-style: normal; }
+  .legenda { display: flex; flex-wrap: wrap; gap: 4mm; margin: 1mm 0; font-size: 8pt; }
+  .legenda span::before { content: ""; display: inline-block; width: 2.6mm; height: 2.6mm; margin-right: 1mm; background: var(--cor); border-radius: .5mm; }
+  .grafico { width: 100%; height: auto; }
+  .barra { margin-bottom: 1.2mm; font-size: 8.2pt; }
+  .barra div { display: flex; justify-content: space-between; gap: 3mm; }
+  .barra u { display: block; height: 2mm; margin-top: .4mm; text-decoration: none; background: #eee; border-radius: 1mm; }
+  .barra s { display: block; height: 100%; text-decoration: none; border-radius: 1mm; }
+  .achado { margin: 0 0 2mm; padding: 2mm 3mm; background: #fdf1f8; border-left: 3px solid #c2185b; break-inside: avoid; }
+  .selo { font-weight: 600; white-space: nowrap; }

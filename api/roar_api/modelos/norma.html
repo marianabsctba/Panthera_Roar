@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Relatório {{ norma }} - {{ cliente }}</title>
+<style>
+{% include "estilo.css" %}
+  .controles { columns: 4; column-gap: 4mm; font-size: 8pt; }
+  .controles span { display: block; }
+</style>
+</head>
+<body>
+{% with capa_tipo="Conformidade", capa_titulo="Relatório de conformidade: " ~ norma,
+        capa_aviso="Este relatório reúne evidências do monitoramento para a auditoria da norma. Ele não é um certificado de conformidade: os controles são os que o Wazuh associa a cada regra e a cada checagem de configuração." %}
+{% include "capa.html" %}
+{% endwith %}
+
+<h1 class="capitulo" id="c-resumo">1. Resumo</h1>
+<div class="numeros">
+  <div class="numero"><b>{{ resumo.controles_com_alerta|n }}</b><span>controles com alerta no período</span></div>
+  <div class="numero"><b>{{ resumo.alertas|n }}</b><span>alertas ligados à norma</span></div>
+  <div class="numero"><b>{{ resumo.controles_cobertos|n }}</b><span>controles cobertos pelas {{ regras_da_norma|n }} regras</span></div>
+  <div class="numero"><b>{{ resumo.controles_com_checagem_reprovada|n }}</b><span>controles com checagem de configuração reprovada</span></div>
+</div>
+<p>Cada alerta do Wazuh traz os controles de {{ norma }} que a regra atende. Os números acima contam os alertas do período por controle, os controles que as regras cobrem, e as checagens de configuração segura que estão reprovadas em algum ativo.</p>
+
+<h1 class="capitulo" id="c-alertas">2. Alertas por controle</h1>
+{% if controles %}<table><thead><tr><th>Controle</th><th class="num">Alertas</th><th>Maior severidade</th><th class="num">Ativos</th><th>Último</th><th>Principais regras</th></tr></thead><tbody>
+{% for c in controles %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="selo" style="color:{{ cores[c.severidade] }}">{{ rotulos[c.severidade] }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.ultimo|data }}</td><td>{{ (c.regras or [])|select|join("; ") }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum alerta ligado a {{ norma }} no período.</p>{% endif %}
+<h2>Controles cobertos e sem alerta no período</h2>
+<p class="nota">Há regra monitorando estes controles, e nenhuma disparou. Sem alerta não quer dizer que o controle foi testado: quer dizer que nada do que as regras procuram aconteceu.</p>
+{% if cobertos_sem_alerta %}<div class="controles">{% for c in cobertos_sem_alerta %}<span class="mono">{{ c }}</span>{% endfor %}</div>{% else %}<p class="vazio">Todo controle coberto teve alerta no período.</p>{% endif %}
+
+<h1 class="capitulo" id="c-config">3. Configuração segura</h1>
+<h2>Nota de cada ativo</h2>
+{% if politicas %}<table><thead><tr><th>Ativo</th><th>Política</th><th class="num">Nota</th><th class="num">Aprovadas</th><th class="num">Reprovadas</th></tr></thead><tbody>
+{% for a in politicas %}<tr><td>{{ a.ativo or "-" }}</td><td>{{ a.politica }}</td><td class="num">{% if a.nota is not none %}{{ a.nota }}%{% else %}-{% endif %}</td><td class="num">{{ a.aprovados|n }}</td><td class="num">{{ a.reprovados|n }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhum ativo com checagem de configuração.</p>{% endif %}
+<h2>Controles com checagem reprovada</h2>
+<p class="nota">A situação mais recente de cada checagem em cada ativo, no período. Uma checagem reprovada que depois passou não aparece.</p>
+{% if configuracao %}<table><thead><tr><th>Controle</th><th class="num">Checagens reprovadas</th><th class="num">Ativos</th><th>Exemplos</th></tr></thead><tbody>
+{% for c in configuracao %}<tr><td class="mono">{{ c.controle }}</td><td class="num">{{ c.total|n }}</td><td class="num">{{ c.ativos|n }}</td><td>{{ c.exemplos|join("; ") }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma checagem reprovada ligada a {{ norma }} no período.</p>{% endif %}
+
+<h1 class="capitulo" id="c-guarda">4. Guarda e integridade dos registros</h1>
+<table><tbody>
+<tr><td>Alertas guardados por</td><td class="num">{{ guarda.retencao_alertas_dias|n }} dias</td></tr>
+<tr><td>Logs brutos</td><td class="num">{% if guarda.guardar_logs %}guardados por {{ guarda.retencao_logs_dias|n }} dias{% else %}não guardados{% endif %}</td></tr>
+<tr><td>Selos de integridade</td><td class="num">{{ guarda.selos|n }} selos, {{ guarda.selados|n }} eventos</td></tr>
+<tr><td>Último selo</td><td class="num">{{ guarda.ultimo_selo|data }}</td></tr>
+<tr><td>Última conferência da cadeia</td><td class="num">{% if guarda.verificacao %}{{ guarda.verificacao.quando|data }}: {{ guarda.verificacao.estado }}{% else %}nunca conferida{% endif %}</td></tr>
+<tr><td>Alterações em arquivos monitorados no período</td><td class="num">{{ guarda.arquivos_alterados|n }}</td></tr>
+</tbody></table>
+<p class="nota">Os selos encadeiam e assinam os eventos: alterar ou apagar um evento depois de selado quebra a cadeia, e a conferência mostra onde.</p>
+</body>
+</html>

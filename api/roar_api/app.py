@@ -1502,6 +1502,31 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
     return {"norma": norma, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma}
 
 
+@app.get("/api/normas/relatorio")
+def relatorio_da_norma(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), norma: str = "pci_dss", dias: int = 90, formato: str = "pdf"):
+    """Evidência para a auditoria de uma norma. Toda geração fica registrada, com o resumo do arquivo."""
+    if norma not in NORMAS_CONHECIDAS or formato not in ("pdf", "json"):
+        raise HTTPException(status_code=422, detail="Norma ou formato desconhecido.")
+    dias = max(1, min(dias, 365))
+    with do_cliente(request, sessao) as con:
+        dados = relatorios.coletar_norma(con, norma, dias)
+    mascara = getattr(request.state, "mascara", None)
+    if mascara:
+        dados = mascara.dado(dados)
+        request.state.mascara = None
+    if formato == "json":
+        conteudo, tipo_midia = relatorios.dados_em_json(dados), "application/json"
+    else:
+        conteudo, tipo_midia = relatorios.gerar_pdf(relatorios.montar_html_da_norma(dados, sessao, norma, dias)), "application/pdf"
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    nome = f"relatorio-{norma.replace('_', '-')}-{datetime.now(timezone.utc):%Y%m%d}.{formato}"
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_relatorio_de_norma', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{norma} {dias}d {formato} sha256:{resumo}"))
+        guardado = _guardar_relatorio(con, sessao, "norma", norma, dias, formato, nome, conteudo, resumo)
+    return Response(conteudo, media_type=tipo_midia, headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo, "X-Relatorio": str(guardado)})
+
+
 @app.get("/api/arquivos")
 def arquivos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30, busca: str = "", mudanca: str = ""):
     """Mudanças em arquivos monitorados."""
@@ -1525,6 +1550,63 @@ def arquivos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=Tru
     return {"arquivos": linhas}
 
 
+def _guardar_relatorio(con, sessao, tipo, norma, dias, formato, nome, conteudo, resumo):
+    return con.execute(
+        """INSERT INTO relatorios_gerados (cliente_id, tipo, norma, dias, formato, nome, conteudo, tamanho, sha256, mascarado, gerado_por, gerado_por_nome)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (sessao["cliente_id"], tipo, norma, dias, formato, nome, conteudo, len(conteudo), resumo, _ve_mascarado(sessao),
+         sessao["usuario_id"], sessao["nome"])).fetchone()["id"]
+
+
+def _pode_apagar_relatorio(sessao, relatorio):
+    return relatorio["gerado_por"] == sessao["usuario_id"] or permissoes.pode(sessao["perfil"], permissoes.GERIR_USUARIOS)
+
+
+@app.get("/api/relatorios/historico")
+def historico_de_relatorios(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("""SELECT id, tipo, norma, dias, formato, nome, tamanho, sha256, mascarado, gerado_por, gerado_por_nome, gerado_em
+                                FROM relatorios_gerados ORDER BY gerado_em DESC, id DESC LIMIT 500""").fetchall()
+    mascarado = _ve_mascarado(sessao)
+    for l in linhas:
+        l["pode_apagar"] = _pode_apagar_relatorio(sessao, l)
+        # Quem vê mascarado não baixa o que saiu sem máscara.
+        l["pode_baixar"] = l["mascarado"] or not mascarado
+        l["norma_nome"] = NORMAS_CONHECIDAS.get(l["norma"]) if l["norma"] else None
+        del l["gerado_por"]
+    return {"relatorios": linhas}
+
+
+@app.get("/api/relatorios/historico/{identificador}")
+def baixar_relatorio_guardado(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        r = con.execute("SELECT nome, formato, conteudo, sha256, mascarado FROM relatorios_gerados WHERE id = %s", (identificador,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404)
+        if not r["mascarado"] and _ve_mascarado(sessao):
+            raise HTTPException(status_code=403, detail="Este relatório saiu sem máscara, e o seu perfil vê dado pessoal mascarado.")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'baixar_relatorio', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{r['nome']} sha256:{r['sha256']}"))
+    return Response(bytes(r["conteudo"]), media_type="application/pdf" if r["formato"] == "pdf" else "application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{r["nome"]}"', "X-Resumo-SHA256": r["sha256"]})
+
+
+@app.delete("/api/relatorios/historico/{identificador}", status_code=204)
+def apagar_relatorio_guardado(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    """Quem gerou apaga o seu; o administrador apaga qualquer um. A auditoria guarda o nome e o resumo do que saiu."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        r = con.execute("SELECT nome, sha256, gerado_por FROM relatorios_gerados WHERE id = %s", (identificador,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404)
+        if not _pode_apagar_relatorio(sessao, r):
+            raise HTTPException(status_code=403, detail="Só quem gerou o relatório ou o administrador pode apagar.")
+        con.execute("DELETE FROM relatorios_gerados WHERE id = %s", (identificador,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'apagar_relatorio', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{r['nome']} sha256:{r['sha256']}"))
+
+
 @app.get("/api/relatorios")
 def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), dias: int = 30, tipo: str = "completo", formato: str = "pdf"):
     """Reúne nomes e endereços em um arquivo que sai do sistema: toda geração fica registrada, com o resumo do arquivo."""
@@ -1543,11 +1625,12 @@ def gerar_relatorio(request: Request, sessao=Depends(exige(permissoes.VER, masca
     else:
         conteudo, tipo_midia, extensao = relatorios.gerar_pdf(relatorios.montar_html(dados, sessao, dias, tipo)), "application/pdf", "pdf"
     resumo = relatorios.resumo_do_arquivo(conteudo)
+    nome = f"relatorio-{tipo}-{datetime.now(timezone.utc):%Y%m%d}.{extensao}"
     with do_cliente(request, sessao) as con:
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_relatorio', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{tipo} {dias}d {extensao} sha256:{resumo}"))
-    nome = f"relatorio-{tipo}-{datetime.now(timezone.utc):%Y%m%d}.{extensao}"
-    return Response(conteudo, media_type=tipo_midia, headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo})
+        guardado = _guardar_relatorio(con, sessao, tipo, None, dias, extensao, nome, conteudo, resumo)
+    return Response(conteudo, media_type=tipo_midia, headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo, "X-Relatorio": str(guardado)})
 
 
 class PedidoDeEvidencia(BaseModel):

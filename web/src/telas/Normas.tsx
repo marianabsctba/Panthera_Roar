@@ -1,4 +1,4 @@
-import { Alert, Drawer, Group, Loader, SegmentedControl, SimpleGrid, Stack, Text } from "@mantine/core";
+import { Alert, Button, Drawer, Group, Loader, Modal, SegmentedControl, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 
 import { ler, useDados } from "../api";
@@ -112,6 +112,56 @@ function GavetaDoControle({ norma, rotuloDaNorma, controle, dias, aoFechar, aoVe
   );
 }
 
+function RelatorioDaNorma({ norma, rotulo }: { norma: string; rotulo: string }) {
+  const [aberto, setAberto] = useState(false);
+  const [dias, setDias] = useState("90");
+  const [formato, setFormato] = useState("pdf");
+  const [gerando, setGerando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [resumo, setResumo] = useState<string | null>(null);
+  const gerar = async () => {
+    setErro(null);
+    setResumo(null);
+    setGerando(true);
+    try {
+      const r = await fetch(`/api/normas/relatorio?${new URLSearchParams({ norma, dias, formato })}`, { credentials: "same-origin" });
+      if (r.status === 401) {
+        window.location.assign("/");
+        return;
+      }
+      if (!r.ok) throw new Error("falhou");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await r.blob());
+      link.download = /filename="([^"]+)"/.exec(r.headers.get("Content-Disposition") ?? "")?.[1] ?? `relatorio-${norma}.${formato}`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+      setResumo(r.headers.get("X-Resumo-SHA256"));
+    } catch {
+      setErro("Não foi possível gerar o relatório. Tente de novo em instantes.");
+    } finally {
+      setGerando(false);
+    }
+  };
+  return (
+    <>
+      <Button variant="filled" onClick={() => { setResumo(null); setAberto(true); }}>Gerar relatório</Button>
+      <Modal opened={aberto} onClose={() => setAberto(false)} title={`Relatório de ${rotulo}`}>
+        <Stack gap="sm">
+          <Text size="sm">Evidência para a auditoria: alertas por controle, controles cobertos sem alerta, checagens de configuração reprovadas por controle, e a guarda e a integridade dos registros.</Text>
+          <SegmentedControl size="xs" value={dias} onChange={setDias} data={[{ label: "30 dias", value: "30" }, { label: "90 dias", value: "90" }, { label: "1 ano", value: "365" }]} aria-label="Período do relatório" />
+          <SegmentedControl size="xs" value={formato} onChange={setFormato} data={[{ label: "PDF", value: "pdf" }, { label: "Dados em JSON", value: "json" }]} aria-label="Formato" />
+          {erro && <Alert color="red" variant="light" p="xs" fz="sm">{erro}</Alert>}
+          {resumo && <Text size="xs" c="dimmed">Gerado e guardado em Relatórios, no menu. Resumo SHA-256 do arquivo, também na auditoria: <span className="mono" style={{ overflowWrap: "anywhere" }}>{resumo}</span></Text>}
+          <Group justify="flex-end">
+            <Button variant="subtle" color="gray" onClick={() => setAberto(false)}>Fechar</Button>
+            <Button variant="filled" loading={gerando} onClick={gerar}>Gerar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
 export function Normas() {
   const [norma, setNorma] = useState("gdpr");
   const [dias, setDias] = useState("30");
@@ -128,6 +178,7 @@ export function Normas() {
     <>
       <Cabecalho titulo="Normas" ajuda="Os alertas agrupados pelos controles de cada norma, como as regras os marcam. Clique num controle para ver as regras e os eventos por trás dele.">
         <SegmentedControl size="xs" value={dias} onChange={trocar(setDias)} data={[{ label: "7 dias", value: "7" }, { label: "30 dias", value: "30" }, { label: "90 dias", value: "90" }]} aria-label="Período" />
+        {dados && <RelatorioDaNorma norma={dados.norma} rotulo={dados.normas[dados.norma] ?? norma} />}
       </Cabecalho>
       {!dados ? <Carregando erro={erro} /> : (
         <Stack gap="md">

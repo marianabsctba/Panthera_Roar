@@ -4,8 +4,12 @@ O texto dos alertas pode ter sido escrito por um atacante: o modelo escapa tudo,
 busca nenhum recurso. Conteúdo hostil vira texto no papel, nunca marcação nem acesso à rede.
 """
 
+import functools
 import hashlib
+import io
 import json
+import re
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -117,7 +121,117 @@ def coletar(con, dias):
                                              WHERE em >= now() - make_interval(days => %(d)s) GROUP BY usuario_id ORDER BY total DESC LIMIT %(l)s""", **p)
     d["usuarios_do_sistema"] = _linhas(con, "SELECT nome, perfil, ativo FROM roar_listar_usuarios()")
     d["cves"] = _um(con, "SELECT total, epss_data, carregada_em, falha FROM cves_carga")
+    d["vuln"] = coletar_vulnerabilidades(con, dias)
     return d
+
+
+ABERTO = "a.estado IN ('aberto', 'correcao_informada')"
+# A mesma prioridade da tela: o pior entre os CVEs do achado, pelo EPSS e pelo catálogo de exploração conhecida.
+PRIORIDADE = """(SELECT c.prioridade FROM cves c WHERE c.cve = ANY(a.cves)
+                 ORDER BY array_position(ARRAY['agora', 'alta', 'media', 'baixa', 'sem_dados'], c.prioridade) LIMIT 1)"""
+ORDEM_DA_SEVERIDADE = "array_position(ARRAY['critica', 'alta', 'media', 'baixa', 'informativa'], a.severidade)"
+
+
+def coletar_vulnerabilidades(con, dias):
+    """O que as varreduras acharam nos ativos da organização, e quanto disso foi corrigido no período."""
+    p = {"d": dias, "l": LIMITE_DE_LINHAS}
+    v = {"varreduras": _um(con, "SELECT count(*) AS total, max(terminada_em) AS ultima FROM vuln_varreduras WHERE estado = 'concluida'")}
+    v["abertos"] = {s: 0 for s in ("critica", "alta", "media", "baixa", "informativa")}
+    v["abertos"].update({l["severidade"]: l["total"] for l in _linhas(con, f"SELECT a.severidade, count(*) AS total FROM vuln_achados a WHERE {ABERTO} GROUP BY 1")})
+    v["periodo"] = _um(con, f"""SELECT count(*) FILTER (WHERE a.primeira_vez >= now() - make_interval(days => %(d)s)) AS descobertos,
+                                       count(*) FILTER (WHERE a.estado = 'corrigido' AND a.corrigido_em >= now() - make_interval(days => %(d)s)) AS corrigidos,
+                                       count(*) FILTER (WHERE a.estado IN ('aceito', 'falso_positivo')) AS aceitos,
+                                       round((extract(epoch FROM avg(a.corrigido_em - a.primeira_vez) FILTER (WHERE a.estado = 'corrigido'
+                                             AND a.corrigido_em >= now() - make_interval(days => %(d)s))) / 86400)::numeric, 1) AS dias_para_corrigir,
+                                       count(*) FILTER (WHERE {ABERTO} AND {PRIORIDADE} = 'agora') AS urgentes,
+                                       count(DISTINCT a.ativo_id) FILTER (WHERE {ABERTO}) AS ativos_expostos
+                                FROM vuln_achados a""", **p)
+    v["achados"] = _linhas(con, f"""SELECT coalesce(t.nome, t.host) AS ativo, a.titulo, a.cves, a.cvss, a.severidade, a.estado, a.primeira_vez, {PRIORIDADE} AS prioridade
+                                    FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id WHERE {ABERTO}
+                                    ORDER BY array_position(ARRAY['agora', 'alta', 'media', 'baixa', 'sem_dados'], {PRIORIDADE}) NULLS LAST, {ORDEM_DA_SEVERIDADE}, t.peso DESC, a.id
+                                    LIMIT %(l)s""", **p)
+    v["ativos"] = _linhas(con, f"""SELECT coalesce(t.nome, t.host) AS ativo, t.peso, count(*) AS total,
+                                          count(*) FILTER (WHERE a.severidade = 'critica') AS criticas, count(*) FILTER (WHERE a.severidade = 'alta') AS altas
+                                   FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id WHERE {ABERTO}
+                                   GROUP BY t.id ORDER BY criticas DESC, altas DESC, total DESC LIMIT %(l)s""", **p)
+    return v
+
+
+# Como cada norma aparece no mapeamento das checagens de configuração do Wazuh (SCA).
+NORMA_NA_CHECAGEM = {
+    "pci_dss": ("pci_dss_v4", "pci_dss_v3", "pci_dss"), "tsc": ("soc_2", "tsc"), "hipaa": ("hipaa",),
+    "nist_800_53": ("nist_sp_800-53", "nist_800_53"), "gdpr": ("gdpr_IV", "gdpr"), "gpg13": ("gpg_13", "gpg13"),
+}
+LIMITE_DE_CONTROLES = 200
+
+
+def _textos(valor):
+    """O SCA guarda "1.2.5,2.2.4" às vezes dentro de chaves quebradas pelo ponto, como {"0": "..."}."""
+    if isinstance(valor, dict):
+        return [t for v in valor.values() for t in _textos(v)]
+    if isinstance(valor, list):
+        return [t for v in valor for t in _textos(v)]
+    return [p.strip() for p in str(valor).split(",") if p.strip()] if valor is not None else []
+
+
+def _ordem_do_controle(controle):
+    return [int(p) if p.isdigit() else p for p in re.split(r"[._\s]", controle)]
+
+
+def coletar_norma(con, norma, dias):
+    """O que uma auditoria da norma pede ver: alertas por controle, o que está coberto, a configuração e a guarda dos logs."""
+    p = {"d": dias, "n": norma, "l": LIMITE_DE_CONTROLES}
+    janela = "ocorrido_em >= now() - make_interval(days => %(d)s)"
+    d = {}
+    d["controles"] = _linhas(con, f"""
+        SELECT c.controle, count(*) AS total, max(e.nivel) AS nivel, count(DISTINCT e.agente_id) AS ativos, max(e.ocorrido_em) AS ultimo,
+               (array_agg(e.severidade ORDER BY array_position(ARRAY['baixa', 'media', 'alta', 'critica'], e.severidade) DESC))[1] AS severidade,
+               (array_agg(DISTINCT e.regra_descricao))[1:3] AS regras
+        FROM eventos e, jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(n)s) = 'array' THEN e.bruto -> 'rule' -> %(n)s ELSE '[]' END) AS c(controle)
+        WHERE e.{janela} GROUP BY c.controle ORDER BY total DESC LIMIT %(l)s""", **p)
+    cobertos = sorted({r["controle"] for r in _linhas(con, "SELECT DISTINCT jsonb_array_elements_text(normas -> %(n)s) AS controle FROM regras WHERE normas ? %(n)s", **p)},
+                      key=_ordem_do_controle)
+    com_alerta = {c["controle"] for c in d["controles"]}
+    d["cobertos_sem_alerta"] = [c for c in cobertos if c not in com_alerta]
+    d["regras_da_norma"] = _um(con, "SELECT count(*) AS t FROM regras WHERE normas ? %(n)s", **p)["t"]
+
+    # A última situação de cada checagem em cada ativo: a reprovada que depois passou não conta.
+    checagens = _linhas(con, f"""
+        SELECT DISTINCT ON (agente_id, bruto #>> '{{data,sca,policy_id}}', bruto #>> '{{data,sca,check,id}}')
+               agente_nome AS ativo, bruto #>> '{{data,sca,policy}}' AS politica, bruto #>> '{{data,sca,check,title}}' AS titulo,
+               bruto #>> '{{data,sca,check,result}}' AS resultado, bruto #> '{{data,sca,check,compliance}}' AS mapeamento
+        FROM eventos WHERE 'sca' = ANY(regra_grupos) AND bruto #>> '{{data,sca,type}}' = 'check' AND {janela}
+        ORDER BY agente_id, bruto #>> '{{data,sca,policy_id}}', bruto #>> '{{data,sca,check,id}}', ocorrido_em DESC""", **p)
+    reprovadas = defaultdict(list)
+    for c in checagens:
+        if c["resultado"] != "failed" or not isinstance(c["mapeamento"], dict):
+            continue
+        for chave in NORMA_NA_CHECAGEM.get(norma, ()):
+            for controle in _textos(c["mapeamento"].get(chave)):
+                reprovadas[controle].append(c)
+    d["configuracao"] = [{"controle": k, "total": len(v), "ativos": len({c["ativo"] for c in v}), "exemplos": sorted({c["titulo"] for c in v})[:3]}
+                         for k, v in sorted(reprovadas.items(), key=lambda i: (-len(i[1]), _ordem_do_controle(i[0])))][:LIMITE_DE_CONTROLES]
+    d["politicas"] = _linhas(con, "SELECT nome AS ativo, sca_politica AS politica, sca_nota AS nota, sca_aprovados AS aprovados, sca_reprovados AS reprovados FROM ativos WHERE sca_politica IS NOT NULL ORDER BY sca_nota NULLS LAST, nome")
+
+    d["guarda"] = {
+        **_um(con, "SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs FROM clientes"),
+        **_um(con, "SELECT count(*) AS selos, coalesce(sum(total), 0) AS selados, max(selado_em) AS ultimo_selo FROM selos"),
+        "verificacao": _um(con, "SELECT quando, estado, completa FROM selo_verificacoes ORDER BY quando DESC, id DESC LIMIT 1"),
+        "arquivos_alterados": _um(con, f"SELECT count(*) AS t FROM eventos WHERE 'syscheck' = ANY(regra_grupos) AND {janela}", **p)["t"],
+    }
+    d["resumo"] = {"controles_com_alerta": len(d["controles"]), "alertas": sum(int(c["total"]) for c in d["controles"]),
+                   "controles_cobertos": len(cobertos), "controles_com_checagem_reprovada": len(d["configuracao"])}
+    return d
+
+
+def montar_html_da_norma(dados, sessao, norma, dias, agora=None):
+    fuso = ZoneInfo(sessao["fuso"])
+    agora = agora or datetime.now(timezone.utc)
+    ambiente = Environment(loader=FileSystemLoader(MODELOS), autoescape=select_autoescape(["html"]))
+    _formatos(ambiente, fuso)
+    return ambiente.get_template("norma.html").render({
+        **dados, "cliente": sessao["cliente_nome"], "autor": sessao["nome"], "agora": agora, "inicio": agora - timedelta(days=dias), "dias": dias,
+        "norma": NORMAS[norma], "rotulos": ROTULOS, "cores": CORES})
 
 
 def _variacao(atual, anterior):
@@ -179,7 +293,36 @@ def barras_horizontais(linhas, rotulo, valor="total", cor="#c2185b"):
     return [{"rotulo": l[rotulo], "total": int(l[valor]), "largura": round(int(l[valor]) * 100 / maximo, 1), "cor": cor} for l in linhas]
 
 
+ESTATICO = Path(__file__).parent / "estatico"
+
+
+@functools.cache
+def _pantera_da_capa():
+    """O fundo preto vira transparente: sobra o traço neon brilhando sobre o furta-cor da capa."""
+    from PIL import Image, ImageChops
+
+    imagem = Image.open(ESTATICO / "pantera.webp").convert("RGB")
+    r, g, b = imagem.split()
+    imagem.putalpha(ImageChops.lighter(ImageChops.lighter(r, g), b).point(lambda v: min(255, int(v * 1.7))))
+    saida = io.BytesIO()
+    imagem.save(saida, format="PNG", optimize=True)
+    return saida.getvalue()
+
+
+# Só estes dois, do próprio pacote. Qualquer outro endereço, inclusive o que um alerta hostil escreveu, é recusado.
+RECURSOS_DO_RELATORIO = {
+    "roar:pantera": (_pantera_da_capa, "image/png"),
+    "roar:assinatura": (lambda: (ESTATICO / "fontes" / "MrDeHaviland-Regular.woff2").read_bytes(), "font/woff2"),
+}
+
+
 def _nao_buscar_nada(url, *args, **kwargs):
+    recurso = RECURSOS_DO_RELATORIO.get(str(url))
+    if recurso:
+        from weasyprint.urls import URLFetcherResponse
+
+        conteudo, tipo = recurso
+        return URLFetcherResponse(str(url), body=conteudo(), headers={"Content-Type": tipo})
     raise ValueError(f"recurso externo recusado: {str(url)[:80]}")
 
 

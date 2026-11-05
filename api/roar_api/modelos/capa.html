@@ -1,0 +1,20 @@
+<section class="capa">
+  <div class="capa-faixa"></div>
+  <div class="capa-marca">PANTHERA ROAR</div>
+  <img class="capa-pantera" src="roar:pantera" alt="">
+  <div class="capa-texto">
+    <div class="capa-tipo">{{ capa_tipo }}</div>
+    <h1>{{ capa_titulo }}</h1>
+    <div class="capa-cliente">{{ cliente }}</div>
+    <div class="capa-traco"></div>
+  </div>
+  <div class="capa-rodape">
+    <dl>
+      <dt>Período</dt><dd>{{ inicio|data(false) }} a {{ agora|data(false) }} ({{ dias }} dias)</dd>
+      <dt>Gerado em</dt><dd>{{ agora|data }}</dd>
+      <dt>Gerado por</dt><dd>{{ autor }}</dd>
+    </dl>
+    <p class="aviso">{{ capa_aviso }}</p>
+    <div class="capa-assinatura">Powered by<b>Mariana BS</b></div>
+  </div>
+</section>
