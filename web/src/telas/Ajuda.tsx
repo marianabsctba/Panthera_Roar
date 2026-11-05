@@ -16,13 +16,14 @@ type Bloco =
 interface Artigo { id: string; titulo: string; vista?: string; blocos: Bloco[] }
 interface Grupo { grupo: string; artigos: Artigo[] }
 
-const SO_SIEM = ["panorama", "fila", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "inteligencia", "prova", "normas", "regras", "relatorios", "automacao"];
+const SO_SIEM = ["panorama", "fila", "casos", "eventos", "logs", "ataques", "fontes", "ativos", "arquivos", "inteligencia", "prova", "normas", "regras", "relatorios", "automacao"];
 // O menu mora em Aplicacao.tsx e não é exportado: aqui fica só o que decide quem vê cada tela.
 const ACESSO: Record<string, { modulo?: string; permissao?: string }> = {
   ...Object.fromEntries(SO_SIEM.map((v) => [v, { modulo: "siem" }])),
   vulnerabilidades: { modulo: "vulnerabilidades" },
   usuarios: { permissao: "gerir_usuarios" },
   auditoria: { permissao: "ver_auditoria" },
+  integracao: {},
 };
 
 const semAcento = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();

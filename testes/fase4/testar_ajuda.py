@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 RAIZ = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(RAIZ / "api"), str(RAIZ / "ingestao"), str(RAIZ / "motor")]
+sys.path[:0] = [str(RAIZ / "api"), str(RAIZ / "ingestao"), str(RAIZ / "motor"), str(RAIZ / "ueba")]
 
 from roar_api.app import ESTATICO, app  # noqa: E402
 from roar_ingestao.cves import prioridade  # noqa: E402
@@ -67,6 +67,22 @@ def main():
     registrar("o limite do risco é o da tela", "O alerta abre em 60 pontos" in ajuda and "O alerta abre em 60 pontos" in (RAIZ / "web/src/telas/Regras.tsx").read_text(encoding="utf-8"))
     from roar_motor.blocos import ACOES_CONHECIDAS
     registrar("a ajuda cobre as ações dos playbooks", set(ACOES_CONHECIDAS) == {"bloquear_ip", "desativar_conta", "webhook", "registrar"}, str(ACOES_CONHECIDAS))
+
+    from roar_ueba.motor import FATOR_DA_CRITICIDADE, PESOS, Parametros
+    sinais = dict(re.findall(r'(\w+): "([^"]+)"', (RAIZ / "web/src/formato.ts").read_text(encoding="utf-8").split("export const SINAIS")[1].split("};")[0]))
+    faltam = [t for tipo, t in sinais.items() if tipo in PESOS and t not in ajuda]
+    registrar("todo sinal de comportamento está na ajuda", set(PESOS) <= set(sinais) and not faltam, str(faltam or set(PESOS) - set(sinais)))
+    errados = [t for tipo, t in sinais.items() if tipo in PESOS and tipo != "regra_disparada" and f'["{t}", "{int(PESOS[tipo])} pontos"]' not in ajuda]
+    registrar("os pontos de cada sinal são os do motor", not errados, str(errados))
+    p = Parametros()
+    registrar("o aprendizado é o do motor", (p.aprendizado_dias, p.aprendizado_sucessos) == (14, 20) and "14 dias e 20 acessos" in ajuda)
+    registrar("o desconto dos pares é o do motor", p.fracao_com_pares == 1 / 3 and "soma um terço" in ajuda)
+    registrar("a criticidade pesa o que a ajuda diz", FATOR_DA_CRITICIDADE == {"baixa": 0.5, "normal": 1.0, "alta": 1.5, "critica": 2.0}
+              and "metade, o normal, 1,5 vez ou o dobro" in ajuda)
+    from roar_api.app import LIMITE_DA_EXPORTACAO_OCSF, PRAZO_DO_CASO
+    registrar("os prazos dos casos são os da API", {k: v.total_seconds() / 3600 for k, v in PRAZO_DO_CASO.items()} == {"critica": 4, "alta": 24, "media": 72, "baixa": 168}
+              and all(f'["{r}", "{t}"]' in ajuda for r, t in (("Crítica", "4 h"), ("Alta", "24 h"), ("Média", "3 dias"), ("Baixa", "7 dias"))))
+    registrar("o limite da exportação OCSF é o da API", LIMITE_DA_EXPORTACAO_OCSF == 10_000 and "até 10.000 eventos" in ajuda)
 
     print("\n== Entrega", flush=True)
     with TestClient(app, base_url="https://testserver") as http:
