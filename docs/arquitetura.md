@@ -147,7 +147,7 @@ Limites:
 - **Identidade por nome:** sem AD ou IAM, `EMPRESA\maria` e `OUTRA\maria` viram a mesma pessoa, e não há grupo de pares por departamento. Os pares são todos os usuários do cliente.
 - **Atraso de 30 segundos:** falhas que chegarem ao banco depois disso não contam para a força bruta vencida. Numa rodada real sem essa espera o sinal se perdeu; a causa provável é o indexer atualizar os shards em momentos diferentes, mas ela não foi confirmada.
 - **Viagem impossível em eventos reais:** testada com localização simulada, porque o agente real usou IP de documentação, sem geolocalização.
-- **Serviços:** ingestão e UEBA ainda são iniciados à mão (`python -m`), sem supervisão nem reinício automático.
+- **Serviços:** ingestão, UEBA e os demais rodam no systemd, com reinício automático (`infra/servicos.sh`).
 
 ### Fase 3: IA local
 
@@ -176,35 +176,35 @@ Automação: playbooks em blocos empilhados (quando, se, então, senão, ao mesm
 Limites da automação:
 
 - **Sem desbloqueio manual:** a API do Wazuh só envia o comando de adicionar. Para desfazer antes do prazo, é preciso remover a regra no próprio ativo.
-- **Quem cria:** sem papéis, qualquer analista do cliente cria um playbook que bloqueia.
+- **Quem cria:** só os perfis Administração e Engenharia de detecção criam playbooks; N2 aprova.
 - **Rede interna:** webhook de saída e busca em API só conectam em endereço público, no IP já conferido, sem seguir redirecionamento (`ingestao/roar_ingestao/rede_externa.py`). `ROAR_DESTINO_INTERNO=1` libera a rede interna, para instalações cujo destino está nela de propósito.
 - **Ações:** só bloquear, avisar e registrar. O catálogo das integrações e os scripts em contêiner isolado ainda não estão ligados à tela.
-- **Serviço:** `roar_motor.disparo` ainda é iniciado à mão, e gerenciadores criados antes desta versão precisam ser recriados para ter os prazos de bloqueio.
+- **Serviço:** `roar_motor.disparo` roda no systemd. Gerenciadores criados antes desta versão precisam ser recriados para ter os prazos de bloqueio.
 
 Fontes de dados (`ingestao/roar_ingestao/fontes.py`, aplicadas por um serviço de ciclo curto): agente, syslog e módulos de nuvem são os do próprio Wazuh, e a tela só os configura. Webhook de entrada e busca em API são nossos, porque o Wazuh não tem, e entregam ao analisador do gerenciador do cliente, passando pelas mesmas regras. Uma configuração recusada volta à anterior sem parar a coleta. Limites: GitHub, Microsoft 365, Graph, AWS, Azure e Google Cloud foram testados com credencial falsa, então está provado que a configuração é aceita e o módulo roda, mas não que os dados chegam; PagerDuty, VirusTotal e Maltiverse só têm a configuração aceita, e o aviso de ponta a ponta foi provado só com o Slack apontando para um receptor local; a credencial da AWS fica em `/root/.aws`, fora dos volumes, e se perde ao recriar o contêiner; no agente, desativar conta e os bloqueios dependem do que o ativo tem instalado, e sem isso a API responde sucesso e nada muda; o `netsh` de Windows não foi testado; Docker fica para depois, porque exige biblioteca Python no agente; o syslog do Wazuh não tem TLS; o comando de instalação só foi provado em Debian e Ubuntu; gerenciadores antigos precisam ganhar a porta de syslog.
 
 Guarda de credenciais (`ingestao/roar_ingestao/cofre.py`): a API só tem a chave pública, então grava e troca segredos, mas não os lê. Quem abre é o serviço que configura o gerenciador, com a chave privada, que fica em `/opt/panthera-roar/cofre` e nunca vai ao banco. O cliente e o nome da credencial entram na autenticação, então copiar um valor cifrado para outro cliente faz a abertura falhar. `testes/fase4/testar_cofre.py` comprova isso. Limites: quem tem root no servidor lê a chave privada, e os módulos de nuvem do Wazuh exigem a credencial aberta dentro do gerenciador daquele cliente.
 
-Falta nesta fase: cadastro de usuários pela tela (hoje só direto no banco).
-
 Limites da primeira parte:
 
 - **Bloqueio de login:** fica na memória de um processo e é por e-mail, então quem souber o e-mail de alguém consegue bloquear essa pessoa por 15 minutos.
-- **Sem MFA nem papéis:** todo usuário de um cliente vê tudo do cliente.
+- **Acesso:** perfis por função conferidos em cada rota, autenticador, passkeys e login único por OpenID Connect (`api/roar_api/entrada.py`). SAML ainda não.
 - **Regras em inglês:** as descrições vêm das regras do Wazuh.
 - **Tela local:** roda sem proxy nem HTTPS. O cookie exige HTTPS por padrão, e só o teste local desliga isso (`ROAR_COOKIE_SEGURO=0`).
 - **Consultas do panorama:** não foram medidas com volume real.
 
 ### Fase 5: casos
 
-Fica por último. Até aqui, a fila de alertas e a trilha de auditoria cobrem o fluxo de decisão. Requisitos previstos:
+Primeira parte pronta: o caso junta alertas, riscos e eventos de um incidente, com responsável, estado, prazo pela severidade, desfecho e um histórico que só cresce, em que toda mudança vira nota automática. `testes/fase4/testar_api.py` comprova o fluxo e o isolamento entre organizações.
 
-- linha do tempo com fuso horário;
+Ainda previstos:
+
 - fato e hipótese em campos separados;
-- ativos e indicadores com defang;
-- andamento, responsável e passagem de plantão;
-- evidências com hash e cadeia de custódia;
-- indicação de dado pessoal envolvido.
+- indicadores do caso com defang, ligados à caça de indicadores;
+- passagem de plantão;
+- evidências com hash ligadas ao caso, aproveitando os selos;
+- indicação de dado pessoal envolvido;
+- integração com Jira, ServiceNow e GLPI.
 
 ## Decisões em aberto
 
