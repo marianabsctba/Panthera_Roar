@@ -213,6 +213,13 @@ def main():
                       and reprovadas["2.2.4"]["exemplos"] == ["Garantir senha forte"], str(jn["configuracao"])[:200])
             registrar("checagem que voltou a passar não conta", all(c["total"] == 1 for c in jn["configuracao"]))
             registrar("o relatório traz a guarda dos registros", "retencao_alertas_dias" in jn["guarda"] and "selos" in jn["guarda"])
+            jl = http.get("/api/normas/relatorio", params={"norma": "lgpd", "dias": 30, "formato": "json"}).json()
+            art38 = next((c for c in jl["controles"] if c["controle"] == "Art. 38"), {})
+            registrar("a LGPD sai do GDPR, artigo por artigo", jl["derivada_de"] == "GDPR" and art38.get("total") == 25
+                      and art38.get("nome", "").startswith("Relatório de impacto"), str(art38)[:160])
+            _, paginas_l = texto_do_pdf(http.get("/api/normas/relatorio", params={"norma": "lgpd", "dias": 30}).content)
+            texto_l = " ".join(" ".join(paginas_l).split())
+            registrar("o PDF da LGPD explica de onde vêm os controles", "Relatório de conformidade: LGPD" in texto_l and "O Wazuh não marca a LGPD nas regras" in texto_l)
             registrar("norma inventada é recusada", http.get("/api/normas/relatorio", params={"norma": "iso_inventada"}).status_code == 422)
             registrar("a geração do relatório de norma fica registrada", admin.execute(
                 "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'gerar_relatorio_de_norma' AND alvo LIKE %s",

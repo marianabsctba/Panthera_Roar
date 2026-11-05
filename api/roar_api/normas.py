@@ -6,7 +6,7 @@ Quando um controle não está aqui, vale o nome do requisito ou da família acim
 
 import re
 
-NORMAS = {"pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+NORMAS = {"lgpd": "LGPD", "pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
 
 # As regras do Wazuh seguem o PCI DSS 3.2.1.
 PCI_DSS = {
@@ -84,6 +84,20 @@ GDPR = {
     "II": "Cap. II: princípios do tratamento", "IV": "Cap. IV: controlador e operador",
 }
 
+# Lei 13.709/2018.
+LGPD = {
+    "Art. 6, VII": "Princípio da segurança: proteger os dados pessoais de acesso indevido e de incidentes",
+    "Art. 37": "Registro das operações de tratamento",
+    "Art. 38": "Relatório de impacto: medidas e mecanismos para reduzir os riscos",
+    "Art. 46": "Medidas de segurança, técnicas e administrativas, contra acesso indevido e incidentes",
+    "Art. 48": "Comunicar à ANPD e ao titular incidente que possa causar risco ou dano relevante",
+    "Art. 49": "Sistemas que tratam dados pessoais seguindo requisitos de segurança",
+    "Art. 50": "Boas práticas e programa de governança em privacidade",
+}
+
+# A LGPD não vem marcada nas regras do Wazuh. Os controles saem do GDPR, artigo por artigo, pelo mesmo fundamento.
+DERIVADAS = {"lgpd": ("gdpr", {"II_5.1.f": "Art. 6, VII", "IV_30.1.g": "Art. 37", "IV_32.2": "Art. 46", "IV_35.7.d": "Art. 38"})}
+
 HIPAA = {
     "164.308": "Salvaguardas administrativas", "164.310": "Salvaguardas físicas", "164.312": "Salvaguardas técnicas",
     "164.308.a.1": "Gestão da segurança: análise de risco e revisão de atividade",
@@ -144,7 +158,7 @@ GPG13 = {
     "10": "Situação da trilha de auditoria",
 }
 
-CATALOGO = {"pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
+CATALOGO = {"lgpd": LGPD, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
 
 
 def _acima(controle):
@@ -154,12 +168,60 @@ def _acima(controle):
         yield "".join(partes[:fim])
 
 
+def origem(norma):
+    """A chave da norma no alerta e, para a norma derivada, a correspondência de cada controle."""
+    return DERIVADAS.get(norma, (norma, None))
+
+
+def traduzir(norma, controles):
+    """Os controles do alerta nos da norma pedida. Na derivada, o que não tem correspondência fica de fora."""
+    _, mapa = origem(norma)
+    return [c for c in controles if c] if mapa is None else sorted({mapa[c] for c in controles if c in mapa})
+
+
+def controles_com_alerta(con, norma, dias, limite=200):
+    """Alertas por controle no período, com a maior severidade, os ativos e as principais regras."""
+    chave, mapa = origem(norma)
+    juncao, coluna, parametros = "", "c.controle", {"chave": chave, "d": dias, "l": limite}
+    if mapa:
+        juncao = "JOIN unnest(%(de)s::text[], %(para)s::text[]) AS m(origem, controle) ON m.origem = c.controle"
+        coluna = "m.controle"
+        parametros.update(de=list(mapa), para=list(mapa.values()))
+    linhas = con.execute(f"""
+        SELECT {coluna} AS controle, count(DISTINCT e.id) AS total, max(e.nivel) AS nivel, count(DISTINCT e.agente_id) AS ativos, max(e.ocorrido_em) AS ultimo,
+               (array_agg(e.severidade ORDER BY array_position(ARRAY['baixa', 'media', 'alta', 'critica'], e.severidade) DESC))[1] AS severidade,
+               (array_agg(DISTINCT e.regra_descricao))[1:3] AS regras, array_agg(DISTINCT c.controle) AS origens
+        FROM eventos e
+          CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(chave)s) = 'array'
+                                                            THEN e.bruto -> 'rule' -> %(chave)s ELSE '[]' END) AS c(controle)
+          {juncao}
+        WHERE e.ocorrido_em >= now() - make_interval(days => %(d)s)
+        GROUP BY 1 ORDER BY total DESC LIMIT %(l)s""", parametros).fetchall()
+    for linha in linhas:
+        linha["nome"] = nome_do_controle(norma, linha["controle"])
+    return linhas
+
+
+def controles_cobertos(con, norma):
+    chave, _ = origem(norma)
+    citados = [l["controle"] for l in con.execute(
+        "SELECT DISTINCT jsonb_array_elements_text(normas -> %s) AS controle FROM regras WHERE normas ? %s", (chave, chave)).fetchall()]
+    return traduzir(norma, citados)
+
+
+def regras_da_norma(con, norma):
+    chave, _ = origem(norma)
+    return con.execute("SELECT count(*) AS total FROM regras WHERE normas ? %s", (chave,)).fetchone()["total"]
+
+
 def nome_do_controle(norma, controle, so_o_requisito=False):
     """O nome do controle, ou do primeiro nível acima que tiver nome. None se a norma não diz nada sobre ele."""
     catalogo = CATALOGO.get(norma, {})
     codigo = str(controle).strip()
     if norma == "tsc":
         codigo = codigo.upper()
+    if codigo in catalogo and not so_o_requisito:
+        return catalogo[codigo]
     niveis = list(_acima(codigo))
     if so_o_requisito:
         niveis = niveis[-1:]

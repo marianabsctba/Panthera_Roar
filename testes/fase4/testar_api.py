@@ -508,6 +508,10 @@ def main():
         registrar("controle da norma só do cliente", [c["controle"] for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]] == ["IV_32.2"])
         registrar("o controle da norma vem com o nome", next(c for c in http.get("/api/normas", params={"norma": "gdpr"}).json()["controles"]
                                                             if c["controle"] == "IV_32.2")["nome"].startswith("Art. 32(2)"))
+        lgpd = http.get("/api/normas").json()
+        art46 = next((c for c in lgpd["controles"] if c["controle"] == "Art. 46"), {})
+        registrar("a LGPD é a norma padrão e sai do GDPR", lgpd["norma"] == "lgpd" and lgpd["derivada_de"] == "GDPR" and lgpd["chave"] == "gdpr"
+                  and art46.get("origens") == ["IV_32.2"] and art46.get("nome", "").startswith("Medidas de segurança"), str(art46))
         from roar_api.normas import CATALOGO, nome_do_controle
         registrar("controle sem nome próprio leva o do nível acima", (nome_do_controle("hipaa", "164.310.d"), nome_do_controle("nist_800_53", "RA.5"),
                   nome_do_controle("tsc", "cc6.8"), nome_do_controle("gpg13", "4.12")) == ("Salvaguardas físicas", "Avaliação de risco",

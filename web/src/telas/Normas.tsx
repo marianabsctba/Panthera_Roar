@@ -6,8 +6,8 @@ import { AcoesDaLinha, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Pai
 import { numero } from "../formato";
 import { GavetaDaRegra, severidadeDoNivel, type DetalheDaRegra } from "./Ataques";
 
-interface Controle { controle: string; nome: string | null; total: number; nivel: number; ultimo: string | null; ativos: number }
-interface VisaoDaNorma { norma: string; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
+interface Controle { controle: string; nome: string | null; total: number; nivel: number; ultimo: string | null; ativos: number; origens: string[] }
+interface VisaoDaNorma { norma: string; chave: string; derivada_de: string | null; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
 
 const PAGINA_DE_REGRAS = 100;
 const LOTE = 8;
@@ -46,7 +46,7 @@ function useRegrasDoControle(norma: string, controle: Controle | null, dias: str
           const lote = await Promise.all(ids.slice(i, i + LOTE).map(detalheDe));
           if (!valendo) return;
           for (const d of lote) {
-            if (d?.regra.normas?.[norma]?.includes(controle.controle)) {
+            if (d && controle.origens.some((o) => d.regra.normas?.[norma]?.includes(o))) {
               achadas.push(d);
               soma += Number(d.disparos.total);
             }
@@ -163,7 +163,7 @@ function RelatorioDaNorma({ norma, rotulo }: { norma: string; rotulo: string }) 
 }
 
 export function Normas() {
-  const [norma, setNorma] = useState("gdpr");
+  const [norma, setNorma] = useState("lgpd");
   const [dias, setDias] = useState("30");
   const [controle, setControle] = useState<Controle | null>(null);
   const [regra, setRegra] = useState<string | null>(null);
@@ -183,6 +183,9 @@ export function Normas() {
       {!dados ? <Carregando erro={erro} /> : (
         <Stack gap="md">
           <SegmentedControl size="xs" style={{ alignSelf: "flex-start" }} value={norma} onChange={trocar(setNorma)} data={Object.entries(dados.normas).map(([value, label]) => ({ value, label }))} aria-label="Norma" />
+          {dados.derivada_de && (
+            <Text size="xs" c="dimmed">As regras não marcam a {dados.normas[dados.norma]}. Os controles saem do {dados.derivada_de}, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) no Art. 6, VII; Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38.</Text>
+          )}
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             <Numero rotulo={`Controles com alertas em ${dias} dias`} valor={numero(dados.controles.length)} />
             <Numero rotulo="Regras que cobrem esta norma" valor={numero(dados.regras_da_norma)} />
@@ -206,7 +209,7 @@ export function Normas() {
         </Stack>
       )}
       <GavetaDoControle
-        norma={dados?.norma ?? norma}
+        norma={dados?.chave ?? norma}
         rotuloDaNorma={dados?.normas[dados.norma] ?? norma}
         controle={controle}
         dias={dias}

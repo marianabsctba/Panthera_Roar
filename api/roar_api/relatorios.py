@@ -113,11 +113,7 @@ def coletar(con, dias):
 
     d["normas"] = []
     for chave, rotulo in NORMAS.items():
-        controles = _linhas(con, f"""SELECT c.controle, count(*) AS total, count(DISTINCT e.agente_id) AS ativos, max(e.ocorrido_em) AS ultimo
-                                     FROM eventos e, jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(norma)s) = 'array' THEN e.bruto -> 'rule' -> %(norma)s ELSE '[]' END) AS c(controle)
-                                     WHERE e.{janela} GROUP BY 1 ORDER BY total DESC LIMIT %(l)s""", norma=chave, **p)
-        for c in controles:
-            c["nome"] = catalogo_de_normas.nome_do_controle(chave, c["controle"])
+        controles = catalogo_de_normas.controles_com_alerta(con, chave, dias, LIMITE_DE_LINHAS)
         d["normas"].append({"rotulo": rotulo, "controles": controles})
 
     d["auditoria_acoes"] = _linhas(con, "SELECT acao, count(*) AS total, max(em) AS ultimo FROM auditoria WHERE em >= now() - make_interval(days => %(d)s) GROUP BY 1 ORDER BY total DESC", **p)
@@ -187,19 +183,13 @@ def coletar_norma(con, norma, dias):
     p = {"d": dias, "n": norma, "l": LIMITE_DE_CONTROLES}
     janela = "ocorrido_em >= now() - make_interval(days => %(d)s)"
     d = {}
-    d["controles"] = _linhas(con, f"""
-        SELECT c.controle, count(*) AS total, max(e.nivel) AS nivel, count(DISTINCT e.agente_id) AS ativos, max(e.ocorrido_em) AS ultimo,
-               (array_agg(e.severidade ORDER BY array_position(ARRAY['baixa', 'media', 'alta', 'critica'], e.severidade) DESC))[1] AS severidade,
-               (array_agg(DISTINCT e.regra_descricao))[1:3] AS regras
-        FROM eventos e, jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(n)s) = 'array' THEN e.bruto -> 'rule' -> %(n)s ELSE '[]' END) AS c(controle)
-        WHERE e.{janela} GROUP BY c.controle ORDER BY total DESC LIMIT %(l)s""", **p)
-    cobertos = sorted({r["controle"] for r in _linhas(con, "SELECT DISTINCT jsonb_array_elements_text(normas -> %(n)s) AS controle FROM regras WHERE normas ? %(n)s", **p)},
-                      key=_ordem_do_controle)
-    for c in d["controles"]:
-        c["nome"] = catalogo_de_normas.nome_do_controle(norma, c["controle"])
+    d["controles"] = catalogo_de_normas.controles_com_alerta(con, norma, dias, LIMITE_DE_CONTROLES)
+    cobertos = sorted(catalogo_de_normas.controles_cobertos(con, norma), key=_ordem_do_controle)
     com_alerta = {c["controle"] for c in d["controles"]}
     d["cobertos_sem_alerta"] = [{"controle": c, "nome": catalogo_de_normas.nome_do_controle(norma, c)} for c in cobertos if c not in com_alerta]
-    d["regras_da_norma"] = _um(con, "SELECT count(*) AS t FROM regras WHERE normas ? %(n)s", **p)["t"]
+    d["regras_da_norma"] = catalogo_de_normas.regras_da_norma(con, norma)
+    chave_no_alerta, mapa = catalogo_de_normas.origem(norma)
+    d["derivada_de"] = NORMAS[chave_no_alerta] if mapa else None
 
     # A última situação de cada checagem em cada ativo: a reprovada que depois passou não conta.
     checagens = _linhas(con, f"""
@@ -212,8 +202,8 @@ def coletar_norma(con, norma, dias):
     for c in checagens:
         if c["resultado"] != "failed" or not isinstance(c["mapeamento"], dict):
             continue
-        for chave in NORMA_NA_CHECAGEM.get(norma, ()):
-            for controle in _textos(c["mapeamento"].get(chave)):
+        for chave in NORMA_NA_CHECAGEM.get(chave_no_alerta, ()):
+            for controle in catalogo_de_normas.traduzir(norma, _textos(c["mapeamento"].get(chave))):
                 reprovadas[controle].append(c)
     # As checagens seguem o PCI DSS 4.0, de numeração diferente da 3.2.1 do catálogo: ali só o requisito principal é o mesmo.
     so_o_requisito = norma == "pci_dss"

@@ -1484,24 +1484,20 @@ NORMAS_CONHECIDAS = catalogo_de_normas.NORMAS
 
 
 @app.get("/api/normas")
-def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str = "gdpr", dias: int = 30):
+def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str = "lgpd", dias: int = 30):
     """Alertas por controle da norma, como o Wazuh já os marca em cada regra."""
     if norma not in NORMAS_CONHECIDAS:
         raise HTTPException(status_code=422)
     dias = max(1, min(dias, 90))
     with do_cliente(request, sessao) as con:
-        controles = con.execute(
-            """SELECT c.controle, count(*) AS total, max(e.nivel) AS nivel, max(e.ocorrido_em) AS ultimo,
-                      count(DISTINCT e.agente_id) AS ativos
-               FROM eventos e, jsonb_array_elements_text(
-                      CASE WHEN jsonb_typeof(e.bruto -> 'rule' -> %(n)s) = 'array' THEN e.bruto -> 'rule' -> %(n)s ELSE '[]' END
-                    ) AS c(controle)
-               WHERE e.ocorrido_em >= now() - make_interval(days => %(d)s)
-               GROUP BY c.controle ORDER BY total DESC LIMIT 200""", {"n": norma, "d": dias}).fetchall()
-        regras_da_norma = con.execute("SELECT count(*) AS total FROM regras WHERE normas ? %s", (norma,)).fetchone()["total"]
+        controles = catalogo_de_normas.controles_com_alerta(con, norma, dias)
+        regras_da_norma = catalogo_de_normas.regras_da_norma(con, norma)
     for c in controles:
-        c["nome"] = catalogo_de_normas.nome_do_controle(norma, c["controle"])
-    return {"norma": norma, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma}
+        del c["regras"]
+    chave, mapa = catalogo_de_normas.origem(norma)
+    # A gaveta procura as regras pela marcação que vem nelas: a da LGPD é a do GDPR.
+    return {"norma": norma, "chave": chave, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma,
+            "derivada_de": NORMAS_CONHECIDAS[chave] if mapa else None}
 
 
 @app.get("/api/normas/relatorio")
