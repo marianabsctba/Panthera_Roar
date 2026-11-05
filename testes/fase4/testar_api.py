@@ -144,6 +144,37 @@ def testar_mascara_sem_banco():
     registrar("só o que está ligado é mascarado", so_ip == {"usuario": "maria", "ip_origem": "2001:x:x", "texto": "maria@x.com"}, str(so_ip))
 
 
+def testar_ocsf_sem_banco():
+    print("\n== OCSF", flush=True)
+    from roar_api.ocsf import converter
+    agora = datetime.now(timezone.utc)
+    base = {"id": 7, "ocorrido_em": agora, "recebido_em": agora, "severidade": "media", "regra_id": "5715", "agente_nome": "srv", "agente_id": "001",
+            "ip_origem": "203.0.113.9", "usuario": "ana"}
+    login = converter({**base, "regra_grupos": ["sshd", "authentication_success"], "bruto": {}})
+    registrar("login vira Authentication com sucesso", (login["class_uid"], login["type_uid"], login["status_id"], login["user"]["name"])
+              == (3002, 300201, 1, "ana"), str(login)[:200])
+    falha = converter({**base, "regra_grupos": ["authentication_failed"], "bruto": {}})
+    registrar("falha de login vira Authentication com falha", (falha["class_uid"], falha["status"]) == (3002, "Failure"))
+    arquivo = converter({**base, "usuario": None, "regra_grupos": ["ossec", "syscheck"],
+                         "bruto": {"syscheck": {"path": "/etc/shadow", "event": "modified", "sha256_after": "ab" * 32}}})
+    registrar("integridade vira File System Activity com o resumo", (arquivo["class_uid"], arquivo["activity_name"], arquivo["file"]["name"],
+              arquivo["file"]["hashes"][0]["algorithm"]) == (1001, "Update", "shadow", "SHA-256"), str(arquivo.get("file")))
+    grupo = converter({**base, "regra_grupos": ["windows"], "bruto": {"data": {"win": {"system": {"eventID": "4732"}, "eventdata": {
+        "targetUserName": "Administrators", "memberName": "bob", "subjectUserName": "ana"}}}}})
+    registrar("entrada em grupo vira Group Management", (grupo["class_uid"], grupo["group"]["name"], grupo["user"]["name"], grupo["actor"]["user"]["name"])
+              == (3006, "Administrators", "bob", "ana"))
+    registrar("sudo vira Authorize Session", converter({**base, "regra_grupos": ["sudo"], "bruto": {}})["class_uid"] == 3003)
+    achado = converter({**base, "regra_grupos": ["web", "attack"], "mitre": ["T1190"], "bruto": {}},
+                       {"T1190": {"nome": "Exploit Public-Facing Application", "tatica": "Initial Access"}})
+    registrar("o resto vira Detection Finding com a técnica do ATT&CK", (achado["class_uid"], achado["finding_info"]["attacks"][0]["technique"]["name"],
+              achado["finding_info"]["attacks"][0]["tactic"]["name"], achado["severity_id"]) == (2004, "Exploit Public-Facing Application", "Initial Access", 3))
+    sca = converter({**base, "usuario": None, "regra_grupos": ["sca"], "bruto": {"data": {"sca": {"type": "check", "policy": "CIS Debian 12",
+                    "check": {"id": "28500", "title": "Garantir /tmp separado", "result": "failed", "compliance": {"cis": "1.1.2"}}}}}})
+    registrar("checagem de configuração vira Compliance Finding", (sca["class_uid"], sca["compliance"]["status"], sca["compliance"]["standards"],
+              sca["finding_info"]["title"]) == (2003, "Fail", ["CIS Debian 12"], "Garantir /tmp separado"), str(sca)[:200])
+    registrar("campo vazio não aparece", "status" not in converter({**base, "regra_grupos": [], "bruto": {}, "usuario": None}).get("user", {}))
+
+
 def testar_caca(http, a):
     print("\n== Caça de indicadores", flush=True)
     entrar(http, a)
@@ -232,6 +263,8 @@ def testar_triagem(http, a):
     registrar("o normal traz os IPs e privilégios já vistos", normal["ips"][0]["contagem"] == 7 and normal["privilegios"][0]["como"] == "root",
               str(normal["privilegios"]))
     registrar("o normal de entidade de outro cliente não aparece", http.get(f"/api/entidades/{2**40}/normal").status_code == 404)
+    outro = ADMIN.execute("SELECT id FROM eventos WHERE cliente_id <> %s ORDER BY id DESC LIMIT 1", (a["id"],)).fetchone()[0]
+    registrar("evento de outra organização não sai em OCSF", http.get(f"/api/eventos/{outro}/ocsf").status_code == 404)
     registrar("silêncio de sinal desconhecido é recusado", http.post("/api/silencios", json={"tipo": "inventado", "motivo": "x"}).status_code == 422)
     registrar("silêncio sem motivo é recusado", http.post("/api/silencios", json={"tipo": "primeiro_ip", "motivo": ""}).status_code == 422)
     criado = http.post("/api/silencios", json={"tipo": "primeiro_ip", "entidade_id": entidade, "motivo": "plantão", "dias": 7})
@@ -271,6 +304,8 @@ def testar_ofuscacao(http, a):
     ADMIN.execute("UPDATE eventos SET bruto = bruto || %s WHERE id = %s",
                   (Jsonb({"full_log": "login de fulano@exemplo.com.br, cpf 529.982.247-25", "data": {"srcuser": "fulano", "srcip": "203.0.113.5"}}), evento))
     entrar(http, n1)
+    exportado = http.get("/api/eventos/ocsf", params={"dias": 30}).text
+    registrar("N1 recebe a exportação em OCSF mascarada", "203.0.113.5" not in exportado and '"fulano"' not in exportado and "203.0.x.x" in exportado, exportado[:200])
     eu = http.get("/api/eu").json()
     registrar("N1 sabe que vê mascarado", eu["dados_mascarados"] is True and "usuario" in eu["ofuscar"])
     linha = next((e for e in http.get("/api/eventos").json()["eventos"] if e["id"] == evento), {})
@@ -287,6 +322,15 @@ def testar_ofuscacao(http, a):
 
     entrar(http, a)
     registrar("administrador vê o original", "529.982.247-25" in http.get(f"/api/eventos/{evento}/bruto").text)
+    um_evento = http.get(f"/api/eventos/{evento}/ocsf").json()
+    registrar("evento em OCSF pela API", (um_evento["metadata"]["version"], um_evento["metadata"]["uid"], um_evento["src_endpoint"]["ip"])
+              == ("1.3.0", str(evento), "203.0.113.5") and "bruto" not in um_evento and "raw_data" not in um_evento, str(um_evento)[:200])
+    resposta = http.get("/api/eventos/ocsf", params={"dias": 30})
+    linhas = [json.loads(l) for l in resposta.text.splitlines()]
+    total = ADMIN.execute("SELECT count(*) FROM eventos WHERE cliente_id = %s AND ocorrido_em >= now() - interval '30 days'", (a["id"],)).fetchone()[0]
+    registrar("exportação traz uma linha de OCSF por evento do filtro", resposta.headers["content-type"].startswith("application/x-ndjson")
+              and len(linhas) == total == int(resposta.headers["x-eventos"]) and all(l["metadata"]["product"]["name"] == "Panthera Roar" for l in linhas))
+    registrar("exportação respeita o filtro", http.get("/api/eventos/ocsf", params={"dias": 30, "regra": "nenhuma"}).text == "")
     registrar("categoria desconhecida é recusada", http.request("PUT", "/api/organizacao/ofuscacao", json={"categorias": ["senha"]}).status_code == 422)
     registrar("administrador desliga o IP", http.request("PUT", "/api/organizacao/ofuscacao", json={"categorias": ["usuario", "cpf"]}).status_code == 204)
     http.post("/api/sair")
@@ -642,6 +686,7 @@ def main():
         registrar("não troca o próprio cliente pelo cadastro", recusado(lambda: api.execute("UPDATE clientes SET nome = 'x'")))
 
     testar_linha_do_tempo()
+    testar_ocsf_sem_banco()
 
     falhas = [n for n, ok in RESULTADOS if not ok]
     print(f"\n{len(RESULTADOS) - len(falhas)} de {len(RESULTADOS)} passaram.")

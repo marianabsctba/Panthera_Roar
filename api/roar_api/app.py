@@ -45,7 +45,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import evidencia, mfa, modulos, ofuscacao, permissoes, relatorios  # noqa: E402
+from roar_api import evidencia, mfa, modulos, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -1032,12 +1032,29 @@ def _sem_curinga(texto):
     return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-@app.get("/api/eventos")
-def eventos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), busca: str = "", severidade: str = "",
-            dias: int = 30, antes_de: int = 0, pais: str = "", cidade: str = "", dia: str = "", severidades: str = "", origem: str = "",
-            sinal: str = "", entidade: str = "", alertas: bool = False, regra: str = "", agente: str = "", gerenciador: str = "", operadora: str = ""):
-    """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
-    dias = max(1, min(dias, 90))
+class FiltroDeEventos(BaseModel):
+    """Os filtros da tela de Eventos. A lista e a exportação contam do mesmo jeito."""
+    busca: str = ""
+    severidade: str = ""
+    dias: int = 30
+    pais: str = ""
+    cidade: str = ""
+    dia: str = ""
+    severidades: str = ""
+    origem: str = ""
+    sinal: str = ""
+    entidade: str = ""
+    alertas: bool = False
+    regra: str = ""
+    agente: str = ""
+    gerenciador: str = ""
+    operadora: str = ""
+
+
+def _condicoes_dos_eventos(sessao, f):
+    busca, severidade, pais, cidade, dia, severidades = f.busca, f.severidade, f.pais, f.cidade, f.dia, f.severidades
+    origem, sinal, entidade, alertas, regra, agente, gerenciador, operadora = f.origem, f.sinal, f.entidade, f.alertas, f.regra, f.agente, f.gerenciador, f.operadora
+    dias = max(1, min(f.dias, 90))
     condicoes = ["ocorrido_em >= now() - make_interval(days => %s)"]
     parametros = [dias]
     busca = busca.strip()[:200]
@@ -1088,6 +1105,13 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True
     if gerenciador:
         condicoes.append("gerenciador_id = %s")
         parametros.append(gerenciador[:64])
+    return condicoes, parametros
+
+
+@app.get("/api/eventos")
+def eventos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), filtro: FiltroDeEventos = Depends(), antes_de: int = 0):
+    """Todos os eventos, inclusive os normais, em páginas do mais novo para o mais antigo."""
+    condicoes, parametros = _condicoes_dos_eventos(sessao, filtro)
     if 0 < antes_de < 2**63:
         condicoes.append("id < %s")
         parametros.append(antes_de)
@@ -1100,6 +1124,50 @@ def eventos(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True
                 FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s""",
             (*parametros, TAMANHO_DA_PAGINA + 1)).fetchall()
     return {"eventos": linhas[:TAMANHO_DA_PAGINA], "ha_mais": len(linhas) > TAMANHO_DA_PAGINA}
+
+
+LIMITE_DA_EXPORTACAO_OCSF = 10_000
+COLUNAS_DO_OCSF = """id, origem, origem_id, ocorrido_em, recebido_em, nivel, severidade, regra_id, regra_descricao, regra_grupos, mitre,
+                     gerenciador_id, agente_id, agente_nome, host(ip_origem) AS ip_origem, usuario, bruto, pais, cidade, regiao, operadora, asn"""
+
+
+def _tecnicas_para_ocsf(con, linhas):
+    codigos = sorted({c for l in linhas for t in (l["mitre"] or []) for c in (t, t.split(".")[0])})
+    if not codigos:
+        return {}
+    return {t["tecnica"]: {"nome": t["nome"], "tatica": t["tatica"]} for t in con.execute(
+        """SELECT a.tecnica, a.nome, coalesce(t.nome, a.taticas[1]) AS tatica
+           FROM tecnicas_attack a LEFT JOIN taticas_attack t ON t.tatica = a.taticas[1] WHERE a.tecnica = ANY(%s)""", (codigos,)).fetchall()}
+
+
+@app.get("/api/eventos/ocsf")
+def exportar_eventos_em_ocsf(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), filtro: FiltroDeEventos = Depends()):
+    """Os eventos do filtro em OCSF, uma linha de JSON por evento, para outro SIEM ou data lake."""
+    condicoes, parametros = _condicoes_dos_eventos(sessao, filtro)
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute(f"SELECT {COLUNAS_DO_OCSF} FROM eventos WHERE {' AND '.join(condicoes)} ORDER BY id DESC LIMIT %s",
+                             (*parametros, LIMITE_DA_EXPORTACAO_OCSF)).fetchall()
+        tecnicas = _tecnicas_para_ocsf(con, linhas)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'exportar_ocsf', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{len(linhas)} eventos, {filtro.dias} dias"))
+    # NDJSON não passa pelo mascaramento da saída: aqui cada objeto é mascarado antes de virar texto.
+    mascara = getattr(request.state, "mascara", None)
+    request.state.mascara = None
+    objetos = (ocsf.converter(l, tecnicas) for l in linhas)
+    corpo = "".join(json.dumps(mascara.dado(o) if mascara else o, ensure_ascii=False, separators=(",", ":")) + "\n" for o in objetos)
+    nome = f"eventos-ocsf-{datetime.now(timezone.utc):%Y%m%d-%H%M}.ndjson"
+    return Response(corpo, media_type="application/x-ndjson", headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Eventos": str(len(linhas))})
+
+
+@app.get("/api/eventos/{identificador}/ocsf")
+def evento_em_ocsf(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """Um evento em OCSF. O log como chegou não vai junto: ele fica em /bruto, para quem pode ver."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(f"SELECT {COLUNAS_DO_OCSF} FROM eventos WHERE id = %s", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        return ocsf.converter(linha, _tecnicas_para_ocsf(con, [linha]))
 
 
 @app.get("/api/eventos/{identificador}/contexto")

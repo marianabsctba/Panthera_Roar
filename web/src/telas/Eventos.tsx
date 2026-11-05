@@ -67,12 +67,18 @@ function localDoEvento(e: EventoResumo) {
   return e.pais ? nomeDoPais(e.pais) : null;
 }
 
+function EventoEmOcsf({ id }: { id: number }) {
+  const { dados, erro } = useDados<unknown>(`/api/eventos/${id}/ocsf`);
+  return dados ? <BlocoDeJson valor={dados} /> : <Carregando erro={erro ? "Não foi possível converter este evento." : null} />;
+}
+
 function CorpoDoEvento({ evento, aoFiltrar }: { evento: EventoResumo; aoFiltrar?: (filtro: FiltroDoEvento) => void }) {
   const eu = useEu();
   const pode = usePode();
   const verBruto = pode("ver_bruto");
   const { dados, erro } = useDados<EventoBruto>(verBruto ? `/api/eventos/${evento.id}/bruto` : null);
   const local = localDoEvento(evento);
+  const [emOcsf, setEmOcsf] = useState(false);
   const ir = (filtro: FiltroDoEvento) => (aoFiltrar ? () => aoFiltrar(filtro) : undefined);
   return (
     <Stack gap="md">
@@ -87,6 +93,11 @@ function CorpoDoEvento({ evento, aoFiltrar }: { evento: EventoResumo; aoFiltrar?
         {local && <Fato rotulo="Local provável" valor={local} />}
         {evento.mitre && evento.mitre.length > 0 && <Fato rotulo="MITRE ATT&CK" valor={evento.mitre.join(", ")} mono />}
       </SimpleGrid>
+      <Group gap="xs">
+        <Button size="xs" variant="default" onClick={() => setEmOcsf((v) => !v)}>{emOcsf ? "Esconder o OCSF" : "Ver em OCSF"}</Button>
+        <Text size="xs" c="dimmed">O mesmo evento no padrão aberto OCSF 1.3.0, que outro SIEM ou um data lake leem sem tradutor.</Text>
+      </Group>
+      {emOcsf && <EventoEmOcsf id={evento.id} />}
       {verBruto && (dados ? (
         <>
           <Group justify="space-between" wrap="wrap" gap="xs">
@@ -228,7 +239,11 @@ export function Eventos() {
 
   return (
     <>
-      <Cabecalho titulo="Eventos" ajuda="Todos os eventos, inclusive os normais, do mais novo para o mais antigo. Clique em um para ver o detalhe." />
+      <Cabecalho titulo="Eventos" ajuda="Todos os eventos, inclusive os normais, do mais novo para o mais antigo. Clique em um para ver o detalhe.">
+        <Tooltip label="Até 10.000 eventos do filtro atual, um por linha, no padrão OCSF 1.3.0">
+          <Button component="a" href={`/api/eventos/ocsf?${consulta}`} download variant="default">Exportar em OCSF</Button>
+        </Tooltip>
+      </Cabecalho>
       <Stack gap="sm">
         <Group justify="space-between" gap="xs" wrap="wrap">
           <Group gap="xs" wrap="wrap">

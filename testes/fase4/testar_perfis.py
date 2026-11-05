@@ -69,6 +69,7 @@ ROTAS = {
     ("GET", "/api/inteligencia"): "ver", ("POST", "/api/inteligencia/fontes"): "gerir_fontes", ("DELETE", "/api/inteligencia/fontes/{identificador}"): "gerir_fontes", ("POST", "/api/inteligencia/fontes/{identificador}/sincronizar"): "gerir_fontes",
     ("GET", "/api/volume"): "ver", ("GET", "/api/integridade"): "ver", ("POST", "/api/integridade/evidencia"): "ver_bruto",
     ("POST", "/api/usuarios/{identificador}/mfa/remover"): "gerir_usuarios", ("PUT", "/api/organizacao/mfa"): "gerir_usuarios", ("PUT", "/api/organizacao/ofuscacao"): "gerir_usuarios", ("PUT", "/api/ativos/criticidade"): "gerir_regras", ("GET", "/api/entidades/{identificador}/normal"): "ver",
+    ("GET", "/api/eventos/ocsf"): "ver", ("GET", "/api/eventos/{identificador}/ocsf"): "ver",
     ("POST", "/api/inteligencia/cacar"): "ver", ("POST", "/api/inteligencia/vigiar"): "gerir_fontes",
     ("GET", "/api/casos"): "ver", ("GET", "/api/casos/do-item"): "ver", ("POST", "/api/casos"): "triar", ("GET", "/api/casos/{identificador}"): "ver",
     ("PATCH", "/api/casos/{identificador}"): "triar", ("POST", "/api/casos/{identificador}/itens"): "triar",

@@ -11,7 +11,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Parser customizado | 4 | Do Wazuh, sem tela |
 | | Cache no coletor | 4 | Do Wazuh, não medido |
 | | Fluxo de rede | 4 | Falta |
-| Normalização | Padrão único | 4 | Parcial: evento próprio, sem OCSF |
+| Normalização | Padrão único | 4 | Feito: todo evento sai em OCSF 1.3.0 (autenticação, arquivo, conta, grupo, sessão, conformidade e achado de detecção), um a um ou exportado com os filtros da tela |
 | Correlação | Regras customizáveis | 4 | Feito: guiada, Sigma e XML, editar e desativar também as do catálogo |
 | | Regras prontas | 4 | Feito: catálogo do Wazuh na tela, mais a base Sigma |
 | | Listas de observação | 3 | Do Wazuh, sem tela |
