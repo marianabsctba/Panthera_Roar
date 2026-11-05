@@ -1,9 +1,10 @@
-import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, PasswordInput, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
+import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, PasswordInput, SegmentedControl, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconCopy, IconPlus } from "@tabler/icons-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { detalhe, enviar, useDados } from "../api";
 import { AcoesDaLinha, BlocoDeComando, Busca, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela } from "../componentes";
+import { LogoDaMicrosoft, LogoDoGoogle } from "../Entrada";
 import { numero } from "../formato";
 
 interface Usuario { id: string; email: string; nome: string; perfil: string; ativo: boolean; criado_em: string | null; mfa_ativo: boolean }
@@ -62,11 +63,13 @@ function DadosPessoais() {
   );
 }
 
-interface ConfigDoSso { emissor: string; client_id: string; tem_segredo: boolean; dominios: string[]; ativo: boolean; exigir: boolean; atualizado_em: string }
+interface ConfigDoSso { provedor: string; locatario?: string; emissor: string; client_id: string; tem_segredo: boolean; dominios: string[]; ativo: boolean; exigir: boolean; atualizado_em: string }
 
 function LoginUnico() {
   const { dados, erro: erroAoLer, recarregar } = useDados<{ config: ConfigDoSso | null; retorno: string }>("/api/organizacao/sso");
   const [emissor, setEmissor] = useState<string | null>(null);
+  const [provedor, setProvedor] = useState("google");
+  const [locatario, setLocatario] = useState("");
   const [clientId, setClientId] = useState("");
   const [segredo, setSegredo] = useState("");
   const [dominios, setDominios] = useState("");
@@ -79,6 +82,8 @@ function LoginUnico() {
   // O formulário começa com o que está guardado, e passa a ser da pessoa assim que ela mexe.
   if (emissor === null) {
     setEmissor(dados.config?.emissor ?? "");
+    setProvedor(dados.config?.provedor ?? "google");
+    setLocatario(dados.config?.locatario ?? "");
     setClientId(dados.config?.client_id ?? "");
     setDominios((dados.config?.dominios ?? []).join(", "));
     setAtivo(dados.config?.ativo ?? true);
@@ -90,7 +95,7 @@ function LoginUnico() {
     setAviso(null);
     setSalvando(true);
     const r = await colocar("/api/organizacao/sso", {
-      emissor: emissor.trim(), client_id: clientId.trim(), segredo: segredo ? segredo : undefined, ativo, exigir,
+      provedor, locatario: locatario.trim() || undefined, emissor: provedor === "outro" ? emissor.trim() : undefined, client_id: clientId.trim(), segredo: segredo ? segredo : undefined, ativo, exigir,
       dominios: dominios.split(/[\s,;]+/).filter(Boolean),
     }).finally(() => setSalvando(false));
     if (!r.ok) return setErro(await detalhe(r, "Não foi possível salvar."));
@@ -113,9 +118,29 @@ function LoginUnico() {
           <Text size="xs" c="dimmed">Cadastre este endereço de retorno no provedor:</Text>
           <BlocoDeComando texto={dados.retorno} />
         </Stack>
-        <TextInput label="Emissor" description="O endereço do provedor, como https://login.microsoftonline.com/ID-DO-LOCATÁRIO/v2.0." value={emissor} onChange={(e) => setEmissor(e.currentTarget.value)} spellCheck={false} placeholder="https://" />
-        <TextInput label="Client ID" value={clientId} onChange={(e) => setClientId(e.currentTarget.value)} spellCheck={false} />
-        <PasswordInput label="Client secret" description={dados.config?.tem_segredo ? "Guardado e cifrado. Deixe em branco para manter." : "Opcional para aplicativo público, que usa só PKCE."} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} />
+        <SegmentedControl value={provedor} onChange={setProvedor} data={[
+          { value: "google", label: <Group gap={6} wrap="nowrap" justify="center"><LogoDoGoogle tamanho={14} />Google</Group> },
+          { value: "microsoft", label: <Group gap={6} wrap="nowrap" justify="center"><LogoDaMicrosoft tamanho={14} />Microsoft</Group> },
+          { value: "outro", label: "Outro (OpenID Connect)" },
+        ]} />
+        {provedor === "google" && (
+          <Alert variant="light" color="gray" p="xs" fz="sm">
+            No Google Cloud Console, em APIs e serviços → Credenciais, crie um "ID do cliente OAuth" do tipo Aplicativo da Web e cole o endereço de retorno acima em "URIs de redirecionamento autorizados". Depois copie aqui o ID e a chave secreta do cliente.
+          </Alert>
+        )}
+        {provedor === "microsoft" && (
+          <>
+            <Alert variant="light" color="gray" p="xs" fz="sm">
+              No Microsoft Entra ID, em Registros de aplicativo → Novo registro, escolha "Web" e cole o endereço de retorno acima. Em Certificados e segredos, crie um segredo do cliente. Copie aqui o ID do diretório (locatário), o ID do aplicativo (cliente) e o valor do segredo.
+            </Alert>
+            <TextInput label="ID do diretório (locatário)" description="Na Visão geral do aplicativo, no formato 00000000-0000-0000-0000-000000000000." value={locatario} onChange={(e) => setLocatario(e.currentTarget.value)} spellCheck={false} />
+          </>
+        )}
+        {provedor === "outro" && (
+          <TextInput label="Emissor" description="O endereço do provedor, o mesmo que aparece como issuer em /.well-known/openid-configuration." value={emissor} onChange={(e) => setEmissor(e.currentTarget.value)} spellCheck={false} placeholder="https://" />
+        )}
+        <TextInput label={provedor === "microsoft" ? "ID do aplicativo (cliente)" : "ID do cliente"} value={clientId} onChange={(e) => setClientId(e.currentTarget.value)} spellCheck={false} />
+        <PasswordInput label={provedor === "microsoft" ? "Valor do segredo do cliente" : "Chave secreta do cliente"} description={dados.config?.tem_segredo ? "Guardado e cifrado. Deixe em branco para manter." : "Opcional para aplicativo público, que usa só PKCE."} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} />
         <TextInput label="Domínios de e-mail aceitos" description="Separados por vírgula. Em branco, vale qualquer domínio dos usuários desta organização." value={dominios} onChange={(e) => setDominios(e.currentTarget.value)} placeholder="empresa.com.br" />
         <Switch label="Ligado" description="Mostra a entrada por login único para os e-mails desta organização." checked={ativo} onChange={(e) => setAtivo(e.currentTarget.checked)} />
         <Switch label="Exigir o login único" description="Senha e passkey param de valer para quem não administra. Quem administra continua com a senha, para não ficar trancado fora se o provedor cair." checked={exigir} disabled={!ativo} onChange={(e) => setExigir(e.currentTarget.checked)} />
@@ -123,7 +148,7 @@ function LoginUnico() {
         {aviso && <Alert color="green" variant="light" p="xs" fz="sm">{aviso}</Alert>}
         <Group justify="space-between">
           {dados.config ? <Button variant="subtle" color="red" onClick={remover}>Remover o login único</Button> : <span />}
-          <Button variant="filled" loading={salvando} disabled={!emissor.trim() || !clientId.trim()} onClick={salvar}>Salvar</Button>
+          <Button variant="filled" loading={salvando} disabled={!clientId.trim() || (provedor === "outro" && !emissor.trim()) || (provedor === "microsoft" && !locatario.trim())} onClick={salvar}>Salvar</Button>
         </Group>
       </Stack>
     </Painel>

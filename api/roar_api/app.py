@@ -488,7 +488,7 @@ def concluir_entrada_por_passkey(dados: FimDaEntrada, request: Request):
 
 
 @app.get("/api/sso/inicio")
-def iniciar_sso(request: Request, email: str = ""):
+def iniciar_sso(request: Request, email: str = "", provedor: str = ""):
     """Devolve o endereço do provedor da organização de quem vai entrar. A tela leva a pessoa até lá."""
     email = email.strip().lower()[:254]
     if _bloqueado(f"sso:{_origem(request)}"):
@@ -499,6 +499,9 @@ def iniciar_sso(request: Request, email: str = ""):
     if not config:
         falhas_de_login[f"sso:{_origem(request)}"].append(time.monotonic())
         raise HTTPException(status_code=404, detail="Este e-mail não entra por login único. Use a senha ou a passkey.")
+    # O botão clicado tem de ser o da organização: quem é da Microsoft não vai parar no Google.
+    if provedor in PROVEDORES_DE_SSO and provedor != quem["sso_provedor"]:
+        raise HTTPException(status_code=409, detail=f"Sua organização entra pelo {PROVEDORES_DE_SSO[quem['sso_provedor']]}. Use o botão dele.")
     try:
         documento = outras_entradas.descobrir(config["emissor"])
     except outras_entradas.EntradaRecusada as erro:
@@ -545,8 +548,30 @@ def retorno_do_sso(request: Request, code: str = "", state: str = "", error: str
     return _abrir_sessao(request, quem["usuario_id"], "logon_sso", RedirectResponse("/", status_code=303))
 
 
+PROVEDORES_DE_SSO = {"google": "Google", "microsoft": "Microsoft", "outro": "login único"}
+EMISSOR_DO_GOOGLE = "https://accounts.google.com"
+LOCATARIO_DA_MICROSOFT = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _emissor_do_provedor(dados):
+    """Google e Microsoft têm emissor conhecido: a pessoa só informa o que muda, e o Roar monta o resto."""
+    if dados.provedor == "google":
+        return EMISSOR_DO_GOOGLE
+    if dados.provedor == "microsoft":
+        locatario = (dados.locatario or "").strip()
+        # Com o nome do domínio, a Microsoft declara o emissor pelo ID: a conferência do token falharia.
+        if not LOCATARIO_DA_MICROSOFT.fullmatch(locatario):
+            raise HTTPException(status_code=422, detail="Use o ID do locatário, que tem o formato 00000000-0000-0000-0000-000000000000.")
+        return f"https://login.microsoftonline.com/{locatario.lower()}/v2.0"
+    if not re.fullmatch(r"https://\S{3,500}", dados.emissor or ""):
+        raise HTTPException(status_code=422, detail="O emissor precisa ser um endereço https.")
+    return dados.emissor.strip().rstrip("/")
+
+
 class ConfiguracaoDeSso(BaseModel):
-    emissor: str = Field(pattern=r"^https://[^\s]{3,500}$")
+    provedor: str = Field(default="outro", pattern="^(google|microsoft|outro)$")
+    emissor: str | None = Field(default=None, max_length=500)
+    locatario: str | None = Field(default=None, max_length=100)
     client_id: str = Field(min_length=1, max_length=300)
     # Ausente mantém o guardado; vazio apaga, para cliente público com PKCE.
     segredo: str | None = Field(default=None, max_length=2000)
@@ -558,14 +583,16 @@ class ConfiguracaoDeSso(BaseModel):
 @app.get("/api/organizacao/sso")
 def ver_sso(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     with do_cliente(request, sessao) as con:
-        config = con.execute("SELECT emissor, client_id, segredo IS NOT NULL AS tem_segredo, dominios, ativo, exigir, atualizado_em FROM sso").fetchone()
+        config = con.execute("SELECT provedor, emissor, client_id, segredo IS NOT NULL AS tem_segredo, dominios, ativo, exigir, atualizado_em FROM sso").fetchone()
+    if config and config["provedor"] == "microsoft":
+        config["locatario"] = config["emissor"].split("/")[3]
     return {"config": config, "retorno": _retorno_do_sso(request)}
 
 
 @app.put("/api/organizacao/sso", status_code=204)
 def definir_sso(dados: ConfiguracaoDeSso, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     """Confere o provedor antes de guardar: configuração que não funciona trancaria a organização se fosse exigida."""
-    emissor = dados.emissor.strip().rstrip("/")
+    emissor = _emissor_do_provedor(dados)
     dominios = sorted({d.strip().lower().lstrip("@") for d in dados.dominios if d.strip()})
     if any(not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", d) for d in dominios):
         raise HTTPException(status_code=422, detail="Domínio inválido. Use só o domínio, como empresa.com.br.")
@@ -580,10 +607,11 @@ def definir_sso(dados: ConfiguracaoDeSso, request: Request, sessao=Depends(exige
             segredo = atual["segredo"] if atual else None
         else:
             segredo = request.app.state.cofre_do_sso.fechar(dados.segredo) if dados.segredo else None
-        con.execute("""INSERT INTO sso (cliente_id, emissor, client_id, segredo, dominios, ativo, exigir, atualizado_por) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (cliente_id) DO UPDATE SET emissor = EXCLUDED.emissor, client_id = EXCLUDED.client_id, segredo = EXCLUDED.segredo,
-                         dominios = EXCLUDED.dominios, ativo = EXCLUDED.ativo, exigir = EXCLUDED.exigir, atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
-                    (sessao["cliente_id"], emissor, dados.client_id.strip(), segredo, dominios, dados.ativo, dados.exigir and dados.ativo, sessao["usuario_id"]))
+        con.execute("""INSERT INTO sso (cliente_id, provedor, emissor, client_id, segredo, dominios, ativo, exigir, atualizado_por) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (cliente_id) DO UPDATE SET provedor = EXCLUDED.provedor, emissor = EXCLUDED.emissor, client_id = EXCLUDED.client_id,
+                         segredo = EXCLUDED.segredo, dominios = EXCLUDED.dominios, ativo = EXCLUDED.ativo, exigir = EXCLUDED.exigir,
+                         atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
+                    (sessao["cliente_id"], dados.provedor, emissor, dados.client_id.strip(), segredo, dominios, dados.ativo, dados.exigir and dados.ativo, sessao["usuario_id"]))
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_sso', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{emissor} {'ligado' if dados.ativo else 'desligado'}{', exigido' if dados.exigir and dados.ativo else ''}"))
 

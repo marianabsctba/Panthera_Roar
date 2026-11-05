@@ -321,6 +321,7 @@ def testar_sso(http, a, b):
             return resposta, {k: v[0] for k, v in parse_qs(urlsplit(resposta.json().get("url", "")).query).items()} if resposta.status_code == 200 else {}
 
         registrar("e-mail sem SSO não inicia", iniciar(b["email"])[0].status_code == 404)
+        registrar("o botão de outro provedor não serve", http.get("/api/sso/inicio", params={"email": a["email"], "provedor": "google"}).status_code == 409)
         resposta, parametros = iniciar(a["email"])
         registrar("o início leva ao provedor com PKCE, nonce e estado", resposta.status_code == 200 and parametros["code_challenge_method"] == "S256"
                   and parametros["nonce"] and parametros["state"] and parametros["client_id"] == "roar", str(parametros)[:200])
@@ -364,6 +365,13 @@ def testar_sso(http, a, b):
         registrar("quem administra continua entrando com senha", entrar(http, a).status_code == 204)
         registrar("configurar o SSO fica na auditoria", ADMIN.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'definir_sso'",
                                                                       (a["id"],)).fetchone()[0] == 2)
+        registrar("a configuração diz o provedor", http.get("/api/organizacao/sso").json()["config"]["provedor"] == "outro")
+        registrar("Microsoft pede o ID do locatário", http.request("PUT", "/api/organizacao/sso", json={
+            "provedor": "microsoft", "locatario": "empresa.onmicrosoft.com", "client_id": "roar"}).status_code == 422)
+        google = ProvedorFalso("https://accounts.google.com")
+        modulo._buscar = google
+        registrar("Google monta o emissor sozinho", http.request("PUT", "/api/organizacao/sso", json={"provedor": "google", "client_id": "roar"}).status_code == 204
+                  and http.get("/api/organizacao/sso").json()["config"]["emissor"] == "https://accounts.google.com")
         registrar("o SSO sai", http.request("DELETE", "/api/organizacao/sso").status_code == 204)
         http.post("/api/sair")
         http.cookies.clear()
