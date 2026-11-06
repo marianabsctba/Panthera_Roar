@@ -10,6 +10,7 @@ import {
   Achados, chamar, dataComAno, Explica, explicaDaPrioridade, Fato, GavetaDaCve, GavetaDeAchados, GavetaDoAchado, ORDEM_DE_PRIORIDADE, porcentoDeEpss, Prioridade, TabelaDeAchados, textoDaPrioridade, useAchadosCompletos,
   type Achado, type FiltroDeAchados, type PedidoDeAchados,
 } from "./VulnerabilidadesAchados";
+import { Correcao } from "./VulnerabilidadesCorrecao";
 
 // ------------------------------------------------------------------ panorama
 
@@ -115,7 +116,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoMudar }: { ativo: AtivoVuln | null; 
               <Numero rotulo="Corrigidos" valor={numero(ativo.corrigidos)} aoClicar={() => setVendo("corrigidos")} selecionado={vendo === "corrigidos"} />
               <Numero rotulo="Exposição" valor={numero(ativo.exposicao)} />
             </SimpleGrid>
-            {!linhas ? <Carregando erro={erroDaLista} /> : <TabelaDeAchados achados={linhas} vazio="Nenhum achado aqui." aoAbrir={(id, focar = false) => setAchado({ id, focar })} />}
+            {!linhas ? <Carregando erro={erroDaLista} /> : <TabelaDeAchados achados={linhas} vazio="Nenhum achado aqui." aoAbrir={(id, focar = false) => setAchado({ id, focar })} aosPoucos />}
             {cortado && <Text size="xs" c="dimmed">Mostrando só o que coube na leitura: pode haver mais.</Text>}
           </Stack>
         )}
@@ -558,6 +559,7 @@ export function Vulnerabilidades() {
         <Tabs.List mb="md">
           <Tabs.Tab value="panorama">Panorama</Tabs.Tab>
           <Tabs.Tab value="achados">Achados</Tabs.Tab>
+          <Tabs.Tab value="correcao">Correção</Tabs.Tab>
           <Tabs.Tab value="ativos">Ativos</Tabs.Tab>
           <Tabs.Tab value="alvos">Alvos</Tabs.Tab>
           <Tabs.Tab value="modelos">Modelos</Tabs.Tab>
@@ -566,6 +568,7 @@ export function Vulnerabilidades() {
         </Tabs.List>
         <Tabs.Panel value="panorama"><Panorama aoVerAchados={(f) => { setFiltro(f); setAba("achados"); }} aoVerAtivos={() => setAba("ativos")} /></Tabs.Panel>
         <Tabs.Panel value="achados"><Achados filtro={filtro} aoMudarFiltro={setFiltro} /></Tabs.Panel>
+        <Tabs.Panel value="correcao"><Correcao /></Tabs.Panel>
         <Tabs.Panel value="ativos"><Ativos /></Tabs.Panel>
         <Tabs.Panel value="alvos"><Alvos alvoInicial={alvoInicial} aoVerVarreduras={() => setAba("varreduras")} /></Tabs.Panel>
         <Tabs.Panel value="modelos"><Modelos aoAbrirAlvo={(id) => { setAlvoInicial(id); setAba("alvos"); }} /></Tabs.Panel>

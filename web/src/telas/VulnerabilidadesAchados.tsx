@@ -14,8 +14,27 @@ const TIPO_DO_ESTADO: Record<string, string> ={ aberto: "problema", correcao_inf
 
 export interface Achado {
   id: number; ativo_id: number; host: string; ativo: string | null; peso: number; titulo: string; cves: string[]; cvss: number | null; severidade: string; porta: string | null; estado: string;
-  primeira_vez: string; ultima_vez: string; corrigido_em: string | null; prioridade: string | null;
+  primeira_vez: string; ultima_vez: string; corrigido_em: string | null; prioridade: string | null; vence_em: string | null;
 }
+
+export const DIA = 86400000;
+export const venceu = (a: Achado) => a.vence_em !== null && new Date(a.vence_em).getTime() < Date.now();
+
+/** "vencido há 3 dias", "vence hoje" ou "faltam 12 dias". */
+export function textoDoPrazo(vence_em: string | null) {
+  if (!vence_em) return "Sem prazo";
+  const dias = Math.floor((new Date(vence_em).getTime() - Date.now()) / DIA);
+  if (dias < 0) return `Vencido há ${numero(-dias)} ${dias === -1 ? "dia" : "dias"}`;
+  if (dias === 0) return "Vence hoje";
+  return `Faltam ${numero(dias)} ${dias === 1 ? "dia" : "dias"}`;
+}
+
+export function Prazo({ vence_em }: { vence_em: string | null }) {
+  const vencido = vence_em !== null && new Date(vence_em).getTime() < Date.now();
+  const perto = vence_em !== null && !vencido && new Date(vence_em).getTime() < Date.now() + 7 * DIA;
+  return <Text span size="sm" c={vencido ? "red" : perto ? "yellow" : "dimmed"} fw={vencido ? 500 : undefined} style={{ whiteSpace: "nowrap" }}>{textoDoPrazo(vence_em)}</Text>;
+}
+
 interface DetalheDoAchado extends Achado {
   solucao: string | null; evidencia: string | null; fonte: string;
   historico: { quando: string; de: string | null; para: string; por: string | null; varredura_id: number | null; motivo: string | null }[];
@@ -224,6 +243,7 @@ export function GavetaDoAchado({ id, focar = false, aoFechar, aoMudar }: { id: n
               <Fato rotulo="Visto pela primeira vez"><Data valor={a.primeira_vez} /></Fato>
               <Fato rotulo="Visto pela última vez"><Data valor={a.ultima_vez} /></Fato>
               {a.corrigido_em && <Fato rotulo="Corrigido em"><Data valor={a.corrigido_em} /></Fato>}
+              {(a.estado === "aberto" || a.estado === "correcao_informada") && <Fato rotulo="Prazo para corrigir"><Prazo vence_em={a.vence_em} /></Fato>}
             </SimpleGrid>
             {a.cves.length > 0 && (
               <Fato rotulo="CVEs">
@@ -261,11 +281,19 @@ export function GavetaDoAchado({ id, focar = false, aoFechar, aoMudar }: { id: n
 
 // ------------------------------------------------------------------ listas de achados
 
-export function TabelaDeAchados({ achados, vazio, aoAbrir }: { achados: Achado[]; vazio: string; aoAbrir: (id: number, focar?: boolean) => void }) {
+const DE_CADA_VEZ = 100;
+
+/** Desenhar milhares de linhas trava a tela: com aosPoucos, mostra de cem em cem. */
+export function TabelaDeAchados({ achados, vazio, aoAbrir, aosPoucos = false }: { achados: Achado[]; vazio: string; aoAbrir: (id: number, focar?: boolean) => void; aosPoucos?: boolean }) {
   const pode = usePode();
+  const [mostrando, setMostrando] = useState(DE_CADA_VEZ);
+  // Pelo tamanho, e não pela lista: quem chama filtra a cada desenho, e a lista nova voltaria sempre para as primeiras cem.
+  useEffect(() => setMostrando(DE_CADA_VEZ), [achados.length]);
+  const linhas = aosPoucos ? achados.slice(0, mostrando) : achados;
   return (
+    <>
     <Tabela
-      linhas={achados}
+      linhas={linhas}
       chave={(a) => a.id}
       vazio={vazio}
       aoClicarLinha={(a) => aoAbrir(a.id)}
@@ -278,6 +306,7 @@ export function TabelaDeAchados({ achados, vazio, aoAbrir }: { achados: Achado[]
         { titulo: "Exploração", largura: 90, celula: (a) => (a.prioridade === "agora" ? <Prioridade valor="agora" /> : "-") },
         { titulo: "Situação", celula: (a) => <Estado tipo={TIPO_DO_ESTADO[a.estado] ?? "outro"}>{ROTULO_ESTADO_ACHADO[a.estado] ?? a.estado}</Estado> },
         { titulo: "Visto em", largura: 150, celula: (a) => <Data valor={a.primeira_vez} /> },
+        { titulo: "Prazo", largura: 150, celula: (a) => (a.estado === "aberto" || a.estado === "correcao_informada" ? <Prazo vence_em={a.vence_em} /> : "-") },
         { titulo: "", largura: 40, celula: (a) => (
           <AcoesDaLinha rotulo="Ações do achado" itens={[
             ...(pode("gerir_vulnerabilidades") && a.estado === "aberto" ? [{ texto: "Informar correção", aoClicar: () => aoAbrir(a.id, true) }] : []),
@@ -287,6 +316,13 @@ export function TabelaDeAchados({ achados, vazio, aoAbrir }: { achados: Achado[]
         ) },
       ]}
     />
+    {linhas.length < achados.length && (
+      <Group gap="sm">
+        <Button variant="default" onClick={() => setMostrando((m) => m + DE_CADA_VEZ)}>Mostrar mais {numero(Math.min(DE_CADA_VEZ, achados.length - linhas.length))}</Button>
+        <Text size="xs" c="dimmed">Mostrando {numero(linhas.length)} de {numero(achados.length)}</Text>
+      </Group>
+    )}
+    </>
   );
 }
 
@@ -332,7 +368,7 @@ export function GavetaDeAchados({ pedido, aoFechar }: { pedido: PedidoDeAchados 
       <Drawer opened={pedido !== null} onClose={aoFechar} title={pedido ? `${pedido.titulo}${linhas ? ` (${numero(linhas.length)})` : ""}` : ""} size="70%">
         {!linhas ? <Carregando erro={erro} /> : (
           <Stack gap="xs">
-            <TabelaDeAchados achados={linhas} vazio="Nenhum achado." aoAbrir={(id, focar = false) => setAberto({ id, focar })} />
+            <TabelaDeAchados achados={linhas} vazio="Nenhum achado." aoAbrir={(id, focar = false) => setAberto({ id, focar })} aosPoucos />
             {cortado && <Text size="xs" c="dimmed">Mostrando só o que coube na leitura: pode haver mais.</Text>}
           </Stack>
         )}

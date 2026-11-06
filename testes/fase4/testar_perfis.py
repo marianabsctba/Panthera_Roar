@@ -65,7 +65,7 @@ ROTAS = {
     ("POST", "/api/automacao/aprovacoes/{identificador}/aprovar"): "aprovar", ("POST", "/api/automacao/aprovacoes/{identificador}/recusar"): "aprovar",
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
     ("GET", "/api/auditoria"): "ver_auditoria", ("GET", "/api/auditoria/exportar"): "ver_auditoria", ("GET", "/api/notificacoes"): "ver_auditoria", ("POST", "/api/notificacoes/lidas"): "ver_auditoria",
-    ("GET", "/api/vuln/indicadores"): "ver", ("GET", "/api/vuln/achados"): "ver", ("GET", "/api/vuln/achados/exportar"): "ver", ("GET", "/api/vuln/achados/{identificador}"): "ver",
+    ("GET", "/api/vuln/indicadores"): "ver", ("GET", "/api/vuln/correcao"): "ver", ("PUT", "/api/vuln/prazos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/achados"): "ver", ("GET", "/api/vuln/achados/exportar"): "ver", ("GET", "/api/vuln/achados/{identificador}"): "ver",
     ("POST", "/api/vuln/achados/{identificador}/estado"): "gerir_vulnerabilidades", ("POST", "/api/vuln/achados/{identificador}/confirmar"): "gerir_vulnerabilidades", ("GET", "/api/vuln/ativos"): "ver", ("PUT", "/api/vuln/ativos/{identificador}"): "gerir_vulnerabilidades",
     ("GET", "/api/vuln/modelos"): "ver", ("POST", "/api/vuln/modelos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/alvos"): "ver", ("POST", "/api/vuln/alvos"): "gerir_vulnerabilidades",
     ("DELETE", "/api/vuln/alvos/{identificador}"): "gerir_vulnerabilidades", ("GET", "/api/vuln/varreduras"): "ver", ("POST", "/api/vuln/varreduras"): "gerir_vulnerabilidades",

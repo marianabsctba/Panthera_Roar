@@ -128,6 +128,26 @@ def main():
             registrar("exposição é a conta anunciada: (10+5+2) x peso 3", i["exposicao"] == 51, str(i["exposicao"]))
             registrar("evolução mostra os abertos de hoje", i["evolucao"][-1]["abertos"] == 3, str(i["evolucao"][-1]))
 
+            print("\n== Prazo de correção", flush=True)
+            from datetime import datetime as _dt
+            c = http.get("/api/vuln/correcao").json()
+            registrar("sem escolha, valem os prazos padrão", c["prazos"] == c["padrao"] == {"critica": 15, "alta": 30, "media": 90, "baixa": 180, "explorada": 7})
+            registrar("nada vencido em falha de hoje", (c["vencidos"], c["com_prazo"]) == (0, 3), str((c["vencidos"], c["com_prazo"])))
+            critica = next(x for x in http.get("/api/vuln/achados").json()["achados"] if x["severidade"] == "critica")
+            dias = (_dt.fromisoformat(critica["vence_em"]) - _dt.fromisoformat(critica["primeira_vez"])).days
+            registrar("falha já explorada usa o prazo de exploradas", dias == 7, str(dias))
+            registrar("o que corrigir primeiro começa pela explorada", c["primeiro"][0]["correcao"] == "Falha crítica" and c["primeiro"][0]["exploradas"] == 1, str(c["primeiro"][:1]))
+            admin.execute("UPDATE vuln_achados SET primeira_vez = now() - interval '100 days' WHERE cliente_id = %s AND titulo = 'Falha média'", (a,))
+            c = http.get("/api/vuln/correcao").json()
+            media = next(l for l in c["idade"] if l["severidade"] == "media")
+            registrar("falha velha vence e entra na faixa de idade certa", c["vencidos"] == 1 and media["91"] == 1 and media["mais_velho"] == 100, str((c["vencidos"], media)))
+            registrar("analista não muda prazo", http_ivo.put("/api/vuln/prazos", json={**c["prazos"], "media": 200}).status_code == 403)
+            registrar("prazo fora da faixa é recusado", http.put("/api/vuln/prazos", json={**c["prazos"], "media": 0}).status_code == 422)
+            registrar("muda o prazo", http.put("/api/vuln/prazos", json={**c["prazos"], "media": 200}).status_code == 204)
+            registrar("o prazo novo vale na hora", http.get("/api/vuln/correcao").json()["vencidos"] == 0)
+            registrar("o prazo é só desta organização", http_b.get("/api/vuln/correcao").json()["prazos"]["media"] == 90)
+            admin.execute("UPDATE vuln_achados SET primeira_vez = now() WHERE cliente_id = %s AND titulo = 'Falha média'", (a,))
+
             print("\n== Peso do ativo", flush=True)
             ativo = next(t for t in http.get("/api/vuln/ativos").json()["ativos"] if t["host"] == "10.0.0.5")
             registrar("o ativo tem nome e exposição", ativo["nome"] == "srv-a" and ativo["exposicao"] == 36, str(ativo))

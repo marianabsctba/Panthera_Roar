@@ -49,7 +49,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
+from roar_api import correcao, entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -2163,6 +2163,32 @@ class MudancaDeAtivo(BaseModel):
     peso: int = Field(ge=1, le=5)
 
 
+class PrazosDeCorrecao(BaseModel):
+    critica: int = Field(ge=1, le=730)
+    alta: int = Field(ge=1, le=730)
+    media: int = Field(ge=1, le=730)
+    baixa: int = Field(ge=1, le=730)
+    explorada: int = Field(ge=1, le=730)
+
+
+@app.get("/api/vuln/correcao")
+def correcao_de_vulnerabilidades(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 90):
+    """Prazos, vencidos, idade dos abertos, tempo para corrigir e o que corrigir primeiro."""
+    with do_cliente(request, sessao) as con:
+        return correcao.indicadores(con, max(7, min(dias, 730)))
+
+
+@app.put("/api/vuln/prazos", status_code=204)
+def definir_prazos_de_correcao(dados: PrazosDeCorrecao, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    with do_cliente(request, sessao) as con:
+        valores = dados.model_dump()
+        con.execute(f"""INSERT INTO vuln_prazos (cliente_id, {", ".join(valores)}, definido_por) VALUES (%s, {", ".join(["%s"] * len(valores))}, %s)
+                        ON CONFLICT (cliente_id) DO UPDATE SET {", ".join(f"{k} = EXCLUDED.{k}" for k in valores)}, definido_por = EXCLUDED.definido_por, definido_em = now()""",
+                    (sessao["cliente_id"], *valores.values(), sessao["usuario_id"]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_prazos_de_correcao', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], ", ".join(f"{k} {v}" for k, v in valores.items())))
+
+
 @app.get("/api/vuln/indicadores")
 def indicadores_de_vulnerabilidades(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 90):
     """Descoberta, priorização e remediação, com a conta aberta para quem quiser refazer."""
@@ -2205,14 +2231,16 @@ def _filtros_de_achado(severidade, estado, ativo, busca):
         valores.append(ativo)
     busca = busca.strip()[:200]
     if busca:
-        condicoes.append("(a.titulo ILIKE %s OR t.host ILIKE %s OR t.nome ILIKE %s OR %s = ANY(a.cves))")
+        # A chave traz o pacote: buscar pelo pacote acha todas as falhas dele.
+        condicoes.append("(a.titulo ILIKE %s OR t.host ILIKE %s OR t.nome ILIKE %s OR a.chave ILIKE %s OR %s = ANY(a.cves))")
         padrao = "%" + busca.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        valores.extend([padrao, padrao, padrao, busca.upper()])
+        valores.extend([padrao, padrao, padrao, padrao, busca.upper()])
     return (" WHERE " + " AND ".join(condicoes)) if condicoes else "", valores
 
 
-CONSULTA_DE_ACHADOS = f"""SELECT a.id, a.ativo_id, t.host, t.nome AS ativo, t.peso, a.fonte, a.titulo, a.cves, a.cvss, a.severidade, a.porta, a.estado, a.primeira_vez, a.ultima_vez, a.corrigido_em, {PRIORIDADE_DO_ACHADO}
-                         FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id"""
+CONSULTA_DE_ACHADOS = f"""SELECT a.id, a.ativo_id, t.host, t.nome AS ativo, t.peso, a.fonte, a.titulo, a.cves, a.cvss, a.severidade, a.porta, a.estado, a.primeira_vez, a.ultima_vez, a.corrigido_em, {PRIORIDADE_DO_ACHADO},
+                                {correcao.VENCE_EM} AS vence_em
+                         FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id {correcao.JUNTAR_PRAZOS}"""
 ORDEM_DE_ACHADOS = "ORDER BY array_position(ARRAY['aberto', 'correcao_informada', 'aceito', 'falso_positivo', 'corrigido'], a.estado), array_position(ARRAY['critica', 'alta', 'media', 'baixa', 'informativa'], a.severidade), t.peso DESC, a.id DESC"
 
 
