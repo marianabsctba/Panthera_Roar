@@ -7,6 +7,7 @@
 
 import argparse
 import json
+import logging
 import os
 import re
 import secrets
@@ -23,6 +24,8 @@ import urllib3
 
 from .ciclo import ler_env
 from .fonte_wazuh import Indexer
+
+log = logging.getLogger("roar.provisao")
 
 DESTINO = Path("/opt/panthera-roar")
 RAIZ = Path(__file__).resolve().parents[2]
@@ -330,6 +333,33 @@ def _permissoes_do_indexer(indexer, gerenciador_id, senha):
     return usuario
 
 
+SEGUNDOS_PARA_A_API_SUBIR = 90
+
+
+def _garantir_api(pasta, gerenciador_id, esperar=time.sleep):
+    """Reinícios seguidos às vezes deixam a API antiga viva e sem dono, presa na porta: a nova não sobe e o
+    wazuh-control já não enxerga a antiga. Sem a API param os webhooks e a sincronização das regras."""
+    def no_ar():
+        estado = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                                 "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "status"], capture_output=True, text=True)
+        return "wazuh-apid is running" in estado.stdout
+
+    for _ in range(SEGUNDOS_PARA_A_API_SUBIR // 5):
+        if no_ar():
+            return True
+        esperar(5)
+    log.warning("a API do gerenciador %s não subiu: encerrando a antiga e subindo de novo", gerenciador_id)
+    subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                    "exec", "-T", "gerenciador", "sh", "-c", "pkill -f wazuh_apid.py; sleep 3; /var/ossec/bin/wazuh-control start"],
+                   capture_output=True, text=True, timeout=300)
+    for _ in range(SEGUNDOS_PARA_A_API_SUBIR // 5):
+        if no_ar():
+            return True
+        esperar(5)
+    log.error("a API do gerenciador %s continua fora do ar", gerenciador_id)
+    return False
+
+
 def _compose(pasta, gerenciador_id, *comando):
     return subprocess.run(["docker", "compose", "--project-directory", str(pasta),
                            "--project-name", f"roar-ger-{gerenciador_id}", *comando],
@@ -479,6 +509,7 @@ def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
         return False, detalhe
     if reiniciar:
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
+        _garantir_api(pasta, gerenciador_id)
     return True, detalhe
 
 
@@ -552,6 +583,7 @@ def remover_regras(gerenciador_id, nome):
     valida, detalhe = _configuracao_valida(gerenciador_id)
     if valida:
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
+        _garantir_api(pasta, gerenciador_id)
     return valida, detalhe
 
 
@@ -610,7 +642,9 @@ def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=
         instalar(anterior)
         _instalar_credenciais(pasta, gerenciador_id, arquivos_anteriores)
         reiniciar()
+        _garantir_api(pasta, gerenciador_id)
         return False, {"status": "erro", "saida": (resultado.stderr or resultado.stdout)[-400:]}
+    _garantir_api(pasta, gerenciador_id)
     # O arquivo montado é o que o contêiner copia ao ser recriado.
     shutil.copy(novo, montado)
     novo.unlink()
