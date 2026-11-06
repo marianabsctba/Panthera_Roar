@@ -70,7 +70,7 @@ def main():
         return {"id": c, "g": g, "acesso": {"email": email, "senha": senha}}
 
     def evento(cl, regra, descricao, nivel, severidade, quando, ip="1.1.1.1", usuario="maria", mitre=(), extra=None, grupos=("teste",)):
-        bruto = {"rule": {"id": regra, "gdpr": ["IV_35.7.d"], "pci_dss": ["10.2.5"]}, "GeoLocation": {"country_name": "Brasil"}, **(extra or {})}
+        bruto = {"rule": {"id": regra, "gdpr": ["IV_35.7.d"], "pci_dss": ["10.2.5"], "nist_800_53": ["AU.14", "AC.7", "XX.99"]}, "GeoLocation": {"country_name": "Brasil"}, **(extra or {})}
         admin.execute(
             """INSERT INTO eventos (cliente_id, origem, origem_id, ocorrido_em, nivel, severidade, regra_id, regra_descricao, regra_grupos, mitre, gerenciador_id, agente_id, agente_nome, ip_origem, usuario, bruto)
                VALUES (%s, 't', %s, %s, %s, %s, %s, %s, %s, %s, %s, '001', 'srv-a', %s, %s, %s)""",
@@ -219,10 +219,18 @@ def main():
                       and art38.get("nome", "").startswith("Relatório de impacto"), str(art38)[:160])
             _, paginas_l = texto_do_pdf(http.get("/api/normas/relatorio", params={"norma": "lgpd", "dias": 30}).content)
             texto_l = " ".join(" ".join(paginas_l).split())
-            registrar("o PDF da LGPD explica de onde vêm os controles", "Relatório de conformidade: LGPD" in texto_l and "O Wazuh não marca a LGPD nas regras" in texto_l)
+            registrar("o PDF da LGPD explica de onde vêm os controles", "Relatório de conformidade: LGPD" in texto_l and "As regras não marcam a LGPD" in texto_l)
             ji = http.get("/api/normas/relatorio", params={"norma": "iso_27001", "dias": 30, "formato": "json"}).json()
             registrar("a ISO 27001 vem das checagens, com o nome do controle", ji["so_pelas_checagens"] is True
                       and [(c["controle"], c["nome"]) for c in ji["configuracao"]] == [("A.9.4.3", "Gestão de senhas")], str(ji["configuracao"])[:200])
+            j22 = http.get("/api/normas/relatorio", params={"norma": "iso_27001_2022", "dias": 30, "formato": "json"}).json()
+            registrar("a ISO 27001:2022 sai da 2013 pela correspondência oficial", [(c["controle"], c["nome"]) for c in j22["configuracao"]] == [("5.17", "Informações de autenticação")]
+                      and j22["derivada_de"] == "ISO 27001:2013" and "correspondência" in j22["explicacao"], str(j22["configuracao"])[:200])
+            jbc = http.get("/api/normas/relatorio", params={"norma": "bacen", "dias": 30, "formato": "json"}).json()
+            itens = {c["controle"]: c["nome"] for c in jbc["controles"]}
+            registrar("o Bacen sai do NIST: auditoria em rastreabilidade, tentativa de login em autenticação", itens.get("Art. 3, II (rastreabilidade)") == "Mecanismos de rastreabilidade"
+                      and "Art. 3, II (autenticação)" in itens and len(itens) == 2 and jbc["derivada_de"] == "NIST 800-53", str(itens))
+            registrar("o PDF do Bacen sai com a explicação da origem", http.get("/api/normas/relatorio", params={"norma": "bacen", "dias": 30}).content.startswith(b"%PDF"))
             registrar("norma inventada é recusada", http.get("/api/normas/relatorio", params={"norma": "iso_inventada"}).status_code == 422)
             registrar("a geração do relatório de norma fica registrada", admin.execute(
                 "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'gerar_relatorio_de_norma' AND alvo LIKE %s",

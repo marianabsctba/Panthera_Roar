@@ -11,6 +11,7 @@ import {
   type Achado, type FiltroDeAchados, type PedidoDeAchados,
 } from "./VulnerabilidadesAchados";
 import { Correcao } from "./VulnerabilidadesCorrecao";
+import { Superficie } from "./VulnerabilidadesSuperficie";
 
 // ------------------------------------------------------------------ panorama
 
@@ -562,6 +563,7 @@ export function Vulnerabilidades() {
           <Tabs.Tab value="correcao">Correção</Tabs.Tab>
           <Tabs.Tab value="ativos">Ativos</Tabs.Tab>
           <Tabs.Tab value="alvos">Alvos</Tabs.Tab>
+          <Tabs.Tab value="superficie">Superfície externa</Tabs.Tab>
           <Tabs.Tab value="modelos">Modelos</Tabs.Tab>
           <Tabs.Tab value="varreduras">Varreduras</Tabs.Tab>
           <Tabs.Tab value="base">Base de CVEs</Tabs.Tab>
@@ -571,6 +573,7 @@ export function Vulnerabilidades() {
         <Tabs.Panel value="correcao"><Correcao /></Tabs.Panel>
         <Tabs.Panel value="ativos"><Ativos /></Tabs.Panel>
         <Tabs.Panel value="alvos"><Alvos alvoInicial={alvoInicial} aoVerVarreduras={() => setAba("varreduras")} /></Tabs.Panel>
+        <Tabs.Panel value="superficie"><Superficie /></Tabs.Panel>
         <Tabs.Panel value="modelos"><Modelos aoAbrirAlvo={(id) => { setAlvoInicial(id); setAba("alvos"); }} /></Tabs.Panel>
         <Tabs.Panel value="varreduras"><Varreduras /></Tabs.Panel>
         <Tabs.Panel value="base"><BaseDeCves /></Tabs.Panel>

@@ -21,6 +21,7 @@ APELIDOS = {
     "usuario": "data.srcuser", "usuário": "data.srcuser", "usuario_destino": "data.dstuser", "usuário_destino": "data.dstuser",
     "fonte": "location", "tipo": "decoder.name", "programa": "predecoder.program_name", "protocolo": "data.protocol",
     "log": "full_log", "texto": "full_log", "quando": "timestamp", "regra": "rule.id", "nivel": "rule.level", "nível": "rule.level",
+    "grupo": "rule.groups", "descricao": "rule.description", "descrição": "rule.description",
     "pais": "GeoLocation.country_name", "país": "GeoLocation.country_name", "cidade": "GeoLocation.city_name",
     "estado": "GeoLocation.region_name",
     "operadora": "Operadora.organization_name", "asn": "Operadora.asn",
@@ -74,6 +75,10 @@ def _campo(nome):
     if not CAMPO_VALIDO.fullmatch(real):
         raise ConsultaInvalida(f"Campo inválido: {nome}")
     return real
+
+
+# Para quem escolhe um campo fora do texto da busca, como o bloco de mais frequentes de um painel.
+campo = _campo
 
 
 class _Analisador:

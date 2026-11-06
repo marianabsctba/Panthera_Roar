@@ -6,6 +6,7 @@
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -16,12 +17,14 @@ import stat
 import string
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg
 import requests
 import urllib3
 
+from . import armazem
 from .ciclo import ler_env
 from .fonte_wazuh import Indexer
 
@@ -237,6 +240,71 @@ def preparar():
            {"password": env["ROAR_LEITOR_SENHA"], "opendistro_security_roles": [LEITOR]})
     print("Indexer preparado.")
 
+    armazem.preparar(armazem.admin(env), env["ARMAZEM_LEITOR_SENHA"])
+    with banco_admin(env) as banco:
+        gerenciadores = [g for (g,) in banco.execute("SELECT id FROM gerenciadores").fetchall()]
+    for gerenciador_id in gerenciadores:
+        if (DESTINO / "gerenciadores" / gerenciador_id).is_dir():
+            ligar_coletor(gerenciador_id)
+    print("Armazém preparado.")
+
+
+def _dias_do_cliente(banco, cliente):
+    padrao = int(ler_env(DESTINO / ".env").get("RETENCAO_DIAS", RETENCAO_PADRAO))
+    linha = banco.execute("SELECT retencao_alertas_dias, retencao_logs_dias FROM clientes WHERE id = %s", (cliente,)).fetchone()
+    return (linha[0] or padrao, linha[1] or padrao) if linha else (padrao, padrao)
+
+
+GEOIP = DESTINO / "geoip"
+BASES_DE_LOCALIZACAO = ("GeoLite2-City.mmdb", "GeoLite2-ASN.mmdb")
+
+
+def _bases_de_localizacao():
+    """As bases GeoLite2 que vêm com o indexador: o coletor localiza o endereço com as mesmas, e o país não muda de um lado
+    para o outro. Copiadas uma vez; o indexador novo traz a versão nova, e a cópia é refeita em preparar."""
+    GEOIP.mkdir(mode=0o755, exist_ok=True)
+    conteiner = subprocess.run(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=wazuh.indexer"],
+                               capture_output=True, text=True, check=True).stdout.split()
+    for base in BASES_DE_LOCALIZACAO:
+        if conteiner and (not (GEOIP / base).exists() or os.environ.get("ROAR_GEOIP_RENOVAR") == "1"):
+            subprocess.run(["docker", "cp", f"{conteiner[0]}:/usr/share/wazuh-indexer/modules/ingest-geoip/{base}", str(GEOIP / base)], check=True)
+            (GEOIP / base).chmod(0o644)
+    return GEOIP
+
+
+def ligar_coletor(gerenciador_id):
+    """Banco da organização, usuário do coletor e o coletor do gerenciador no ar. Pode rodar de novo sem estrago:
+    é assim que os gerenciadores criados antes do armazém ganham o seu."""
+    env = ler_env(DESTINO / ".env")
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    with banco_admin(env) as banco:
+        cliente = banco.execute("SELECT cliente_id FROM gerenciadores WHERE id = %s", (gerenciador_id,)).fetchone()[0]
+        dias_alertas, dias_logs = _dias_do_cliente(banco, cliente)
+    adm = armazem.admin(env)
+    nome_do_banco = armazem.criar_organizacao(adm, cliente, dias_alertas, dias_logs, int(env.get("ARMAZEM_DIAS_QUENTES", armazem.DIAS_QUENTES_PADRAO)))
+    variaveis = ler_env(pasta / ".env")
+    senha = variaveis.get("ARMAZEM_SENHA") or senha_forte()
+    usuario = armazem.criar_gravador(adm, gerenciador_id, cliente, senha)
+    variaveis.update({"ARMAZEM_USUARIO": usuario, "ARMAZEM_SENHA": senha, "ARMAZEM_BANCO": nome_do_banco, "GEOIP": str(_bases_de_localizacao()),
+                      # Só o armazém recebe logs e alertas: o Filebeat do gerenciador não sobe (teste do caminho antigo liga de volta pelo ambiente).
+                      "ROAR_SO_ARMAZEM": os.environ.get("ROAR_SO_ARMAZEM", env.get("ROAR_SO_ARMAZEM", "0"))})
+    (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
+    (pasta / ".env").chmod(0o600)
+    origem = RAIZ / "infra/wazuh/gerenciador"
+    # O compose é sempre o modelo com variáveis: copiar de novo só acrescenta o coletor aos gerenciadores antigos.
+    shutil.copy(origem / "docker-compose.yml", pasta / "docker-compose.yml")
+    shutil.copy(origem / "1-roar-filebeat", pasta / "1-roar-filebeat")
+    (pasta / "1-roar-filebeat").chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    # O Vector não troca variáveis de ambiente dentro da configuração: os valores entram aqui, num arquivo só do root.
+    texto = (origem / "vector.yaml").read_text()
+    for chave, valor in (("ARMAZEM_BANCO", nome_do_banco), ("ARMAZEM_USUARIO", usuario), ("ARMAZEM_SENHA", senha)):
+        texto = texto.replace("{{" + chave + "}}", valor)
+    destino = pasta / "vector.yaml"
+    destino.touch(mode=0o600)
+    destino.chmod(0o600)
+    destino.write_text(texto)
+    _compose(pasta, gerenciador_id, "up", "-d", "coletor")
+
 
 def preparar_arquivo(indexer, dias):
     """Cópia fria diária de alertas e logs brutos. O índice ao vivo some no prazo da organização; a cópia, no prazo da instalação."""
@@ -282,7 +350,12 @@ def _gravar_politica(indexer, nome, descricao, padroes, dias, prioridade):
 
 def aplicar_retencao(gerenciador_id, dias_alertas, dias_logs):
     """Cada gerenciador com a retenção da própria organização. Índice novo pega pela prioridade; o que já existe troca aqui."""
-    indexer = indexer_admin(ler_env(DESTINO / ".env"))
+    env = ler_env(DESTINO / ".env")
+    indexer = indexer_admin(env)
+    with banco_admin(env) as banco:
+        cliente = banco.execute("SELECT cliente_id FROM gerenciadores WHERE id = %s", (gerenciador_id,)).fetchone()
+    if cliente:
+        armazem.aplicar_retencao(armazem.admin(env), cliente[0], dias_alertas, dias_logs, int(env.get("ARMAZEM_DIAS_QUENTES", armazem.DIAS_QUENTES_PADRAO)))
     for tipo, prefixo, dias in (("alertas", indice_do(gerenciador_id), dias_alertas), ("logs", indice_bruto_do(gerenciador_id), dias_logs)):
         nome = f"roar-retencao-{tipo}-{gerenciador_id}"
         _gravar_politica(indexer, nome, f"Retenção de {tipo} de um gerenciador", [f"{prefixo}*"], dias, 200)
@@ -438,11 +511,14 @@ def criar(nome, endereco_portas="127.0.0.1"):
         "PORTA_API": porta + 2, "PORTA_SYSLOG": porta + 3, "INDEXER_USUARIO": usuario, "INDEXER_SENHA": senha_indexer,
         "API_SENHA": senha_api, "INDICE": indice_do(gerenciador_id),
         "INDICE_BRUTO": indice_bruto_do(gerenciador_id), "CERTIFICADOS": CERTIFICADOS,
+        # O compose declara também o coletor: sem a pasta das bases de localização, nem o gerenciador sobe.
+        "GEOIP": _bases_de_localizacao(),
     }
     (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
     (pasta / ".env").chmod(0o600)
 
-    _compose(pasta, gerenciador_id, "up", "-d")
+    _compose(pasta, gerenciador_id, "up", "-d", "gerenciador")
+    ligar_coletor(gerenciador_id)
     _worker_do_cliente(cliente, ["enable", "--now"])
     return {"id": gerenciador_id, "cliente": cliente, "porta_eventos": porta, "porta_inscricao": porta + 1,
             "porta_api": porta + 2, "senha_inscricao": senha_inscricao, "senha_api": senha_api,
@@ -462,28 +538,74 @@ def _api_do_gerenciador(gerenciador_id, metodo, rota, **kwargs):
     return r.json()
 
 
+@contextmanager
+def trava(gerenciador_id):
+    """Uma coisa por vez no gerenciador: o teste de parser grava um decodificador provisório, que não pode estar
+    lá quando a configuração é validada ou o gerenciador reinicia. Vale entre serviços: é um arquivo travado."""
+    caminho = DESTINO / "gerenciadores" / gerenciador_id / "gerenciador.trava"
+    with open(caminho, "a") as arquivo:
+        fcntl.flock(arquivo, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(arquivo, fcntl.LOCK_UN)
+
+
 def _configuracao_valida(gerenciador_id, programas=("wazuh-analysisd",)):
     # Usa o binário do Wazuh: a validação pela API estoura o tempo com milhares de regras.
     # Na dúvida, reprova: quem chama volta ao arquivo anterior e não reinicia nada.
     pasta = DESTINO / "gerenciadores" / gerenciador_id
-    for programa in programas:
-        r = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
-                            "exec", "-T", "gerenciador", f"/var/ossec/bin/{programa}", "-t"],
-                           capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            return False, {"status": "erro", "saida": (r.stderr or r.stdout)[-400:]}
+    with trava(gerenciador_id):
+        for programa in programas:
+            r = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                                "exec", "-T", "gerenciador", f"/var/ossec/bin/{programa}", "-t"],
+                               capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                return False, {"status": "erro", "saida": (r.stderr or r.stdout)[-400:]}
     return True, {"status": "OK", "saida": ""}
 
 
-def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
-    """Instala um arquivo de regras. Se a validação reprovar, volta ao anterior e não reinicia.
+def _reiniciar(pasta, gerenciador_id):
+    with trava(gerenciador_id):
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
+    _garantir_api(pasta, gerenciador_id)
+
+
+DECODIFICADOR_DE_TESTE = "/var/ossec/etc/decoders/roar_teste_parser.xml"
+
+
+def testar_log(gerenciador_id, log, xml=None):
+    """Roda um log no teste do gerenciador, que lê os decodificadores do disco a cada sessão. Com xml, o
+    decodificador fica no disco só durante o teste, com o gerenciador travado. Devolve a saída do teste."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    with trava(gerenciador_id):
+        if xml:
+            subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                            "exec", "-T", "gerenciador", "sh", "-c",
+                            f"cat > {DECODIFICADOR_DE_TESTE} && chown wazuh:wazuh {DECODIFICADOR_DE_TESTE} && chmod 660 {DECODIFICADOR_DE_TESTE}"],
+                           input=xml, capture_output=True, text=True, check=True, timeout=60)
+        try:
+            dados = _api_do_gerenciador(gerenciador_id, "PUT", "/logtest", json={"event": log, "log_format": "syslog", "location": "roar-teste"})["data"]
+        finally:
+            if xml:
+                _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", DECODIFICADOR_DE_TESTE)
+    try:
+        _api_do_gerenciador(gerenciador_id, "DELETE", f"/logtest/sessions/{dados['token']}")
+    except (requests.RequestException, KeyError):
+        pass  # A sessão expira sozinha.
+    return {"saida": dados.get("output") or {}, "mensagens": [m for m in dados.get("messages", []) if "WARNING" in m or "ERROR" in m][:10]}
+
+
+def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True, tipo="rules"):
+    """Instala um arquivo de regras, ou de decodificadores com tipo="decoders". Se a validação reprovar, volta ao
+    anterior e não reinicia.
 
     Copia direto para o contêiner porque a API do Wazuh estoura o tempo com arquivos grandes.
     """
-    if not re.fullmatch(r"roar_[a-z0-9_]+\.xml", nome):
+    if not re.fullmatch(r"roar_[a-z0-9_]+\.xml", nome) or tipo not in ("rules", "decoders"):
         raise ValueError("nome de arquivo de regras inválido")
     pasta = DESTINO / "gerenciadores" / gerenciador_id
-    caminho = f"/var/ossec/etc/rules/{nome}"
+    caminho = f"/var/ossec/etc/{tipo}/{nome}"
     novo, anterior = pasta / nome, pasta / f"{nome}.anterior"
 
     copia = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name",
@@ -508,8 +630,7 @@ def aplicar_regras(gerenciador_id, nome, xml, reiniciar=True):
             _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", caminho)
         return False, detalhe
     if reiniciar:
-        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
-        _garantir_api(pasta, gerenciador_id)
+        _reiniciar(pasta, gerenciador_id)
     return True, detalhe
 
 
@@ -602,12 +723,12 @@ def enviar_eventos(gerenciador_id, eventos):
     return _api_do_gerenciador(gerenciador_id, "POST", "/events", json={"events": eventos})
 
 
-def remover_regras(gerenciador_id, nome):
-    """Tira um arquivo de regras. Se nunca foi instalado, não reinicia nada."""
-    if not re.fullmatch(r"roar_[a-z0-9_]+\.xml", nome):
+def remover_regras(gerenciador_id, nome, tipo="rules"):
+    """Tira um arquivo de regras ou de decodificadores. Se nunca foi instalado, não reinicia nada."""
+    if not re.fullmatch(r"roar_[a-z0-9_]+\.xml", nome) or tipo not in ("rules", "decoders"):
         raise ValueError("nome de arquivo de regras inválido")
     pasta = DESTINO / "gerenciadores" / gerenciador_id
-    caminho = f"/var/ossec/etc/rules/{nome}"
+    caminho = f"/var/ossec/etc/{tipo}/{nome}"
     existe = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
                              "exec", "-T", "gerenciador", "test", "-f", caminho], capture_output=True)
     if existe.returncode != 0:
@@ -615,8 +736,7 @@ def remover_regras(gerenciador_id, nome):
     _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", caminho)
     valida, detalhe = _configuracao_valida(gerenciador_id)
     if valida:
-        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart")
-        _garantir_api(pasta, gerenciador_id)
+        _reiniciar(pasta, gerenciador_id)
     return valida, detalhe
 
 
@@ -674,9 +794,10 @@ def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=
         return False, detalhe
 
     def reiniciar():
-        return subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
-                               "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart"],
-                              capture_output=True, text=True, timeout=600)
+        with trava(gerenciador_id):
+            return subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                                   "exec", "-T", "gerenciador", "/var/ossec/bin/wazuh-control", "restart"],
+                                  capture_output=True, text=True, timeout=600)
 
     resultado = reiniciar()
     if resultado.returncode != 0:
@@ -704,6 +825,8 @@ def remover(gerenciador_id, apagar_dados=True):
     if pasta.is_dir():
         _compose(pasta, gerenciador_id, "down", "-v")
         shutil.rmtree(pasta)
+    adm = armazem.admin(env)
+    armazem.remover_gravador(adm, gerenciador_id)
     usuario = f"roar_ger_{gerenciador_id}"
     for rota in (f"_plugins/_security/api/internalusers/{usuario}", f"_plugins/_security/api/roles/{usuario}"):
         indexer.sessao.delete(f"{indexer.url}/{rota}", timeout=60)
@@ -727,6 +850,7 @@ def remover(gerenciador_id, apagar_dados=True):
                                                   (cliente[0],)).fetchone()[0]
             if cliente and not restantes:
                 _worker_do_cliente(cliente[0], ["disable", "--now"])
+                armazem.remover_organizacao(adm, cliente[0])
                 # A mesma varredura da remoção de organização: tabela nova não fica para trás.
                 varrer(banco, cliente[0])
                 banco.execute("DELETE FROM clientes WHERE id = %s", (cliente[0],))

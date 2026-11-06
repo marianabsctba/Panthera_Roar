@@ -5,16 +5,17 @@ import { useState, type ReactNode } from "react";
 import { detalhe, pedir, useDados } from "../api";
 import { AcoesDaLinha, Cabecalho, Carregando, Data, Painel, Tabela } from "../componentes";
 import { numero } from "../formato";
+import { recomecar } from "../rota";
 
 interface RelatorioGuardado {
   id: number; tipo: string; norma: string | null; norma_nome: string | null; dias: number; formato: string; nome: string; tamanho: number;
   sha256: string; mascarado: boolean; gerado_por_nome: string; gerado_em: string; pode_apagar: boolean; pode_baixar: boolean;
 }
 
-const tituloDoGuardado = (r: RelatorioGuardado) => (r.tipo === "norma" ? `Norma ${r.norma_nome ?? r.norma}` : r.tipo === "completo" ? "Completo" : "Executivo");
+const tituloDoGuardado = (r: RelatorioGuardado) => (r.tipo === "norma" ? `Norma ${r.norma_nome ?? r.norma}` : r.tipo === "painel" ? `Painel ${r.norma ?? ""}` : r.tipo === "completo" ? "Completo" : "Executivo");
 const tamanho = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${numero(Math.max(1, Math.round(bytes / 1024)))} KB`);
 
-async function baixar(rota: string, nomePadrao: string) {
+export async function baixar(rota: string, nomePadrao: string) {
   const r = await pedir(rota);
   if (!r.ok) throw new Error(await detalhe(r, "Não foi possível baixar."));
   const link = document.createElement("a");
@@ -106,7 +107,7 @@ export function Relatorios() {
     try {
       const r = await fetch(`/api/relatorios?${new URLSearchParams({ tipo, formato, dias })}`, { credentials: "same-origin" });
       if (r.status === 401) {
-        window.location.assign("/");
+        recomecar("/");
         return;
       }
       if (!r.ok) throw new Error("falhou");

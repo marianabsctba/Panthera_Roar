@@ -8,6 +8,7 @@ import { BotaoDaCesta } from "../cesta";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Painel, Severidade, Tabela, Vazio } from "../componentes";
 import { diaCurto, nomeDaCidade, nomeDoPais, numero, quando, SINAIS } from "../formato";
 import { SEVERIDADES } from "../tema";
+import { caminho, consulta, ir, trocar } from "../rota";
 
 // ------------------------------------------------------------------ peças usadas também por Fila e Logs
 
@@ -130,7 +131,7 @@ type Contexto = Partial<Record<(typeof FILTROS_DE_CONTEXTO)[number], string>>;
 interface Filtros { busca: string; severidade: string; dias: string; contexto: Contexto }
 
 function filtrosDaUrl(): Filtros {
-  const url = new URLSearchParams(window.location.search);
+  const url = new URLSearchParams(consulta());
   const contexto: Contexto = {};
   FILTROS_DE_CONTEXTO.forEach((c) => {
     const v = url.get(c);
@@ -151,7 +152,7 @@ function consultaDosFiltros({ busca, severidade, dias, contexto }: Filtros) {
 
 /** Outras telas chegam aqui com um filtro, como o país clicado no mapa ou a regra de uma técnica. */
 export function irParaEventos(filtros: Record<string, string>) {
-  window.history.pushState(null, "", `/eventos?${new URLSearchParams(filtros)}`);
+  ir(`/eventos?${new URLSearchParams(filtros)}`);
   // É o evento que a aplicação já escuta para trocar de tela.
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
@@ -209,12 +210,12 @@ export function Eventos() {
   useEffect(() => { buscar(); }, [buscar]);
 
   useEffect(() => {
-    if (window.location.pathname.startsWith("/eventos")) window.history.replaceState(null, "", `/eventos?${consulta}`);
+    if (caminho().startsWith("/eventos")) trocar(`/eventos?${consulta}`);
   }, [consulta]);
 
   useEffect(() => {
     const voltar = () => {
-      if (!window.location.pathname.startsWith("/eventos")) return;
+      if (!caminho().startsWith("/eventos")) return;
       setFiltros(filtrosDaUrl());
       setVersaoDaBusca((v) => v + 1);
     };

@@ -31,6 +31,7 @@ services:
       - API_PASSWORD=${API_SENHA}
       - ROAR_INDICE=${INDICE}
       - ROAR_INDICE_BRUTO=${INDICE_BRUTO}
+      - ROAR_SO_ARMAZEM=${ROAR_SO_ARMAZEM:-0}
     volumes:
       - api:/var/ossec/api/configuration
       - etc:/var/ossec/etc
@@ -54,6 +55,22 @@ services:
         aliases:
           - gerenciador-${GERENCIADOR_ID}
 
+  # Leva os logs e os alertas ao armazém de eventos (docs/clickhouse.md). Só lê a pasta de logs do gerenciador.
+  coletor:
+    image: timberio/vector:0.60.0-debian@sha256:3ccb4bbd36e38734394e158db1411e91a69d076ed25013f8de385046a382d36a
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/roar.yaml"]
+    environment:
+      - GERENCIADOR_ID=${GERENCIADOR_ID}
+      - VECTOR_LOG=warn
+    volumes:
+      - logs:/var/ossec/logs:ro
+      - coletor:/var/lib/vector
+      - ./vector.yaml:/etc/vector/roar.yaml:ro
+      - ${GEOIP}:/etc/vector/geoip:ro
+    networks:
+      - rede
+
 volumes:
   api:
   etc:
@@ -66,6 +83,7 @@ volumes:
   wodles:
   filebeat_etc:
   filebeat_var:
+  coletor:
 
 networks:
   rede:

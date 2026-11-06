@@ -5,6 +5,7 @@ O que volta fica fora da retenção automática, para não ser apagado na hora p
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 
 from . import provisao
@@ -57,8 +58,21 @@ def recuperar(indexer, gerenciadores, de, ate, tipo):
         if not r.ok:
             raise RuntimeError(f"restaurar {copia} devolveu {r.status_code}: {r.text[:300]}")
         voltaram.extend(indices)
-        indexer.sessao.post(f"{indexer.url}/_plugins/_ism/remove/{','.join(indices)}", timeout=60)
+        tirar_retencao(indexer, indices)
     return voltaram
+
+
+def tirar_retencao(indexer, indices, tentativas=15, esperar=time.sleep):
+    """O indexador prende a política de retenção ao índice novo de forma assíncrona, e às vezes isso chega depois da
+    remoção. Confere e tira de novo até ela não estar mais lá, para o dia que voltou não sair na hora."""
+    for _ in range(tentativas):
+        indexer.sessao.post(f"{indexer.url}/_plugins/_ism/remove/{','.join(indices)}", timeout=60)
+        esperar(2)
+        explicado = indexer.sessao.get(f"{indexer.url}/_plugins/_ism/explain/{','.join(indices)}", timeout=60).json()
+        if not any((explicado.get(i) or {}).get("index.plugins.index_state_management.policy_id") or (explicado.get(i) or {}).get("policy_id") for i in indices):
+            return True
+    log.warning("a retenção continua presa a %s", indices)
+    return False
 
 
 def devolver(indexer, indices):

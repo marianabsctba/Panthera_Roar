@@ -1,3 +1,4 @@
+import { Sparkline } from "@mantine/charts";
 import { Alert, Badge, Box, Button, Card, Drawer, Group, Modal, NumberInput, PasswordInput, SegmentedControl, Select, SimpleGrid, Stack, Switch, Tabs, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
 import { IconAlertTriangle, IconLock, IconPlugConnected, IconServer2 } from "@tabler/icons-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
@@ -5,6 +6,8 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { detalhe, enviar, useDados, usePode } from "../api";
 import { AcoesDaLinha, BlocoDeComando, Busca, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela, Vazio } from "../componentes";
 import { numero } from "../formato";
+import { ComoLe, Parsers, type Leitura } from "./FontesParsers";
+import { ir } from "../rota";
 
 // ------------------------------------------------------------------ catálogo
 
@@ -21,10 +24,17 @@ interface Conector {
   tipo?: string;
   tipos?: string[];
   permissao?: string;
+  /** Equipamentos de rede: protocolo que já vem no formulário, uma linha de exemplo e a configuração para copiar. */
+  protocolo?: "tcp" | "udp";
+  amostra?: string;
+  comando?: (endereco: string, porta: number) => string;
 }
 
 const SEM_CONTA_REAL = "Ainda não testado com uma conta real";
 const PROVAS_BOAS = new Set(["agente", "syslog", "webhook", "api"]);
+const PROVA_DO_EQUIPAMENTO = "Testado com linhas de exemplo, ainda não com o equipamento";
+const CADASTRE = "Em Conectar, cadastre o endereço de onde o equipamento manda os logs. O que vier de outro endereço é ignorado.";
+const TESTE = "Antes de apontar o envio, cole abaixo uma linha do seu equipamento e clique em Testar: aparecem os campos que o Roar tira.";
 
 const CATALOGO: { grupo: string; itens: Conector[] }[] = [
   { grupo: "Ativos e rede", itens: [
@@ -34,6 +44,37 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
     { id: "syslog", rotulo: "Syslog", sigla: "SYS", resumo: "Firewall, switch e outros equipamentos que não aceitam agente.", prova: "Testado com envio real",
       passos: ["Em Conectar, cadastre os endereços dos equipamentos: o que estiver fora da lista é ignorado.", "Espere a fonte ficar ativa.", "No equipamento, aponte o envio de syslog para o endereço e a porta mostrados aqui."],
       cuidado: "O syslog não é cifrado: use apenas em rede de confiança.", tipos: ["syslog"] },
+  ] },
+  { grupo: "Firewalls e rede", itens: [
+    { id: "fortigate", rotulo: "FortiGate", sigla: "FG", resumo: "Tráfego, bloqueios, VPN e acessos de administrador dos firewalls Fortinet.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "No FortiGate, abra a linha de comando (CLI Console) e cole a configuração abaixo.", "Nas políticas que quer acompanhar, ligue Log Allowed Traffic com All Sessions: sem isso, só os bloqueios chegam.", TESTE],
+      comando: (e, p) => `config log syslogd setting\n    set status enable\n    set server "${e}"\n    set port ${p}\n    set mode udp\nend`,
+      amostra: 'date=2026-11-06 time=10:16:40 devname="FGT60F-MATRIZ" devid="FGT60FTK00000000" logid="0100032002" type="event" subtype="system" level="alert" vd="root" logdesc="Admin login failed" user="admin" ui="https(198.51.100.7)" method="https" srcip=198.51.100.7 dstip=10.0.10.1 action="login" status="failed" reason="passwd_invalid"' },
+    { id: "pfsense", rotulo: "pfSense", sigla: "PF", resumo: "Bloqueios e liberações das regras de firewall do pfSense.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "No pfSense, abra Status > System Logs > Settings.", "Marque Enable Remote Logging, informe o endereço e a porta abaixo em Remote log servers e marque Firewall Events. Salve.", "Nas regras que quer acompanhar, marque Log packets that are handled by this rule.", TESTE],
+      comando: (e, p) => `${e}:${p}`,
+      amostra: "Nov  6 10:15:02 pfSense filterlog[48520]: 5,,,1000000103,igb0,match,block,in,4,0x0,,64,24811,0,DF,6,tcp,60,198.51.100.7,10.0.10.5,51544,22,0,S,1508344447,,64240,,mss;sackOK;TS;nop;wscale" },
+    { id: "opnsense", rotulo: "OPNsense", sigla: "OPN", resumo: "Bloqueios e liberações das regras de firewall do OPNsense.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "No OPNsense, abra System > Settings > Logging, aba Remote, e adicione um destino.", "Escolha o transporte UDP(4), a aplicação filter (firewall), o endereço e a porta abaixo. Deixe desmarcado o RFC5424. Salve e aplique.", "Nas regras que quer acompanhar, marque Log packets that are handled by this rule.", TESTE],
+      comando: (e, p) => `${e}:${p}`,
+      amostra: "Nov  6 10:15:02 OPNsense.localdomain filterlog[48520]: 81,,,fae559338f65e11c53669fc3642c93c2,igb0,match,block,in,4,0x0,,64,24811,0,DF,6,tcp,60,198.51.100.7,10.0.10.5,51544,22,0,S,1508344447,,64240,,mss;sackOK;TS;nop;wscale" },
+    { id: "paloalto", rotulo: "Palo Alto", sigla: "PA", resumo: "Tráfego, ameaças e eventos de sistema dos firewalls Palo Alto Networks.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "Em Device > Server Profiles > Syslog, crie um perfil com o endereço e a porta abaixo, transporte UDP e formato BSD.", "Em Objects > Log Forwarding, crie um perfil que mande Traffic e Threat para esse servidor, e aplique o perfil nas regras de segurança.", "Em Device > Log Settings, mande também System e Configuration para o mesmo servidor. Faça o commit.", TESTE],
+      comando: (e, p) => `${e}:${p}`,
+      amostra: "Nov  6 10:15:02 PA-MATRIZ 1,2026/11/06 10:15:02,012801000000,TRAFFIC,deny,2560,2026/11/06 10:15:02,198.51.100.7,10.0.10.5,0.0.0.0,0.0.0.0,bloqueio-entrada,,,not-applicable,vsys1,untrust,trust,ethernet1/1,,encaminhar-siem,2026/11/06 10:15:02,0,1,51544,22,0,0,0x0,tcp,deny,74,74,0,1,2026/11/06 10:15:01,0,any,0,7123456789,0x0,BR,10.0.0.0-10.255.255.255,0,1,0,policy-deny,0,0,0,0,,PA-MATRIZ,from-policy,,,0,,0,,N/A,0,0,0,0" },
+    { id: "sophos", rotulo: "Sophos Firewall", sigla: "SO", resumo: "Regras de firewall, IPS e autenticação do Sophos Firewall (antigo XG).", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "Em System services > Log settings, adicione um servidor syslog com o endereço e a porta abaixo, severidade Information e formato Device standard.", "Na mesma tela, marque as categorias que vão para esse servidor: Firewall, IPS, Authentication e as outras que quiser. Salve.", TESTE],
+      comando: (e, p) => `${e}:${p}`,
+      amostra: 'device="SFW" date=2026-11-06 time=10:15:02 timezone="-03" device_name="XG135" device_id=C01001ABCDEF12 log_id=010101600001 log_type="Firewall" log_component="Firewall Rule" log_subtype="Denied" status="Deny" priority=Information fw_rule_id=5 in_interface="Port2" out_interface="Port1" src_ip=198.51.100.7 dst_ip=10.0.10.5 protocol="TCP" src_port=51544 dst_port=22' },
+    { id: "ciscoasa", rotulo: "Cisco ASA", sigla: "ASA", resumo: "Conexões negadas e permitidas, VPN e comandos de administrador do Cisco ASA.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "No ASA, entre no modo de configuração (configure terminal) e cole a configuração abaixo, trocando inside pelo nome da interface que chega ao Roar.", "Grave com write memory.", TESTE],
+      comando: (e, p) => `logging enable\nlogging timestamp\nlogging trap informational\nlogging host inside ${e} udp/${p}`,
+      cuidado: "O login recusado no ASA chega, mas sem o usuário e o endereço separados: o servidor ainda não lê essa mensagem por inteiro.",
+      amostra: 'Nov  6 2026 10:15:02 ASA-MATRIZ : %ASA-4-106023: Deny tcp src outside:198.51.100.7/51544 dst inside:10.0.10.5/22 by access-group "outside_access_in" [0x0, 0x0]' },
+    { id: "mikrotik", rotulo: "MikroTik", sigla: "MT", resumo: "Firewall e logins do RouterOS, lidos por um parser do Roar.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
+      passos: [CADASTRE, "No terminal do RouterOS, cole a configuração abaixo: ela manda os logs de firewall e de sistema, que trazem os logins.", "Nas regras de firewall que quer acompanhar, ligue log. Um log-prefix, se houver, aparece no Roar como prefixo.", TESTE],
+      comando: (e, p) => `/system logging action add name=roar target=remote remote=${e} remote-port=${p}\n/system logging add topics=firewall action=roar\n/system logging add topics=system action=roar`,
+      amostra: "Nov  6 10:16:40 MikroTik system,error,critical login failure for user admin from 198.51.100.7 via winbox" },
   ] },
   { grupo: "Nuvem e SaaS", itens: [
     { id: "aws", rotulo: "AWS CloudTrail", logo: "amazonwebservices", resumo: "Quem fez o quê na conta da AWS.", prova: SEM_CONTA_REAL,
@@ -99,6 +140,21 @@ interface Fonte {
   aplicada_em: string | null;
   saude: string | null;
   ultimo_dado: string | null;
+  /** Só com o armazém de eventos: a conta das últimas horas (api/roar_api/saude_das_fontes.py). */
+  volume?: Volume;
+}
+interface ContaDeVolume {
+  eventos_24h: number;
+  entendidos: number | null;
+  ultima_hora: number;
+  normal_da_hora: number | null;
+  abaixo_do_normal: boolean;
+  ultimo: string | null;
+}
+interface Volume extends ContaDeVolume {
+  eps: number;
+  horas: number[];
+  equipamentos?: (ContaDeVolume & { endereco: string })[];
 }
 interface VisaoDeFontes {
   fontes: Fonte[];
@@ -118,7 +174,8 @@ const CAMPOS_DA_CONFIG: Record<string, string> = {
   projeto: "Projeto", assinatura: "Assinatura", nivel: "A partir do nível", endereco: "Endereço", caminho: "Onde está a lista", cabecalho: "Cabeçalho", intervalo_minutos: "Buscar a cada (minutos)",
 };
 
-const comProblema = (f: Fonte) => f.estado === "recusada" || Boolean(f.mensagem) || f.saude === "parada";
+const abaixoDoNormal = (f: Fonte) => Boolean(f.volume?.abaixo_do_normal || f.volume?.equipamentos?.some((q) => q.abaixo_do_normal));
+const comProblema = (f: Fonte) => f.estado === "recusada" || Boolean(f.mensagem) || f.saude === "parada" || abaixoDoNormal(f);
 // O webhook guarda só o resumo do token, e a busca em API pode não ter credencial nenhuma.
 const temCredencial = (f: Fonte) => Boolean(f.config.segredo) || f.tipo === "webhook";
 
@@ -131,13 +188,18 @@ function detalheDaFonte(f: Fonte) {
   return f.tipo === "webhook" ? "Token guardado" : "-";
 }
 
+/** As fontes de um cartão. O cartão de um fabricante mostra só as cadastradas por ele; o de Syslog, todas as de syslog. */
+function fontesDoConector(item: Conector, fontes: Fonte[]) {
+  const tipos: string[] = item.tipos ?? [item.tipo ?? ""];
+  return fontes.filter((f) => tipos.includes(f.tipo) && (!item.amostra || f.config.fabricante === item.id));
+}
+
 function situacaoDoConector(item: Conector, visao: VisaoDeFontes | null): { texto: string; marca: "ok" | "alerta" | "neutro" } {
   if (item.id === "agente") {
     const { total = 0, conectados = 0 } = visao?.agentes ?? {};
     return total ? { texto: `${conectados} de ${total} conectados`, marca: conectados ? "ok" : "alerta" } : { texto: "Não conectado", marca: "neutro" };
   }
-  const tipos = item.tipos ?? [item.tipo];
-  const fontes = (visao?.fontes ?? []).filter((f) => tipos.includes(f.tipo));
+  const fontes = fontesDoConector(item, visao?.fontes ?? []);
   if (!fontes.length) return { texto: "Não conectado", marca: "neutro" };
   if (fontes.some((f) => f.estado === "recusada")) return { texto: "Recusado", marca: "alerta" };
   if (fontes.some((f) => f.estado === "pendente")) return { texto: "Aplicando", marca: "neutro" };
@@ -150,7 +212,7 @@ const semAcento = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "
 
 function irParaAtivos() {
   // A aplicação acompanha a rota pelo popstate.
-  window.history.pushState(null, "", "/ativos");
+  ir("/ativos");
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
@@ -202,6 +264,53 @@ function Fato({ rotulo, children }: { rotulo: string; children: ReactNode }) {
   );
 }
 
+function Entendidos({ valor }: { valor: number | null }) {
+  if (valor === null) return <>-</>;
+  return <Text span size="sm" c={valor < 80 ? "orange" : undefined}>{numero(valor)}%</Text>;
+}
+
+function UltimaHora({ conta }: { conta: ContaDeVolume }) {
+  return (
+    <Group gap={6} wrap="nowrap" justify="flex-end">
+      <Text span size="sm">{numero(conta.ultima_hora)}</Text>
+      {conta.normal_da_hora !== null && <Text span size="xs" c="dimmed">normal {numero(conta.normal_da_hora)}</Text>}
+      {conta.abaixo_do_normal && <Badge size="xs" color="orange" variant="light">Abaixo do normal</Badge>}
+    </Group>
+  );
+}
+
+function VolumeDaFonte({ volume }: { volume: Volume }) {
+  return (
+    <Stack gap="sm">
+      <Title order={3}>Últimas 24 horas</Title>
+      <Sparkline h={56} data={volume.horas} curveType="linear" fillOpacity={0.25} aria-label="Eventos por hora nas últimas 24 horas" />
+      <Stack gap={8}>
+        <Fato rotulo="Eventos">{numero(volume.eventos_24h)}</Fato>
+        <Fato rotulo="Por segundo, em média">{numero(volume.eps)}</Fato>
+        <Fato rotulo="Entendidos pelo gerenciador"><Entendidos valor={volume.entendidos} /></Fato>
+        <Fato rotulo="Na última hora"><UltimaHora conta={volume} /></Fato>
+      </Stack>
+      {volume.entendidos !== null && volume.entendidos < 80 && (
+        <Text size="xs" c="dimmed">O que o gerenciador não entende chega como texto, sem campos para buscar e para as regras. Um parser próprio, na aba Parsers, resolve.</Text>
+      )}
+      {volume.equipamentos && (
+        <Tabela
+          linhas={volume.equipamentos}
+          chave={(q) => q.endereco}
+          vazio="Nenhum equipamento da lista mandou nada nos últimos 7 dias."
+          colunas={[
+            { titulo: "Equipamento", celula: (q) => <span className="mono">{q.endereco}</span> },
+            { titulo: "Último dado", celula: (q) => <Data valor={q.ultimo} /> },
+            { titulo: "24 h", celula: (q) => numero(q.eventos_24h) },
+            { titulo: "Entendidos", celula: (q) => <Entendidos valor={q.entendidos} /> },
+            { titulo: "Última hora", celula: (q) => <UltimaHora conta={q} /> },
+          ]}
+        />
+      )}
+    </Stack>
+  );
+}
+
 // ------------------------------------------------------------------ formulários
 
 function Rodape({ aoFechar, rotulo, ocupado }: { aoFechar: () => void; rotulo: string; ocupado: boolean }) {
@@ -219,9 +328,9 @@ function Erro({ texto }: { texto: string | null }) {
 
 interface PropsDoFormulario { item: Conector; aoFechar: () => void; aoCriar: () => void }
 
-function FormularioDeSyslog({ aoFechar, aoCriar }: PropsDoFormulario) {
-  const [nome, setNome] = useState("");
-  const [protocolo, setProtocolo] = useState("tcp");
+function FormularioDeSyslog({ item, aoFechar, aoCriar }: PropsDoFormulario) {
+  const [nome, setNome] = useState(item.id === "syslog" ? "" : item.rotulo);
+  const [protocolo, setProtocolo] = useState<string>(item.protocolo ?? "tcp");
   const [origens, setOrigens] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
@@ -230,7 +339,7 @@ function FormularioDeSyslog({ aoFechar, aoCriar }: PropsDoFormulario) {
     setErro(null);
     if (!nome.trim()) return setErro("Dê um nome ao equipamento.");
     setOcupado(true);
-    const r = await enviar("/api/fontes", { nome: nome.trim(), protocolo, origens: origens.split("\n").map((l) => l.trim()).filter(Boolean) });
+    const r = await enviar("/api/fontes", { nome: nome.trim(), protocolo, origens: origens.split("\n").map((l) => l.trim()).filter(Boolean), fabricante: item.amostra ? item.id : null });
     setOcupado(false);
     if (!r.ok) return setErro(await detalhe(r, "Confira os endereços."));
     aoCriar();
@@ -241,7 +350,7 @@ function FormularioDeSyslog({ aoFechar, aoCriar }: PropsDoFormulario) {
       <Stack gap="sm">
         <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
           <TextInput label="Nome" placeholder="Firewall da matriz" maxLength={120} value={nome} onChange={(e) => setNome(e.currentTarget.value)} data-autofocus />
-          <Select label="Protocolo" allowDeselect={false} value={protocolo} onChange={(v) => setProtocolo(v ?? "tcp")} data={[{ value: "tcp", label: "TCP (recomendado)" }, { value: "udp", label: "UDP" }]} />
+          <Select label="Protocolo" allowDeselect={false} value={protocolo} onChange={(v) => setProtocolo(v ?? "tcp")} data={item.protocolo === "udp" ? [{ value: "udp", label: "UDP (o que o equipamento usa)" }, { value: "tcp", label: "TCP" }] : [{ value: "tcp", label: "TCP (recomendado)" }, { value: "udp", label: "UDP" }]} />
         </SimpleGrid>
         <Textarea label="Endereços que podem enviar, um por linha" placeholder={"192.168.10.1\n10.20.0.0/24"} rows={3} spellCheck={false} value={origens} onChange={(e) => setOrigens(e.currentTarget.value)} />
         <Erro texto={erro} />
@@ -399,6 +508,52 @@ function InstalacaoDoAgente() {
   );
 }
 
+// O que o Roar tira de cada campo, nos mesmos nomes e na mesma ordem da ingestão (ingestao/roar_ingestao/normalizar.py).
+const ORIGEM = ["srcip", "src_ip", "source_address"];
+const DESTINO = ["dstip", "dst_ip", "destination_address"];
+const USUARIO = ["srcuser", "dstuser", "user_name", "source_user", "username", "user"];
+const ACAO = ["action", "status", "content_type"];
+const primeiro = (campos: Record<string, unknown>, nomes: string[]) => nomes.map((n) => campos[n]).find((v) => typeof v === "string" && v.trim()) as string | undefined;
+
+function TesteDeLinha({ amostra }: { amostra: string }) {
+  const [linha, setLinha] = useState(amostra);
+  const [leitura, setLeitura] = useState<Leitura | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [testando, setTestando] = useState(false);
+  const testar = async () => {
+    setTestando(true); setErro(null); setLeitura(null);
+    const r = await enviar("/api/fontes/testar-linha", { log: linha });
+    setTestando(false);
+    if (!r.ok) return setErro(await detalhe(r, "O servidor não respondeu ao teste. Tente de novo em instantes."));
+    setLeitura((await r.json()).hoje);
+  };
+  const aproveitado: [string, string | undefined][] = leitura ? [
+    ["Origem", primeiro(leitura.campos, ORIGEM)], ["Destino", primeiro(leitura.campos, DESTINO)],
+    ["Usuário", primeiro(leitura.campos, USUARIO)], ["Ação", primeiro(leitura.campos, ACAO)],
+  ] : [];
+  return (
+    <Stack gap="xs">
+      <Title order={2}>Testar com uma linha do equipamento</Title>
+      <Text size="sm" c="dimmed">Já vem uma linha de exemplo. Troque por uma do seu equipamento, se tiver: o teste não grava nada.</Text>
+      <Textarea aria-label="Linha de log do equipamento" rows={3} spellCheck={false} className="mono" value={linha} onChange={(e) => setLinha(e.currentTarget.value)} />
+      <Group><Button onClick={testar} loading={testando} disabled={!linha.trim()}>Testar</Button></Group>
+      <Erro texto={erro} />
+      {leitura && (
+        <Stack gap="xs">
+          {!leitura.decodificador ? (
+            <Alert color="yellow" variant="light" p="xs" fz="sm" icon={<IconAlertTriangle size={16} />}>O servidor não reconheceu esta linha: ela chegaria como texto, sem campos. Na aba Parsers dá para ensinar o formato.</Alert>
+          ) : (
+            <Stack gap={8}>
+              {aproveitado.map(([rotulo, valor]) => <Fato key={rotulo} rotulo={rotulo}>{valor ? <span className="mono">{valor}</span> : <Text span size="sm" c="dimmed">não veio</Text>}</Fato>)}
+            </Stack>
+          )}
+          <ComoLe titulo="Tudo o que o servidor leu" leitura={leitura} />
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
 // ------------------------------------------------------------------ gavetas
 
 function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { item: Conector | null; visao: VisaoDeFontes; aoFechar: () => void; aoMudar: () => void; aoAbrirFonte: (f: Fonte) => void }) {
@@ -407,8 +562,8 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
   const fechar = () => { setConectando(false); aoFechar(); };
   const podeConectar = item ? pode(item.permissao ?? "gerir_fontes") : false;
   const tipos = item ? item.tipos ?? [item.tipo ?? ""] : [];
-  const fontes = visao.fontes.filter((f) => tipos.includes(f.tipo));
-  const Formulario = item?.id === "syslog" ? FormularioDeSyslog : item?.id === "webhook" ? FormularioDeWebhook : item?.id === "api" ? FormularioDeApi : FormularioDeNuvem;
+  const fontes = item ? fontesDoConector(item, visao.fontes) : [];
+  const Formulario = tipos.includes("syslog") ? FormularioDeSyslog : item?.id === "webhook" ? FormularioDeWebhook : item?.id === "api" ? FormularioDeApi : FormularioDeNuvem;
   const prova = item && PROVAS_BOAS.has(item.id) ? "pronto" : "outro";
 
   return (
@@ -433,9 +588,11 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
           </Stack>
 
           {item.cuidado && <Alert color="yellow" variant="light" p="xs" fz="sm" icon={<IconAlertTriangle size={16} />}>{item.cuidado}</Alert>}
-          {item.id === "syslog" && visao.porta_syslog && (
-            <Text size="sm">Aponte os equipamentos para <span className="mono">{visao.endereco}</span>, porta <span className="mono">{visao.porta_syslog}</span>.</Text>
+          {tipos.includes("syslog") && visao.porta_syslog && (
+            <Text size="sm">Aponte {item.id === "syslog" ? "os equipamentos" : "o equipamento"} para <span className="mono">{visao.endereco}</span>, porta <span className="mono">{visao.porta_syslog}</span>{item.protocolo === "udp" ? ", em UDP" : ""}.</Text>
           )}
+          {item.comando && visao.porta_syslog && visao.endereco && <BlocoDeComando texto={item.comando(visao.endereco, visao.porta_syslog)} />}
+          {item.amostra && pode("gerir_fontes") && <TesteDeLinha key={item.id} amostra={item.amostra} />}
 
           {!podeConectar && <Text size="sm" c="dimmed">Seu perfil não permite conectar. Peça a quem administra.</Text>}
           {podeConectar && item.id === "agente" && <InstalacaoDoAgente />}
@@ -495,6 +652,7 @@ function GavetaDaFonte({ fonte, aoFechar, aoDesativar }: { fonte: Fonte | null; 
             <Fato rotulo="Aplicada em"><Data valor={fonte.aplicada_em} /></Fato>
             {temCredencial(fonte) && <Fato rotulo="Credencial">{fonte.tipo === "webhook" ? "Só o resumo do token" : "Cifrada no cofre"}</Fato>}
           </Stack>
+          {fonte.volume && <VolumeDaFonte volume={fonte.volume} />}
           {pode("gerir_fontes") && <Group><Button onClick={() => aoDesativar(fonte)}>Desativar</Button></Group>}
         </Stack>
       )}
@@ -549,7 +707,18 @@ function Configuradas({ fontes, soProblema, aoMudarFiltro, aoAbrir, aoDesativar 
           { titulo: "Tipo", celula: (f) => TIPOS_DE_FONTE[f.tipo] ?? f.tipo },
           { titulo: "Detalhe", celula: (f) => <span className="mono">{detalheDaFonte(f)}</span> },
           { titulo: "Estado", largura: 110, celula: (f) => <SituacaoDaFonte fonte={f} /> },
-          { titulo: "Dados", celula: (f) => <Text span size="sm" style={{ whiteSpace: "nowrap" }}>{SAUDE_DA_FONTE[f.saude ?? ""] ?? "-"}</Text> },
+          { titulo: "Dados", celula: (f) => (
+            <Group gap={6} wrap="nowrap">
+              <Text span size="sm" style={{ whiteSpace: "nowrap" }}>{SAUDE_DA_FONTE[f.saude ?? ""] ?? "-"}</Text>
+              {abaixoDoNormal(f) && <Badge size="xs" color="orange" variant="light">Abaixo do normal</Badge>}
+            </Group>
+          ) },
+          { titulo: "Últimas 24 h", largura: 170, celula: (f) => f.volume ? (
+            <Group gap={8} wrap="nowrap">
+              <Sparkline w={80} h={24} data={f.volume.horas} curveType="linear" fillOpacity={0.25} aria-hidden />
+              <Text span size="sm">{numero(f.volume.eventos_24h)}</Text>
+            </Group>
+          ) : "-" },
           { titulo: "Último dado", largura: 150, celula: (f) => <Data valor={f.ultimo_dado} /> },
           { titulo: "", largura: 40, celula: (f) => (
             <AcoesDaLinha rotulo={`Ações de ${f.nome}`} itens={[
@@ -641,10 +810,12 @@ export function Fontes() {
             <Tabs.Tab value="catalogo">Conectores</Tabs.Tab>
             <Tabs.Tab value="configuradas">Configuradas</Tabs.Tab>
             <Tabs.Tab value="cofre">Cofre de credenciais</Tabs.Tab>
+            <Tabs.Tab value="parsers">Parsers</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="catalogo"><Catalogo visao={dados} aoAbrir={setConector} /></Tabs.Panel>
           <Tabs.Panel value="configuradas"><Configuradas fontes={dados.fontes} soProblema={soProblema} aoMudarFiltro={setSoProblema} aoAbrir={abrirFonte} aoDesativar={pedirDesativar} /></Tabs.Panel>
           <Tabs.Panel value="cofre"><Cofre fontes={noCofre} aoAbrir={abrirFonte} aoDesativar={pedirDesativar} /></Tabs.Panel>
+          <Tabs.Panel value="parsers"><Parsers /></Tabs.Panel>
         </Tabs>
       </Stack>
 

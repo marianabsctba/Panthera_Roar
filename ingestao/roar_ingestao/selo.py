@@ -3,7 +3,8 @@
     python -m roar_ingestao.selo [--uma-vez] [--verificar]
 
 A cada janela, os eventos viram uma árvore de Merkle (RFC 9162) com sal por folha, e a raiz entra numa
-cadeia assinada. Os selos ficam no banco e os eventos no indexador: mexer em um sem o outro aparece.
+cadeia assinada. Os selos ficam no banco e os eventos no indexador ou no armazém de eventos (cada selo diz de onde,
+docs/clickhouse.md): mexer em um sem o outro aparece.
 
 O que isto prova: o evento não mudou desde a selagem, e a selagem não foi reescrita. O que não prova:
 que o conteúdo do log é verdadeiro. Um log forjado antes de chegar aqui é selado como qualquer outro.
@@ -25,6 +26,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
+from . import armazem as armazem_de_eventos
 from . import rede_externa
 
 log = logging.getLogger("roar.selo")
@@ -111,11 +113,15 @@ def raiz_pelo_caminho(folha, indice, total, caminho):
 
 
 def cabecalho_do_selo(selo):
-    return {
+    cabecalho = {
         "versao": VERSAO, "gerenciador": selo["gerenciador"], "cliente": str(selo["cliente"]), "n": selo["n"], "fonte": selo["fonte"],
         "inicio": selo["inicio"], "fim": selo["fim"], "total": selo["total"], "tardio": selo["tardio"],
         "raiz": selo["raiz"], "anterior": selo["anterior"], "chave": selo["chave"], "selado_em": selo["selado_em"],
     }
+    # Só o selo feito sobre o armazém leva a origem: os do indexador continuam com o mesmo hash de sempre.
+    if selo.get("origem", "indexador") != "indexador":
+        cabecalho["origem"] = selo["origem"]
+    return cabecalho
 
 
 def hash_do_selo(selo):
@@ -198,7 +204,67 @@ def _faixa(inicio, fim):
     return {"range": {"timestamp": {"gte": _iso(inicio), "lt": _iso(fim)}}}
 
 
+class FonteDoIndexador:
+    """Os eventos no indexador: o identificador é o _id do documento."""
+    origem = "indexador"
+
+    def __init__(self, indexer):
+        self.indexer = indexer
+
+    def documentos(self, fonte, gerenciador, inicio, fim):
+        return _documentos_no_indexador(self.indexer, fonte, gerenciador, inicio, fim)
+
+    def primeiro(self, fonte, gerenciador, depois_de=None):
+        return _primeiro_no_indexador(self.indexer, fonte, gerenciador, depois_de)
+
+    def janelas(self, fonte, gerenciador, desde, ate):
+        """[(início da janela de 15 minutos, quantos eventos)] das janelas com algum evento."""
+        corpo = {"size": 0, "query": {"range": {"timestamp": {"gte": _iso(desde), "lt": _iso(ate)}}},
+                 "aggs": {"janelas": {"date_histogram": {"field": "timestamp", "fixed_interval": "15m", "min_doc_count": 1}}}}
+        baldes = _procurar(self.indexer, fonte, gerenciador, corpo).get("aggregations", {}).get("janelas", {}).get("buckets", [])
+        return [(datetime.fromtimestamp(b["key"] / 1000, timezone.utc), b["doc_count"]) for b in baldes]
+
+
+class FonteDoArmazem:
+    """Os eventos no armazém de eventos: o identificador é o id da linha, e o documento é o log como o gerenciador gravou."""
+    origem = "armazem"
+    TABELAS = {"alertas": "alertas", "logs": "logs"}
+
+    def __init__(self, leitor, cliente):
+        self.leitor, self.banco = leitor, armazem_de_eventos.banco_do(cliente)
+
+    def _onde(self, fonte):
+        return f"{self.banco}.{self.TABELAS[fonte]} WHERE gerenciador = {{g:String}}"
+
+    def documentos(self, fonte, gerenciador, inicio, fim):
+        linhas = self.leitor.linhas(f"""SELECT toString(id) AS i, dados, full_log, resumo_do_original FROM {self._onde(fonte)}
+                                        AND ocorrido_em >= parseDateTime64BestEffort({{a:String}}, 3) AND ocorrido_em < parseDateTime64BestEffort({{b:String}}, 3)""",
+                                    {"g": gerenciador, "a": _iso(inicio), "b": _iso(fim)})
+        return [(l["i"], armazem_de_eventos.documento_original(l)) for l in linhas]
+
+    def primeiro(self, fonte, gerenciador, depois_de=None):
+        filtro = " AND ocorrido_em >= parseDateTime64BestEffort({d:String}, 3)" if depois_de else ""
+        linha = self.leitor.linhas(f"SELECT toUnixTimestamp64Milli(min(ocorrido_em)) AS m, count() AS n FROM {self._onde(fonte)}{filtro}",
+                                   {"g": gerenciador, **({"d": _iso(depois_de)} if depois_de else {})})[0]
+        return datetime.fromtimestamp(int(linha["m"]) / 1000, timezone.utc) if int(linha["n"]) else None
+
+    def janelas(self, fonte, gerenciador, desde, ate):
+        linhas = self.leitor.linhas(f"""SELECT toUnixTimestamp(toStartOfFifteenMinutes(ocorrido_em)) AS j, count() AS n FROM {self._onde(fonte)}
+                                        AND ocorrido_em >= parseDateTime64BestEffort({{a:String}}, 3) AND ocorrido_em < parseDateTime64BestEffort({{b:String}}, 3)
+                                        GROUP BY j ORDER BY j""", {"g": gerenciador, "a": _iso(desde), "b": _iso(ate)})
+        return [(datetime.fromtimestamp(int(l["j"]), timezone.utc), int(l["n"])) for l in linhas]
+
+
+def _fonte(origem_dos_eventos):
+    """Quem chama pode passar o indexador (como sempre) ou uma fonte já pronta."""
+    return origem_dos_eventos if hasattr(origem_dos_eventos, "documentos") else FonteDoIndexador(origem_dos_eventos)
+
+
 def documentos_da_janela(indexer, fonte, gerenciador, inicio, fim):
+    return _fonte(indexer).documentos(fonte, gerenciador, inicio, fim)
+
+
+def _documentos_no_indexador(indexer, fonte, gerenciador, inicio, fim):
     corpo = {"size": TAMANHO_DA_PAGINA, "sort": [{"_id": "asc"}], "query": _faixa(inicio, fim)}
     documentos = []
     while True:
@@ -210,6 +276,10 @@ def documentos_da_janela(indexer, fonte, gerenciador, inicio, fim):
 
 
 def _primeiro_evento(indexer, fonte, gerenciador, depois_de=None):
+    return _fonte(indexer).primeiro(fonte, gerenciador, depois_de)
+
+
+def _primeiro_no_indexador(indexer, fonte, gerenciador, depois_de=None):
     corpo = {"size": 0, "aggs": {"menor": {"min": {"field": "timestamp"}}}}
     if depois_de:
         corpo["query"] = {"range": {"timestamp": {"gte": _iso(depois_de)}}}
@@ -228,7 +298,7 @@ def _ponta_da_cadeia(banco, gerenciador):
     return (linha[0], linha[1]) if linha else (0, GENESE)
 
 
-def gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, documentos, tardio=False):
+def gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, documentos, tardio=False, origem="indexador"):
     segredo = secrets.token_bytes(32)
     pares = folhas_em_ordem(segredo, documentos)
     with banco.con.transaction():
@@ -237,13 +307,15 @@ def gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim,
         selo = {
             "gerenciador": gerenciador, "cliente": str(cliente), "n": n + 1, "fonte": fonte, "inicio": _iso(inicio), "fim": _iso(fim), "total": len(pares), "tardio": tardio,
             "raiz": raiz_de_merkle([h for _, h in pares]).hex(), "anterior": anterior, "chave": impressao_da_chave(publica), "selado_em": _iso(datetime.now(timezone.utc)),
+            "origem": origem,
         }
         selo["hash"] = hash_do_selo(selo)
         selo["assinatura"] = chave.sign(bytes.fromhex(selo["hash"])).hex()
         banco.con.execute(
-            "INSERT INTO selos (gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (gerenciador, selo["n"], cliente, fonte, selo["inicio"], selo["fim"], selo["total"], tardio, selo["raiz"], anterior, selo["hash"], selo["assinatura"], selo["chave"], selo["selado_em"]))
+            "INSERT INTO selos (gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (gerenciador, selo["n"], cliente, fonte, selo["inicio"], selo["fim"], selo["total"], tardio, selo["raiz"], anterior, selo["hash"], selo["assinatura"], selo["chave"],
+             selo["selado_em"], origem))
         banco.con.execute("INSERT INTO selo_folhas (gerenciador_id, n, cliente_id, segredo, folhas) VALUES (%s, %s, %s, %s, %s)",
                           (gerenciador, selo["n"], cliente, segredo, empacotar_folhas(pares)))
     return selo
@@ -271,7 +343,7 @@ def selar_novas_janelas(indexer, banco, chave, publica, gerenciador, cliente, fo
             proximo = _primeiro_evento(indexer, fonte, gerenciador, fim)
             fim = min(_piso(proximo), teto) if proximo else teto
             fim = max(fim, inicio + JANELA)
-        gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, documentos)
+        gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, documentos, origem=_fonte(indexer).origem)
         selados += 1
         inicio = fim
     return selados
@@ -286,12 +358,9 @@ def _selos_das_janelas(banco, gerenciador, fonte, inicio, fim):
 def selar_tardios(indexer, banco, chave, publica, gerenciador, cliente, fonte, agora=None):
     """Quem chegou depois da selagem entra marcado: ajuda a explicar atraso, e não esconde uma inclusão posterior."""
     agora = agora or datetime.now(timezone.utc)
-    corpo = {"size": 0, "query": {"range": {"timestamp": {"gte": _iso(agora - HORIZONTE_DOS_TARDIOS), "lt": _iso(_piso(agora - MARGEM))}}},
-             "aggs": {"janelas": {"date_histogram": {"field": "timestamp", "fixed_interval": "15m", "min_doc_count": 1}}}}
-    baldes = _procurar(indexer, fonte, gerenciador, corpo).get("aggregations", {}).get("janelas", {}).get("buckets", [])
+    eventos = _fonte(indexer)
     selados = 0
-    for balde in baldes:
-        inicio = datetime.fromtimestamp(balde["key"] / 1000, timezone.utc)
+    for inicio, quantos in eventos.janelas(fonte, gerenciador, agora - HORIZONTE_DOS_TARDIOS, _piso(agora - MARGEM)):
         fim = inicio + JANELA
         with banco.con.transaction():
             _com_cliente(banco, cliente)
@@ -299,11 +368,11 @@ def selar_tardios(indexer, banco, chave, publica, gerenciador, cliente, fonte, a
         if not selos:
             continue
         conhecidos = {i for s in selos for i, _ in desempacotar_folhas(s[4])}
-        if balde["doc_count"] <= len(conhecidos):
+        if quantos <= len(conhecidos):
             continue
-        novos = [(i, d) for i, d in documentos_da_janela(indexer, fonte, gerenciador, inicio, fim) if i not in conhecidos]
+        novos = [(i, d) for i, d in eventos.documentos(fonte, gerenciador, inicio, fim) if i not in conhecidos]
         if novos:
-            gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, novos, tardio=True)
+            gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, novos, tardio=True, origem=eventos.origem)
             selados += 1
     return selados
 
@@ -314,10 +383,11 @@ def _selo_da_linha(linha):
     return {
         "gerenciador": linha[0], "n": linha[1], "cliente": str(linha[2]), "fonte": linha[3], "inicio": _iso(linha[4]), "fim": _iso(linha[5]), "total": linha[6], "tardio": linha[7],
         "raiz": linha[8], "anterior": linha[9], "hash": linha[10], "assinatura": linha[11], "chave": linha[12], "selado_em": _iso(linha[13]),
+        "origem": linha[14] if len(linha) > 14 else "indexador",
     }
 
 
-COLUNAS = "gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em"
+COLUNAS = "gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem"
 
 
 def conferir_cadeia(selos, publica):
@@ -343,8 +413,9 @@ def conferir_cadeia(selos, publica):
 def _grupos_que_se_tocam(selos):
     """Um selo tardio ocupa a janela do original. Quem se sobrepõe é conferido junto, para um não acusar o evento do outro."""
     grupos = []
-    for selo in sorted(selos, key=lambda s: (s["fonte"], s["inicio"], s["n"])):
-        if grupos and grupos[-1][0]["fonte"] == selo["fonte"] and selo["inicio"] < max(s["fim"] for s in grupos[-1]):
+    for selo in sorted(selos, key=lambda s: (s.get("origem", "indexador"), s["fonte"], s["inicio"], s["n"])):
+        mesmo_lugar = grupos and (grupos[-1][0]["fonte"], grupos[-1][0].get("origem", "indexador")) == (selo["fonte"], selo.get("origem", "indexador"))
+        if mesmo_lugar and selo["inicio"] < max(s["fim"] for s in grupos[-1]):
             grupos[-1].append(selo)
         else:
             grupos.append([selo])
@@ -352,7 +423,7 @@ def _grupos_que_se_tocam(selos):
 
 
 def conferir_grupo(indexer, gerenciador, grupo, guardados):
-    """Compara o que está hoje no indexador com o que foi selado, e aponta evento por evento."""
+    """Compara o que está hoje no lugar dos eventos (indexador ou armazém) com o que foi selado, e aponta evento por evento."""
     inicio = min(datetime.fromisoformat(s["inicio"]) for s in grupo)
     fim = max(datetime.fromisoformat(s["fim"]) for s in grupo)
     atuais = dict(documentos_da_janela(indexer, grupo[0]["fonte"], gerenciador, inicio, fim))
@@ -374,7 +445,7 @@ def conferir_grupo(indexer, gerenciador, grupo, guardados):
     return achados, len(conhecidos)
 
 
-def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None, somente_recentes=None, agora=None):
+def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None, somente_recentes=None, agora=None, armazem=None):
     """Sem somente_recentes confere tudo. A retenção apaga evento antigo de propósito: ali só a cadeia vale."""
     agora = agora or datetime.now(timezone.utc)
     with banco.con.transaction():
@@ -397,7 +468,15 @@ def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None,
             _com_cliente(banco, cliente)
             guardados = {l[0]: (bytes(l[1]), desempacotar_folhas(l[2])) for l in banco.con.execute(
                 "SELECT n, segredo, folhas FROM selo_folhas WHERE gerenciador_id = %s AND n = ANY(%s)", (gerenciador, [s["n"] for s in grupo])).fetchall()}
-        novos, quantos = conferir_grupo(indexer, gerenciador, grupo, guardados)
+        # Cada selo confere no lugar de onde veio: o do armazém, no armazém; o antigo, no indexador.
+        if grupo[0].get("origem", "indexador") == "armazem":
+            if armazem is None:
+                achados.append({"tipo": "armazem_indisponivel", "n": grupo[0]["n"]})
+                continue
+            onde = FonteDoArmazem(armazem, cliente)
+        else:
+            onde = indexer
+        novos, quantos = conferir_grupo(onde, gerenciador, grupo, guardados)
         achados.extend(novos)
         eventos += quantos
     estado = "violada" if achados else "integra"
@@ -459,13 +538,22 @@ def enviar_ao_calendario(calendario, resumo_da_ponta):
 
 # ------------------------------------------------------------------ serviço
 
-def rodar_ciclo(indexer, banco, chave, publica, com_ancora=False):
+def fonte_do_gerenciador(indexer, armazem, cliente, com_armazem):
+    """Com ROAR_SELOS_DO_ARMAZEM=1, a organização que já tem o armazém de eventos sela dele; as outras, do indexador."""
+    if armazem is not None and armazem_de_eventos.banco_do(cliente) in com_armazem:
+        return FonteDoArmazem(armazem, cliente)
+    return FonteDoIndexador(indexer)
+
+
+def rodar_ciclo(indexer, banco, chave, publica, com_ancora=False, armazem=None):
     total = 0
+    com_armazem = {l["name"] for l in armazem.linhas("SELECT name FROM system.databases")} if armazem is not None else set()
     for gerenciador, cliente in banco.gerenciadores():
+        eventos = fonte_do_gerenciador(indexer, armazem, cliente, com_armazem)
         for fonte in FONTES:
             try:
-                total += selar_novas_janelas(indexer, banco, chave, publica, gerenciador, cliente, fonte)
-                total += selar_tardios(indexer, banco, chave, publica, gerenciador, cliente, fonte)
+                total += selar_novas_janelas(eventos, banco, chave, publica, gerenciador, cliente, fonte)
+                total += selar_tardios(eventos, banco, chave, publica, gerenciador, cliente, fonte)
             except Exception:
                 # Fica sem selar e tenta de novo: uma janela nunca é pulada, porque o ponto de partida vem do banco.
                 log.exception("selagem de %s de %s falhou", fonte, gerenciador)
@@ -474,10 +562,10 @@ def rodar_ciclo(indexer, banco, chave, publica, com_ancora=False):
     return total
 
 
-def verificar_todos(indexer, banco, publica, retencao_dias=None, somente_recentes=None):
+def verificar_todos(indexer, banco, publica, retencao_dias=None, somente_recentes=None, armazem=None):
     for gerenciador, cliente in banco.gerenciadores():
         try:
-            estado, achados, eventos = verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias, somente_recentes)
+            estado, achados, eventos = verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias, somente_recentes, armazem=armazem)
             log.log(logging.ERROR if achados else logging.INFO, "verificação de %s: %s, %d eventos, %d achados", gerenciador, estado, eventos, len(achados))
         except Exception:
             log.exception("verificação de %s falhou", gerenciador)
@@ -497,22 +585,25 @@ def main():
     retencao = None
     # Só o resumo da cadeia sai daqui, mas quem roda sem internet ou prefere não sair desliga.
     com_ancora = env.get("ROAR_SELO_ANCORA", "1") == "1"
+    # O armazém só sela com o ajuste ligado; para conferir os selos que já vieram dele, a leitura fica sempre disponível.
+    leitor = armazem_de_eventos.leitor(env)
+    armazem_para_selar = leitor if env.get("ROAR_SELOS_DO_ARMAZEM") == "1" else None
     if a.verificar:
-        verificar_todos(indexer, banco, publica, retencao)
+        verificar_todos(indexer, banco, publica, retencao, armazem=leitor)
         return
     if a.uma_vez:
-        print(rodar_ciclo(indexer, banco, chave, publica, com_ancora))
+        print(rodar_ciclo(indexer, banco, chave, publica, com_ancora, armazem_para_selar))
         return
     proxima_recente = proxima_completa = 0.0
     while True:
-        rodar_ciclo(indexer, banco, chave, publica, com_ancora)
+        rodar_ciclo(indexer, banco, chave, publica, com_ancora, armazem_para_selar)
         # Conferir tudo relê todos os eventos: pesa, então é semanal. O último dia é conferido com folga mais vezes.
         if time.monotonic() >= proxima_completa:
-            verificar_todos(indexer, banco, publica, retencao)
+            verificar_todos(indexer, banco, publica, retencao, armazem=leitor)
             proxima_completa = time.monotonic() + SEGUNDOS_ENTRE_COMPLETAS
             proxima_recente = time.monotonic() + SEGUNDOS_ENTRE_RECENTES
         elif time.monotonic() >= proxima_recente:
-            verificar_todos(indexer, banco, publica, retencao, somente_recentes=timedelta(hours=24))
+            verificar_todos(indexer, banco, publica, retencao, somente_recentes=timedelta(hours=24), armazem=leitor)
             proxima_recente = time.monotonic() + SEGUNDOS_ENTRE_RECENTES
         time.sleep(60)
 

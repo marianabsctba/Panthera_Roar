@@ -19,6 +19,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "ingestao"), str(RAIZ / "api"), str(RAIZ / "motor"), str(RAIZ / "testes/fase1")]
 
 from roar_api.app import app  # noqa: E402
+from roar_ingestao.ciclo import ler_env  # noqa: E402
 from roar_ingestao import copia_fria, fontes, provisao  # noqa: E402
 from testar_ingestao import Ambiente, esperar_gerenciador  # noqa: E402
 
@@ -91,6 +92,29 @@ def main():
         registrar("alertas com um ano no indexador", dias_da_politica(amb, f"roar-retencao-alertas-{a['id']}") == "365d")
         registrar("logs brutos com trinta dias no indexador", dias_da_politica(amb, f"roar-retencao-logs-{a['id']}") == "30d")
         registrar("a outra organização fica nos seis meses", dias_da_politica(amb, f"roar-retencao-logs-{b['id']}") == "180d")
+
+        print("== Armazém novo", flush=True)
+        from roar_ingestao import armazem
+        adm = armazem.admin(ler_env(provisao.DESTINO / ".env"))
+        criada = adm.linhas("SELECT create_table_query AS q FROM system.tables WHERE database = {b:String} AND name = 'logs'",
+                            {"b": armazem.banco_do(a["cliente"])})
+        registrar("a organização nova já tem o armazém, com os prazos novos", criada and "toIntervalDay(30)" in criada[0]["q"], criada[0]["q"][-200:] if criada else "sem tabela")
+        visto = admin_a.get("/api/organizacao/armazenamento").json()
+        registrar("a organização nova já lê do armazém novo, por padrão", visto["armazem_disponivel"] is True and visto["ler_do_armazem"] is True, str(visto))
+        registrar("analista não troca de onde lê", analista.put("/api/organizacao/armazenamento/leitura", json={"ler": True}).status_code == 403)
+        registrar("o administrador volta para o indexador e liga de novo", admin_a.put("/api/organizacao/armazenamento/leitura", json={"ler": False}).status_code == 204
+                  and admin_a.get("/api/organizacao/armazenamento").json()["ler_do_armazem"] is False
+                  and admin_a.put("/api/organizacao/armazenamento/leitura", json={"ler": True}).status_code == 204)
+        registrar("e as trocas ficam na auditoria", amb.um("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'definir_leitura_do_armazem'", a["cliente"]) == 2)
+        lido = admin_a.get("/api/logs", params={"dias": 1})
+        registrar("a tela de logs responde pelo armazém novo", lido.status_code == 200 and "linha_do_tempo" in lido.json(), lido.text[:200])
+        volume = admin_a.get("/api/volume", params={"dias": 1})
+        registrar("o volume responde pelo armazém novo", volume.status_code == 200 and "ocupado" in volume.json() and "eps_por_hora" in (volume.json()["logs"] or {}), volume.text[:200])
+        registrar("a saúde das fontes responde", admin_a.get("/api/fontes").status_code == 200)
+        caca = admin_a.post("/api/inteligencia/cacar", json={"texto": "8.8.8.8 evil.example", "dias": 1})
+        registrar("a caça de indicadores responde", caca.status_code == 200, caca.text[:200])
+        registrar("a outra organização não é afetada pela troca", admin_b.get("/api/organizacao/armazenamento").json()["ler_do_armazem"] is True)
+        registrar("e volta quando quiser", admin_a.put("/api/organizacao/armazenamento/leitura", json={"ler": False}).status_code == 204)
         bruto_a = f"{provisao.indice_bruto_do(a['id'])}2026.11.01"
         fim_ = time.time() + 120
         while politica_do_indice(amb, bruto_a) != f"roar-retencao-logs-{a['id']}" and time.time() < fim_:

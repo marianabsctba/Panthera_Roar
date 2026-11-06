@@ -1,4 +1,4 @@
-import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, PasswordInput, SegmentedControl, Select, SimpleGrid, Stack, Switch, Tabs, Text, TextInput } from "@mantine/core";
+import { Alert, Box, Button, Checkbox, CopyButton, Drawer, Group, Modal, PasswordInput, SegmentedControl, Select, SimpleGrid, Stack, Switch, Tabs, Text, Textarea, TextInput } from "@mantine/core";
 import { IconCheck, IconCopy, IconPlus } from "@tabler/icons-react";
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 
@@ -6,6 +6,8 @@ import { detalhe, enviar, useDados } from "../api";
 import { AcoesDaLinha, BlocoDeComando, Busca, Cabecalho, Carregando, Data, Estado, Numero, Painel, Tabela } from "../componentes";
 import { LogoDaMicrosoft, LogoDoGoogle } from "../Entrada";
 import { numero } from "../formato";
+import { AvisosPorEmail } from "./UsuariosEmail";
+import { recomecar } from "../rota";
 
 interface Usuario { id: string; email: string; nome: string; perfil: string; ativo: boolean; criado_em: string | null; mfa_ativo: boolean }
 
@@ -63,16 +65,21 @@ function DadosPessoais() {
   );
 }
 
-interface ConfigDoSso { provedor: string; locatario?: string; emissor: string; client_id: string; tem_segredo: boolean; dominios: string[]; ativo: boolean; exigir: boolean; atualizado_em: string }
+interface ConfigDoSso {
+  provedor: string; locatario?: string; emissor: string; client_id: string; tem_segredo: boolean; dominios: string[]; ativo: boolean; exigir: boolean; atualizado_em: string;
+  saml_entidade: string | null; tem_certificado: boolean;
+}
 
 function LoginUnico() {
-  const { dados, erro: erroAoLer, recarregar } = useDados<{ config: ConfigDoSso | null; retorno: string }>("/api/organizacao/sso");
+  const { dados, erro: erroAoLer, recarregar } = useDados<{ config: ConfigDoSso | null; retorno: string; saml: { entidade: string; acs: string; metadados: string } }>("/api/organizacao/sso");
   const [emissor, setEmissor] = useState<string | null>(null);
   const [provedor, setProvedor] = useState("google");
   const [locatario, setLocatario] = useState("");
   const [clientId, setClientId] = useState("");
   const [segredo, setSegredo] = useState("");
   const [dominios, setDominios] = useState("");
+  const [entidadeDoProvedor, setEntidadeDoProvedor] = useState("");
+  const [certificado, setCertificado] = useState("");
   const [ativo, setAtivo] = useState(true);
   const [exigir, setExigir] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -86,6 +93,7 @@ function LoginUnico() {
     setLocatario(dados.config?.locatario ?? "");
     setClientId(dados.config?.client_id ?? "");
     setDominios((dados.config?.dominios ?? []).join(", "));
+    setEntidadeDoProvedor(dados.config?.saml_entidade ?? "");
     setAtivo(dados.config?.ativo ?? true);
     setExigir(dados.config?.exigir ?? false);
     return null;
@@ -94,13 +102,16 @@ function LoginUnico() {
     setErro(null);
     setAviso(null);
     setSalvando(true);
+    const saml = provedor === "saml";
     const r = await colocar("/api/organizacao/sso", {
-      provedor, locatario: locatario.trim() || undefined, emissor: provedor === "outro" ? emissor.trim() : undefined, client_id: clientId.trim(), segredo: segredo ? segredo : undefined, ativo, exigir,
-      dominios: dominios.split(/[\s,;]+/).filter(Boolean),
+      provedor, locatario: locatario.trim() || undefined, emissor: provedor === "outro" || saml ? emissor.trim() : undefined, client_id: saml ? "" : clientId.trim(),
+      segredo: !saml && segredo ? segredo : undefined, ativo, exigir, dominios: dominios.split(/[\s,;]+/).filter(Boolean),
+      saml_entidade: saml ? entidadeDoProvedor.trim() : undefined, saml_certificado: saml && certificado.trim() ? certificado : undefined,
     }).finally(() => setSalvando(false));
     if (!r.ok) return setErro(await detalhe(r, "Não foi possível salvar."));
     setSegredo("");
-    setAviso("Salvo. O provedor respondeu e a configuração foi conferida.");
+    setCertificado("");
+    setAviso(saml ? "Salvo. Teste entrando com uma pessoa antes de exigir o login único." : "Salvo. O provedor respondeu e a configuração foi conferida.");
     recarregar();
   };
   const remover = async () => {
@@ -122,6 +133,7 @@ function LoginUnico() {
           { value: "google", label: <Group gap={6} wrap="nowrap" justify="center"><LogoDoGoogle tamanho={14} />Google</Group> },
           { value: "microsoft", label: <Group gap={6} wrap="nowrap" justify="center"><LogoDaMicrosoft tamanho={14} />Microsoft</Group> },
           { value: "outro", label: "Outro (OpenID Connect)" },
+          { value: "saml", label: "SAML" },
         ]} />
         {provedor === "google" && (
           <Alert variant="light" color="gray" p="xs" fz="sm">
@@ -139,8 +151,28 @@ function LoginUnico() {
         {provedor === "outro" && (
           <TextInput label="Emissor" description="O endereço do provedor, o mesmo que aparece como issuer em /.well-known/openid-configuration." value={emissor} onChange={(e) => setEmissor(e.currentTarget.value)} spellCheck={false} placeholder="https://" />
         )}
-        <TextInput label={provedor === "microsoft" ? "ID do aplicativo (cliente)" : "ID do cliente"} value={clientId} onChange={(e) => setClientId(e.currentTarget.value)} spellCheck={false} />
-        <PasswordInput label={provedor === "microsoft" ? "Valor do segredo do cliente" : "Chave secreta do cliente"} description={dados.config?.tem_segredo ? "Guardado e cifrado. Deixe em branco para manter." : "Opcional para aplicativo público, que usa só PKCE."} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} />
+        {provedor === "saml" ? (
+          <>
+            <Alert variant="light" color="gray" p="xs" fz="sm">
+              No provedor (Microsoft Entra ID, Google Workspace, Okta, ADFS e outros), crie um aplicativo SAML e informe os dois endereços abaixo. Peça o e-mail da pessoa no NameID e deixe a asserção assinada e sem criptografia. Depois traga para cá o endereço de login, o identificador do provedor e o certificado de assinatura.
+            </Alert>
+            <Stack gap={4}>
+              <Text size="xs" c="dimmed">Identificador do Roar (Entity ID, ou Identificador):</Text>
+              <BlocoDeComando texto={dados.saml.entidade} />
+              <Text size="xs" c="dimmed">Endereço de retorno (Reply URL, ou ACS URL):</Text>
+              <BlocoDeComando texto={dados.saml.acs} />
+            </Stack>
+            <TextInput label="Endereço de login do provedor" description="Login URL, ou SSO URL." value={emissor} onChange={(e) => setEmissor(e.currentTarget.value)} spellCheck={false} placeholder="https://" />
+            <TextInput label="Identificador do provedor" description="Entity ID, Issuer, ou Identificador do Microsoft Entra." value={entidadeDoProvedor} onChange={(e) => setEntidadeDoProvedor(e.currentTarget.value)} spellCheck={false} />
+            <Textarea label="Certificado de assinatura" description={dados.config?.tem_certificado ? "Guardado. Deixe em branco para manter." : "Em Base64, como o provedor mostra. Pode colar com as linhas BEGIN e END."}
+              autosize minRows={3} maxRows={8} classNames={{ input: "mono" }} value={certificado} onChange={(e) => setCertificado(e.currentTarget.value)} spellCheck={false} />
+          </>
+        ) : (
+          <>
+            <TextInput label={provedor === "microsoft" ? "ID do aplicativo (cliente)" : "ID do cliente"} value={clientId} onChange={(e) => setClientId(e.currentTarget.value)} spellCheck={false} />
+            <PasswordInput label={provedor === "microsoft" ? "Valor do segredo do cliente" : "Chave secreta do cliente"} description={dados.config?.tem_segredo ? "Guardado e cifrado. Deixe em branco para manter." : "Opcional para aplicativo público, que usa só PKCE."} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} />
+          </>
+        )}
         <TextInput label="Domínios de e-mail aceitos" description="Separados por vírgula. Em branco, vale qualquer domínio dos usuários desta organização." value={dominios} onChange={(e) => setDominios(e.currentTarget.value)} placeholder="empresa.com.br" />
         <Switch label="Ligado" description="Mostra a entrada por login único para os e-mails desta organização." checked={ativo} onChange={(e) => setAtivo(e.currentTarget.checked)} />
         <Switch label="Exigir o login único" description="Senha e passkey param de valer para quem não administra. Quem administra continua com a senha, para não ficar trancado fora se o provedor cair." checked={exigir} disabled={!ativo} onChange={(e) => setExigir(e.currentTarget.checked)} />
@@ -148,7 +180,9 @@ function LoginUnico() {
         {aviso && <Alert color="green" variant="light" p="xs" fz="sm">{aviso}</Alert>}
         <Group justify="space-between">
           {dados.config ? <Button variant="subtle" color="red" onClick={remover}>Remover o login único</Button> : <span />}
-          <Button variant="filled" loading={salvando} disabled={!clientId.trim() || (provedor === "outro" && !emissor.trim()) || (provedor === "microsoft" && !locatario.trim())} onClick={salvar}>Salvar</Button>
+          <Button variant="filled" loading={salvando} onClick={salvar}
+            disabled={provedor === "saml" ? !emissor.trim() || !entidadeDoProvedor.trim() || (!certificado.trim() && !dados.config?.tem_certificado)
+              : !clientId.trim() || (provedor === "outro" && !emissor.trim()) || (provedor === "microsoft" && !locatario.trim())}>Salvar</Button>
         </Group>
       </Stack>
     </Painel>
@@ -158,7 +192,7 @@ function LoginUnico() {
 // api.ts só sabe enviar POST, e estas rotas são PUT.
 async function colocar(rota: string, corpo: unknown) {
   const r = await fetch(rota, { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
-  if (r.status === 401) window.location.assign("/");
+  if (r.status === 401) recomecar("/");
   return r;
 }
 
@@ -344,6 +378,7 @@ export function Usuarios() {
             <Tabs.Tab value="perfis">O que cada perfil pode fazer</Tabs.Tab>
             <Tabs.Tab value="dados">Dados pessoais</Tabs.Tab>
             <Tabs.Tab value="sso">Login único (SSO)</Tabs.Tab>
+            <Tabs.Tab value="email">Avisos por e-mail</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="pessoas">
             <Stack gap="md">
@@ -389,6 +424,7 @@ export function Usuarios() {
           <Tabs.Panel value="perfis"><TabelaDePerfis /></Tabs.Panel>
           <Tabs.Panel value="dados"><DadosPessoais /></Tabs.Panel>
           <Tabs.Panel value="sso"><LoginUnico /></Tabs.Panel>
+          <Tabs.Panel value="email"><AvisosPorEmail /></Tabs.Panel>
         </Tabs>
       )}
 

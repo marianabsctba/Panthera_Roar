@@ -40,8 +40,10 @@ function caixa(d: Desenho, limites: [number, number, number, number] | null) {
   return [cx - w / 2, cy - h / 2, w, h];
 }
 
-export function MapaOrigens({ paises, cidades, semCidade, aoEscolher }: {
+export function MapaOrigens({ paises, cidades, semCidade, aoEscolher, altura }: {
   paises: Pais[]; cidades: Cidade[]; semCidade: number; aoEscolher: (f: { pais: string; cidade?: string; rotulo: string }) => void;
+  /** Num bloco de painel, o mapa cabe na altura do bloco em vez de crescer com a largura. */
+  altura?: number;
 }) {
   const [desenho, setDesenho] = useState<Desenho | null>(null);
   const [regiao, setRegiao] = useState("Mundo");
@@ -88,7 +90,7 @@ export function MapaOrigens({ paises, cidades, semCidade, aoEscolher }: {
         <SegmentedControl size="xs" value={regiao} onChange={setRegiao} data={Object.keys(REGIOES)} aria-label="Aproximar o mapa" />
       </ScrollArea>
       <div className="mapa">
-        <svg viewBox={vb.join(" ")} role="img" aria-label="Mapa com os países e as cidades de origem dos alertas. Os números estão na tabela.">
+        <svg viewBox={vb.join(" ")} style={altura ? { maxHeight: altura, width: "100%" } : undefined} role="img" aria-label="Mapa com os países e as cidades de origem dos alertas. Os números estão na tabela.">
           <defs>
             <radialGradient id="metal-ponto" cx="35%" cy="30%" r="75%">
               <stop offset="0%" stopColor="#ffe3f4" />

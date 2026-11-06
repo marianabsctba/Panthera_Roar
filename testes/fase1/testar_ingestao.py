@@ -23,6 +23,9 @@ import urllib3
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "ingestao"))
+# Estes testes (e os que usam este ambiente) exercitam o caminho do indexador: os gerenciadores que eles criam
+# continuam mandando logs e alertas para ele, além do armazém de eventos.
+os.environ.setdefault("ROAR_SO_ARMAZEM", "0")
 
 from roar_ingestao import provisao  # noqa: E402
 from roar_ingestao.ciclo import INICIO_DOS_TEMPOS, conexoes, rodar_ciclo, rodar_gerenciador  # noqa: E402
@@ -236,8 +239,9 @@ def testar_isolamento_no_banco(amb, a, b):
         registrar("ingestão não grava em outro cliente sob o contexto de A", recusado(forjar))
         registrar("ingestão não muda o dono de um gerenciador", recusado(lambda: ing.execute(
             "UPDATE gerenciadores SET cliente_id = %s WHERE id = %s", (a["cliente"], b["id"]))))
-        # Lê o id e o que precisa para guardar os dados (029 e 043), não o nome nem o resto.
-        registrar("ingestão não lê o nome dos clientes", recusado(lambda: ing.execute("SELECT nome FROM clientes")))
+        # Lê o id, o que precisa para guardar os dados (029 e 043) e o nome, que vai no assunto do aviso por e-mail
+        # (064). O resto da tabela, não.
+        registrar("ingestão não lê o resto da tabela de clientes", recusado(lambda: ing.execute("SELECT * FROM clientes")))
         registrar("ingestão sem contexto não lê eventos",
                   ing.execute("SELECT count(*) FROM eventos").fetchone()[0] == 0)
 

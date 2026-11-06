@@ -34,7 +34,7 @@ WAZUH_VERSAO="v4.14.9"
 gerar() { head -c 1024 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-"$1"; }
 
 mkdir -p "$DESTINO"
-cp -r "$BASE/docker-compose.yml" "$BASE/temporal" "$DESTINO/"
+cp -r "$BASE/docker-compose.yml" "$BASE/temporal" "$BASE/clickhouse" "$DESTINO/"
 # Domínio de verdade tira certificado público; endereço local usa a autoridade própria da borda.
 case "$DOMINIO" in
   localhost|*.local|*.test|*.internal|[0-9]*.[0-9]*.[0-9]*.[0-9]*) TLS="tls internal" ;;
@@ -98,6 +98,20 @@ if [ "$PERFIL" != vulnerabilidades ]; then
   done
   # A senha de fábrica é pública: troca antes de qualquer outra coisa usar o indexador.
   bash "$BASE/senhas_do_indexador.sh"
+
+  # O armazém de eventos entra na rede que o Wazuh acabou de criar. O disco frio é uma pasta própria (ARMAZEM_FRIO no .env),
+  # que pode ficar num disco mais barato; o usuário do ClickHouse na imagem é o 101.
+  FRIO="$(grep -m1 '^ARMAZEM_FRIO=' "$DESTINO/.env" | cut -d= -f2-)"
+  FRIO="${FRIO:-$DESTINO/armazem-frio}"
+  mkdir -p "$FRIO"
+  chown 101:101 "$FRIO"
+  chmod 700 "$FRIO"
+  COPIAS="$(grep -m1 '^ARMAZEM_COPIAS=' "$DESTINO/.env" | cut -d= -f2-)"
+  COPIAS="${COPIAS:-$DESTINO/armazem-copias}"
+  mkdir -p "$COPIAS"
+  chown 101:101 "$COPIAS"
+  chmod 700 "$COPIAS"
+  docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d --wait armazem
 
   if [ ! -d "$DESTINO/apps/.git" ]; then
     rm -rf "$DESTINO/apps"

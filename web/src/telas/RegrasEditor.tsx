@@ -3,6 +3,7 @@ import { IconPlus, IconX } from "@tabler/icons-react";
 import { useState } from "react";
 
 import { detalhe, enviar } from "../api";
+import { recomecar } from "../rota";
 
 export interface RegraPropria { id: number; titulo: string; formato: string; estado: string; mensagem: string | null; criada_em: string; aplicada_em: string | null; origem: string }
 
@@ -93,7 +94,7 @@ function Formulario({ abertura, aoFechar, aoSalvar }: { abertura: AberturaDoEdit
     else if (abertura.tipo === "propria") r = await fetch(`/api/regras/proprias/${abertura.regra.id}`, opcoes);
     else r = await enviar("/api/regras/proprias", corpo());
     if (r.status === 401) {
-      window.location.assign("/");
+      recomecar("/");
       return;
     }
     if (!r.ok) {

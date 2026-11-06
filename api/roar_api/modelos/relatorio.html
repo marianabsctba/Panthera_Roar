@@ -146,6 +146,31 @@
 </tbody></table>{% else %}<p class="vazio">Nenhum ativo com vulnerabilidade aberta.</p>{% endif %}
 {% endif %}
 {% else %}<p class="vazio">Nenhuma varredura de vulnerabilidade foi concluída, então este relatório não diz o que está vulnerável nos seus ativos. A ausência de achados aqui não significa ausência de vulnerabilidades.</p>{% endif %}
+{% set sup = vuln.superficie %}
+{% if sup %}
+<h2>Superfície externa</h2>
+<div class="numeros">
+  <div class="numero"><b style="color:{{ {'A': '#2e7d32', 'B': '#558b2f', 'C': '#f9a825', 'D': '#ef6c00'}.get(sup.letra, '#c62828') }}">{{ sup.letra }}</b><span>nota da superfície externa</span><i>{{ sup.pontos }} de 100 pontos</i></div>
+  <div class="numero"><b>{{ (sup.por_severidade.critica + sup.por_severidade.alta)|n }}</b><span>exposições críticas e altas abertas</span></div>
+  <div class="numero"><b>{{ sup.dominios_|length }}</b><span>domínios conferidos</span></div>
+  <div class="numero"><b>{{ sup.mudancas|length }}</b><span>mudanças no período</span></div>
+</div>
+<p class="nota">O que os domínios da organização deixam à vista na internet: portas abertas, serviços com falhas conhecidas, certificados, painéis e VPNs expostos, subdomínios abandonados e o e-mail do domínio. A nota parte de 100 e perde 25 pontos por exposição crítica, 10 por alta, 4 por média e 1 por baixa: A a partir de 90, B de 80, C de 70, D de 60, abaixo disso F.</p>
+{{ sup.grafico|safe }}
+<table><thead><tr><th>Domínio</th><th class="num">Nota</th><th class="num">Nomes</th><th>Última procura de nomes</th></tr></thead><tbody>
+{% for d in sup.dominios_ %}<tr><td>{{ d.dominio }}</td><td class="num"><b>{{ d.letra }}</b> ({{ d.pontos }})</td><td class="num">{{ d.nomes|n }}</td><td>{{ d.ultima_descoberta|data if d.ultima_descoberta else "Ainda não" }}</td></tr>{% endfor %}
+</tbody></table>
+{% if completo %}
+<h2>Exposições abertas na internet</h2>
+{% if sup.achados %}<table><thead><tr><th>Nome</th><th>Exposição</th><th>Severidade</th><th>Desde</th></tr></thead><tbody>
+{% for a in sup.achados %}<tr><td class="mono">{{ a.nome }}</td><td>{{ a.titulo }}</td><td class="selo" style="color:{{ cores.get(a.severidade, '#666') }}">{{ rotulos.get(a.severidade, "Informativa") }}</td><td style="white-space:nowrap">{{ a.primeira_vez|data(false) }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nenhuma exposição aberta.</p>{% endif %}
+<h2>O que mudou na superfície externa</h2>
+{% if sup.mudancas %}<table><thead><tr><th>Quando</th><th>Nome</th><th>Mudança</th></tr></thead><tbody>
+{% for m in sup.mudancas %}<tr><td style="white-space:nowrap">{{ m.em|data }}</td><td class="mono">{{ m.nome }}</td><td>{{ m.detalhe }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="vazio">Nada mudou no período.</p>{% endif %}
+{% endif %}
+{% endif %}
 {% if cves %}<p class="nota">Base pública consultada na tela: {{ cves.total|n }} registros, carregados em {{ cves.carregada_em|data }}.{% if cves.falha %} A última atualização falhou.{% endif %}</p>{% endif %}
 
 <h1 class="capitulo" id="c-auto">7. Automação e resposta</h1>

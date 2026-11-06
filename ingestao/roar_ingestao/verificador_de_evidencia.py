@@ -54,7 +54,11 @@ CAMPOS_DO_SELO = ("versao", "gerenciador", "cliente", "n", "fonte", "inicio", "f
 
 
 def hash_do_selo(selo):
-    return hashlib.sha256(canonico({c: selo[c] for c in CAMPOS_DO_SELO})).hexdigest()
+    cabecalho = {c: selo[c] for c in CAMPOS_DO_SELO}
+    # Selo feito sobre o armazém de eventos diz isso no cabeçalho; os outros não têm o campo.
+    if selo.get("origem", "indexador") != "indexador":
+        cabecalho["origem"] = selo["origem"]
+    return hashlib.sha256(canonico(cabecalho)).hexdigest()
 
 
 def _assinatura_confere(publica, selo):

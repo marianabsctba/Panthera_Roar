@@ -6,10 +6,11 @@ import { detalhe, enviar, ler, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Carregando, Data, Estado, Painel, Severidade, Tabela } from "../componentes";
 import { numero } from "../formato";
 import { SEVERIDADES } from "../tema";
+import { recomecar } from "../rota";
 
 export const ROTULO_ESTADO_ACHADO: Record<string, string> = { aberto: "Aberto", correcao_informada: "Correção informada", corrigido: "Corrigido", aceito: "Risco aceito", falso_positivo: "Falso positivo" };
 /** Quem encontrou: o agente vê o que está instalado, sem varredura; as varreduras olham de fora ou a imagem. */
-const QUEM_ENCONTROU: Record<string, string> = { agente: "Agente, pelo inventário", rede: "Varredura de rede", web: "Varredura web", conteiner: "Varredura de contêiner", escuta: "Serviço em escuta" };
+const QUEM_ENCONTROU: Record<string, string> = { agente: "Agente, pelo inventário", rede: "Varredura de rede", web: "Varredura web", conteiner: "Varredura de contêiner", escuta: "Serviço em escuta", externa: "Varredura externa" };
 const TIPO_DO_ESTADO: Record<string, string> ={ aberto: "problema", correcao_informada: "pendente", corrigido: "aplicada" };
 
 export interface Achado {
@@ -66,7 +67,7 @@ export async function baixar(rota: string, nome: string) {
 export async function chamar(rota: string, metodo: "PUT" | "DELETE", corpo?: unknown) {
   const r = await fetch(rota, { method: metodo, credentials: "same-origin", ...(corpo === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) }) });
   if (r.status === 401) {
-    window.location.assign("/");
+    recomecar("/");
     throw new Error("sem sessão");
   }
   return r;

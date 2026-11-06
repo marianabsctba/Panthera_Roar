@@ -7,13 +7,17 @@ import { AcoesDaLinha, Cabecalho, Carregando, Data, GavetaDeEventos, Painel, Tab
 import { numero } from "../formato";
 import { Fatos } from "./Ataques";
 import { salvarArquivo } from "./Prova";
+import { recomecar } from "../rota";
 
 const NOMES_DA_TRILHA: Record<string, string> = {
   logon: "Entrou", logoff: "Saiu", login_recusado: "Senha recusada", mfa_recusado: "Código do autenticador recusado", entrar_com_mfa: "Entrou com autenticador",
   entrar_com_codigo_de_recuperacao: "Entrou com código de recuperação", criar_usuario: "Criou usuário", alterar_usuario: "Alterou perfil ou situação de usuário", redefinir_senha: "Gerou senha temporária",
   trocar_senha: "Trocou a própria senha", ligar_mfa: "Ligou o autenticador", desligar_mfa: "Desligou o autenticador", remover_mfa_de_usuario: "Removeu o autenticador de outra pessoa",
   definir_mfa_obrigatorio: "Mudou a exigência do autenticador", definir_ofuscacao: "Mudou os dados pessoais mascarados", decidir_risco: "Encerrou um risco", criar_caso: "Abriu um caso", cacar_indicadores: "Caçou indicadores", exportar_ocsf: "Exportou eventos em OCSF", gerar_relatorio_de_norma: "Gerou relatório de norma", baixar_relatorio: "Baixou um relatório guardado", criar_chave_de_api: "Criou uma chave de API", definir_sso: "Configurou o login único", remover_sso: "Removeu o login único", logon_sso: "Entrou pelo login único", logon_passkey: "Entrou com passkey", criar_passkey: "Cadastrou uma passkey", apagar_passkey: "Apagou uma passkey", revogar_chave_de_api: "Revogou uma chave de API", apagar_relatorio: "Apagou um relatório", vigiar_indicadores: "Passou a vigiar indicadores", alterar_caso: "Mudou um caso", definir_criticidade: "Mudou a criticidade de um ativo", silenciar_sinal: "Silenciou um sinal do UEBA", remover_silencio: "Tirou o silêncio de um sinal", gerar_codigos_de_recuperacao: "Gerou novos códigos de recuperação", incluir_ativo: "Ativo incluído", excluir_ativo: "Ativo excluído",
-  indicador_encontrado: "Evento bateu com um indicador de ameaça", definir_prazos_de_correcao: "Mudou os prazos de correção", criar_lista: "Criou lista de observação", apagar_lista: "Apagou lista de observação",
+  indicador_encontrado: "Evento bateu com um indicador de ameaça", definir_prazos_de_correcao: "Mudou os prazos de correção", criar_lista: "Criou lista de observação", criar_parser: "Criou parser", salvar_busca: "Salvou busca", mudar_busca: "Mudou busca", apagar_busca: "Apagou busca",
+  criar_painel: "Criou painel", definir_leitura_do_armazem: "Trocou de onde os logs são lidos", cadastrar_dominio_externo: "Cadastrou domínio para a varredura externa", tirar_dominio_externo: "Tirou domínio da varredura externa",
+  exposicao_externa: "Exposição grave encontrada na internet", fonte_quieta: "Fonte de dados abaixo do normal", passar_caso: "Passou o caso no plantão", anexar_evidencia: "Anexou evidência ao caso", baixar_evidencia: "Baixou evidência do caso", configurar_email: "Configurou os avisos por e-mail", tirar_email: "Tirou os avisos por e-mail", gerar_pdf_de_painel: "Baixou o painel em PDF", apagar_painel: "Apagou painel", busca_agendada: "Busca agendada encontrou o que procurava", mudar_parser: "Mudou parser", apagar_parser: "Apagou parser",
+  ligar_parser: "Ligou parser", desligar_parser: "Desligou parser", apagar_lista: "Apagou lista de observação",
   acrescentar_itens_na_lista: "Acrescentou itens à lista de observação", remover_itens_da_lista: "Tirou itens da lista de observação", falha_explorada_no_ativo: "Falha já explorada por atacantes apareceu no ativo",
   cve_passou_a_ser_explorada: "Falha aberta passou a ser explorada por atacantes", criar_fonte_de_inteligencia: "Criou fonte de inteligência", desativar_fonte_de_inteligencia: "Desativou fonte de inteligência",
   buscar_logs: "Buscou nos logs", ver_bruto: "Viu alerta bruto", gerar_relatorio: "Gerou relatório", gerar_evidencia: "Gerou pacote de evidência", exportar_auditoria: "Exportou a trilha",
@@ -159,7 +163,7 @@ export function Auditoria() {
     try {
       const r = await fetch(`/api/auditoria/exportar?${filtros}`, { credentials: "same-origin" });
       if (r.status === 401) {
-        window.location.assign("/");
+        recomecar("/");
         return;
       }
       if (!r.ok) {

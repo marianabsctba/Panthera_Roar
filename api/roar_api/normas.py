@@ -6,7 +6,7 @@ Quando um controle não está aqui, vale o nome do requisito ou da família acim
 
 import re
 
-NORMAS = {"lgpd": "LGPD", "iso_27001": "ISO 27001:2013", "pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+NORMAS = {"lgpd": "LGPD", "bacen": "Bacen (Res. CMN 4.893)", "iso_27001_2022": "ISO 27001:2022", "iso_27001": "ISO 27001:2013", "pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
 
 # As regras do Wazuh seguem o PCI DSS 3.2.1.
 PCI_DSS = {
@@ -114,13 +114,82 @@ ISO_27001 = {
     "A.18.1.3": "Proteção de registros", "A.18.1.4": "Privacidade e proteção de dados pessoais",
 }
 
+# Anexo A da versão 2022: 93 controles em quatro temas, com outra numeração. Só os que a correspondência alcança.
+ISO_27001_2022 = {
+    "5": "Controles organizacionais", "6": "Controles de pessoas", "7": "Controles físicos", "8": "Controles tecnológicos",
+    "5.1": "Políticas de segurança da informação", "5.9": "Inventário de informações e ativos", "5.10": "Uso aceitável de informações e ativos",
+    "5.14": "Transferência de informações", "5.15": "Controle de acesso", "5.16": "Gestão de identidade", "5.17": "Informações de autenticação",
+    "5.18": "Direitos de acesso", "5.28": "Coleta de evidências", "5.33": "Proteção de registros", "5.34": "Privacidade e proteção de dados pessoais",
+    "6.8": "Relato de eventos de segurança da informação", "7.10": "Mídias de armazenamento", "8.2": "Direitos de acesso privilegiado",
+    "8.3": "Restrição de acesso à informação", "8.5": "Autenticação segura", "8.7": "Proteção contra malware", "8.8": "Gestão de vulnerabilidades técnicas",
+    "8.13": "Cópias de segurança", "8.15": "Registro de eventos", "8.17": "Sincronização de relógios", "8.19": "Instalação de software em sistemas em produção",
+    "8.20": "Segurança de redes", "8.22": "Segregação de redes", "8.24": "Uso de criptografia", "8.27": "Arquitetura e engenharia de sistemas seguros",
+    "8.32": "Gestão de mudanças",
+}
+# A correspondência oficial entre as versões (Anexo B da ISO 27002:2022), para os controles da 2013 que as checagens marcam.
+DE_2013_PARA_2022 = {
+    "A.5.1.1": "5.1", "A.5.1.2": "5.1", "A.8.1.1": "5.9", "A.8.1.3": "5.10", "A.8.3.1": "7.10", "A.9.1.1": "5.15", "A.9.2.1": "5.16", "A.9.2.3": "8.2",
+    "A.9.2.5": "5.18", "A.9.2.6": "5.18", "A.9.4.1": "8.3", "A.9.4.2": "8.5", "A.9.4.3": "5.17", "A.10.1.1": "8.24", "A.12.1.2": "8.32", "A.12.2.1": "8.7",
+    "A.12.3.1": "8.13", "A.12.4.1": "8.15", "A.12.4.2": "8.15", "A.12.4.3": "8.15", "A.12.4.4": "8.17", "A.12.5.1": "8.19", "A.12.6.1": "8.8",
+    "A.12.6.2": "8.19", "A.13.1.1": "8.20", "A.13.1.3": "8.22", "A.13.2.1": "5.14", "A.13.2.3": "5.14", "A.14.2.2": "8.32", "A.14.2.5": "8.27",
+    "A.16.1.2": "6.8", "A.16.1.7": "5.28", "A.18.1.3": "5.33", "A.18.1.4": "5.34",
+}
+
+# Resolução CMN 4.893/2021, a política de segurança cibernética das instituições financeiras. A Resolução BCB 85/2021,
+# das instituições de pagamento, pede o mesmo no Art. 3º. O inciso II lista os controles, que aqui viram um item cada.
+BACEN = {
+    "Art. 3": "Política de segurança cibernética",
+    "Art. 3, II (autenticação)": "Autenticação de quem acessa os sistemas",
+    "Art. 3, II (criptografia)": "Criptografia",
+    "Art. 3, II (intrusão)": "Prevenção e detecção de intrusão",
+    "Art. 3, II (vazamento)": "Prevenção de vazamento de informações",
+    "Art. 3, II (vulnerabilidades)": "Testes e varreduras periódicos para detectar vulnerabilidades",
+    "Art. 3, II (malware)": "Proteção contra softwares maliciosos",
+    "Art. 3, II (rastreabilidade)": "Mecanismos de rastreabilidade",
+    "Art. 3, II (acesso e segmentação)": "Controles de acesso e segmentação da rede",
+    "Art. 3, II (cópias de segurança)": "Cópias de segurança dos dados e das informações",
+    "Art. 3, IV": "Registro, análise da causa e do impacto, e controle dos efeitos de incidentes relevantes",
+}
+# Cada controle do NIST 800-53 que as regras marcam, no item do Bacen que ele atende.
+_NIST_PARA_BACEN = {
+    "AC.7": "autenticação", "IA.2": "autenticação", "IA.4": "autenticação", "IA.5": "autenticação",
+    "SC.8": "criptografia", "SC.12": "criptografia",
+    "SI.4": "intrusão", "SI.7": "intrusão", "SC.5": "intrusão",
+    "AC.4": "vazamento", "CA.3": "vazamento",
+    "SI.2": "vulnerabilidades", "SA.11": "vulnerabilidades", "SA.3": "vulnerabilidades", "CM.1": "vulnerabilidades", "CM.2": "vulnerabilidades",
+    "CM.3": "vulnerabilidades", "CM.5": "vulnerabilidades", "CM.7": "vulnerabilidades",
+    "SI.3": "malware",
+    "AU.5": "rastreabilidade", "AU.8": "rastreabilidade", "AU.9": "rastreabilidade", "AU.12": "rastreabilidade", "AU.14": "rastreabilidade",
+    "AC.2": "acesso e segmentação", "AC.3": "acesso e segmentação", "AC.6": "acesso e segmentação", "AC.9": "acesso e segmentação",
+    "AC.12": "acesso e segmentação", "AC.21": "acesso e segmentação", "SC.2": "acesso e segmentação", "SC.7": "acesso e segmentação",
+    "CA.9": "acesso e segmentação",
+}
+# As regras escrevem AC.7; as checagens de configuração, AC-7. As duas grafias levam ao mesmo item.
+NIST_PARA_BACEN = {**{k: f"Art. 3, II ({v})" for k, v in _NIST_PARA_BACEN.items()},
+                   **{k.replace(".", "-"): f"Art. 3, II ({v})" for k, v in _NIST_PARA_BACEN.items()}, "AU.6": "Art. 3, IV", "AU-6": "Art. 3, IV"}
+
 # Nome da norma no alerta, quando não é o mesmo daqui.
 CHAVE_NO_ALERTA = {"iso_27001": "iso_27001-2013"}
 # Normas que só as checagens de configuração marcam: as regras não citam, então não há regra que cubra.
-SO_PELAS_CHECAGENS = {"iso_27001"}
+SO_PELAS_CHECAGENS = {"iso_27001", "iso_27001_2022"}
+# O nome, na tela, da norma de onde uma derivada sai.
+NOMES_DA_ORIGEM = {"gdpr": "GDPR", "nist_800_53": "NIST 800-53", "iso_27001-2013": "ISO 27001:2013"}
+# Como cada norma derivada sai da outra: a tela e o relatório mostram este texto.
+EXPLICACOES = {
+    "lgpd": "As regras não marcam a LGPD. Os controles saem do GDPR, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) do GDPR no Art. 6, VII; "
+            "Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38. Artigos sem correspondência, como o Art. 48 (comunicação de incidente), não aparecem aqui.",
+    "bacen": "As regras não marcam a Resolução CMN 4.893. Os controles saem do NIST 800-53, que as regras marcam: cada controle do NIST conta no item do "
+             "Art. 3º, II que ele atende, como IA (identificação) em autenticação, AU (auditoria) em rastreabilidade e SI.3 em proteção contra softwares "
+             "maliciosos. A Resolução BCB 85, das instituições de pagamento, pede os mesmos controles. Cópias de segurança e itens de governança, como a "
+             "aprovação da política pelo conselho, não aparecem nos logs.",
+    "iso_27001_2022": "As checagens de configuração marcam a ISO 27001 na versão 2013. Os controles saem dela pela correspondência oficial entre as "
+                      "versões, como A.9.4.3 (gestão de senhas) em 5.17 e A.12.4.1 (registro de eventos) em 8.15. Controles novos da 2022, como o 8.16 "
+                      "(monitoramento de atividades), não têm correspondência e não aparecem aqui.",
+}
 
 # A LGPD não vem marcada nas regras do Wazuh. Os controles saem do GDPR, artigo por artigo, pelo mesmo fundamento.
-DERIVADAS = {"lgpd": ("gdpr", {"II_5.1.f": "Art. 6, VII", "IV_30.1.g": "Art. 37", "IV_32.2": "Art. 46", "IV_35.7.d": "Art. 38"})}
+DERIVADAS = {"lgpd": ("gdpr", {"II_5.1.f": "Art. 6, VII", "IV_30.1.g": "Art. 37", "IV_32.2": "Art. 46", "IV_35.7.d": "Art. 38"}),
+             "bacen": ("nist_800_53", NIST_PARA_BACEN), "iso_27001_2022": ("iso_27001-2013", DE_2013_PARA_2022)}
 
 # Na grafia oficial da lei, "164.312(a)(2)(i)". As regras do Wazuh escrevem "164.312.a.2.I"; as checagens, a oficial.
 HIPAA = {
@@ -192,7 +261,7 @@ GPG13 = {
     "10": "Situação da trilha de auditoria",
 }
 
-CATALOGO = {"lgpd": LGPD, "iso_27001": ISO_27001, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
+CATALOGO = {"lgpd": LGPD, "bacen": BACEN, "iso_27001_2022": ISO_27001_2022, "iso_27001": ISO_27001, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
 
 
 def canonico(norma, controle):

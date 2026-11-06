@@ -5,9 +5,10 @@ import { ler, useDados } from "../api";
 import { AcoesDaLinha, Cabecalho, Carregando, Data, GavetaDeEventos, Numero, Painel, Severidade, Tabela, type FiltroDeEventos } from "../componentes";
 import { numero } from "../formato";
 import { GavetaDaRegra, severidadeDoNivel, type DetalheDaRegra } from "./Ataques";
+import { recomecar } from "../rota";
 
 interface Controle { controle: string; nome: string | null; total: number; nivel: number; ultimo: string | null; ativos: number; origens: string[] }
-interface VisaoDaNorma { norma: string; chave: string; derivada_de: string | null; so_pelas_checagens: boolean; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
+interface VisaoDaNorma { norma: string; chave: string; derivada_de: string | null; explicacao: string | null; so_pelas_checagens: boolean; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
 
 const PAGINA_DE_REGRAS = 100;
 const LOTE = 8;
@@ -126,7 +127,7 @@ function RelatorioDaNorma({ norma, rotulo }: { norma: string; rotulo: string }) 
     try {
       const r = await fetch(`/api/normas/relatorio?${new URLSearchParams({ norma, dias, formato })}`, { credentials: "same-origin" });
       if (r.status === 401) {
-        window.location.assign("/");
+        recomecar("/");
         return;
       }
       if (!r.ok) throw new Error("falhou");
@@ -186,9 +187,7 @@ export function Normas() {
           {dados.so_pelas_checagens && (
             <Text size="xs" c="dimmed">As regras não marcam a {dados.normas[dados.norma]}: os controles vêm das checagens de configuração segura de cada ativo. Ainda não há regra que cubra esta norma.</Text>
           )}
-          {dados.derivada_de && (
-            <Text size="xs" c="dimmed">As regras não marcam a {dados.normas[dados.norma]}. Os controles saem do {dados.derivada_de}, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) no Art. 6, VII; Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38.</Text>
-          )}
+          {dados.explicacao && <Text size="xs" c="dimmed">{dados.explicacao}</Text>}
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             <Numero rotulo={`Controles com alertas em ${dias} dias`} valor={numero(dados.controles.length)} />
             <Numero rotulo="Regras que cobrem esta norma" valor={numero(dados.regras_da_norma)} />

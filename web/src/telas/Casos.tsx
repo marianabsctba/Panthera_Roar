@@ -4,6 +4,7 @@ import { useState } from "react";
 import { detalhe, enviar, pedir, useDados, useEu, usePode } from "../api";
 import { AcoesDaLinha, Cabecalho, Carregando, Data, Estado, Painel, Severidade, Tabela, Vazio } from "../componentes";
 import { numero, quando } from "../formato";
+import { EvidenciasDoCaso, FatosEHipoteses, PassarPlantao, ResumoDoPlantao, TIPOS_DE_NOTA, type EvidenciaDoCaso, type NotaDoCaso } from "./CasosParte2";
 
 interface Responsavel { id: string; nome: string }
 interface ResumoDoCaso {
@@ -16,8 +17,7 @@ interface ItemDoCaso {
   descricao?: string | null; ativo?: string | null; regras?: string[]; total?: number; ip_origem?: string | null; usuario?: string | null;
   entidade?: string; entidade_tipo?: string; risco_maximo?: number; estado?: string;
 }
-interface Nota { id: number; autor_nome: string; automatica: boolean; texto: string; criado_em: string }
-interface DadosDoCaso { caso: ResumoDoCaso & { responsavel_id: string | null }; itens: ItemDoCaso[]; notas: Nota[]; responsaveis: Responsavel[] }
+interface DadosDoCaso { caso: ResumoDoCaso & { responsavel_id: string | null }; itens: ItemDoCaso[]; notas: NotaDoCaso[]; evidencias: EvidenciaDoCaso[]; responsaveis: Responsavel[] }
 
 const SEVERIDADES = [{ value: "critica", label: "Crítica" }, { value: "alta", label: "Alta" }, { value: "media", label: "Média" }, { value: "baixa", label: "Baixa" }];
 const ESTADOS: Record<string, { texto: string; tipo: string }> = {
@@ -88,9 +88,10 @@ function DetalheDoCaso({ id, aoMudar }: { id: number; aoMudar: () => void }) {
   const pode = usePode();
   const { dados, erro, recarregar } = useDados<DadosDoCaso>(`/api/casos/${id}`);
   const [nota, setNota] = useState("");
+  const [tipoDaNota, setTipoDaNota] = useState("nota");
   const [falha, setFalha] = useState<string | null>(null);
   if (!dados) return <Carregando erro={erro ? "Este caso não está mais disponível." : null} />;
-  const { caso, itens, notas, responsaveis } = dados;
+  const { caso, itens, notas, evidencias, responsaveis } = dados;
   const triar = pode("triar");
   const atualizar = () => { recarregar(); aoMudar(); };
   const mudar = async (corpo: Record<string, string>) => {
@@ -101,7 +102,7 @@ function DetalheDoCaso({ id, aoMudar }: { id: number; aoMudar: () => void }) {
   };
   const anotar = async () => {
     setFalha(null);
-    const r = await enviar(`/api/casos/${caso.id}/notas`, { texto: nota });
+    const r = await enviar(`/api/casos/${caso.id}/notas`, { texto: nota, tipo: tipoDaNota });
     if (!r.ok) return setFalha(await detalhe(r));
     setNota("");
     atualizar();
@@ -128,6 +129,7 @@ function DetalheDoCaso({ id, aoMudar }: { id: number; aoMudar: () => void }) {
             data={responsaveis.map((r) => ({ value: r.id, label: r.nome }))} onChange={(v) => mudar({ responsavel_id: v ?? "" })} />
           <Select label="Severidade" size="xs" w={120} allowDeselect={false} value={caso.severidade} data={SEVERIDADES} onChange={(v) => v && mudar({ severidade: v })} />
           {!encerrado && caso.estado === "aberto" && <Button size="xs" variant="default" onClick={() => mudar({ estado: "investigando" })}>Começar a investigar</Button>}
+          {!encerrado && <PassarPlantao casoId={caso.id} responsaveis={responsaveis} aoMudar={atualizar} />}
           {!encerrado && <EncerrarCaso caso={caso} aoMudar={atualizar} />}
           {encerrado && <Button size="xs" variant="default" onClick={() => mudar({ estado: "investigando" })}>Reabrir</Button>}
         </Group>
@@ -155,19 +157,28 @@ function DetalheDoCaso({ id, aoMudar }: { id: number; aoMudar: () => void }) {
         )}
       </div>
 
+      <FatosEHipoteses casoId={caso.id} notas={notas} aoMudar={atualizar} />
+      <EvidenciasDoCaso casoId={caso.id} evidencias={evidencias} aoMudar={atualizar} encerrado={encerrado} />
+
       <div>
         <Title order={3} mb="xs">Histórico</Title>
         <Stack gap={8}>
           {notas.map((n) => (
             <div key={n.id}>
-              <Text size="xs" c="dimmed">{quando(n.criado_em, eu.fuso)} · {n.autor_nome}</Text>
+              <Group gap={6}>
+                <Text size="xs" c="dimmed">{quando(n.criado_em, eu.fuso)} · {n.autor_nome}</Text>
+                {n.tipo !== "nota" && <Badge size="xs" radius="sm" variant="light" color={TIPOS_DE_NOTA[n.tipo]?.cor ?? "gray"} tt="none">{TIPOS_DE_NOTA[n.tipo]?.texto ?? n.tipo}</Badge>}
+              </Group>
               <Text size="sm" c={n.automatica ? "dimmed" : undefined} fs={n.automatica ? "italic" : undefined} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{n.texto}</Text>
             </div>
           ))}
           {!notas.length && <Text size="xs" c="dimmed">Nada anotado ainda.</Text>}
           {triar && (
             <Stack gap={6}>
-              <Textarea placeholder="O que você viu ou fez" value={nota} onChange={(e) => setNota(e.currentTarget.value)} maxLength={4000} autosize minRows={2} />
+              <SegmentedControl size="xs" value={tipoDaNota} onChange={setTipoDaNota}
+                data={[{ value: "nota", label: "Nota" }, { value: "fato", label: "Fato: o que foi visto" }, { value: "hipotese", label: "Hipótese: o que se acha" }]} />
+              <Textarea placeholder={tipoDaNota === "fato" ? "Ex.: a conta admin entrou de 203.0.113.9 às 02:14" : tipoDaNota === "hipotese" ? "Ex.: a senha vazou no phishing de ontem" : "O que você viu ou fez"}
+                value={nota} onChange={(e) => setNota(e.currentTarget.value)} maxLength={4000} autosize minRows={2} />
               <Group justify="flex-end"><Button size="xs" disabled={!nota.trim()} onClick={anotar}>Anotar</Button></Group>
             </Stack>
           )}
@@ -249,7 +260,7 @@ export function Casos() {
     <>
       <Cabecalho titulo="Casos" ajuda="Cada caso junta os alertas, riscos e eventos de um mesmo incidente, com responsável, prazo e histórico. Abra um caso pelo botão &quot;Pôr num caso&quot; na Fila." />
       <Painel titulo={estado === "abertos" ? `Em andamento${atrasados ? ` · ${numero(atrasados)} atrasado${atrasados === 1 ? "" : "s"}` : ""}` : "Encerrados"}
-        acao={<SegmentedControl size="xs" value={estado} onChange={setEstado} data={[{ value: "abertos", label: "Em andamento" }, { value: "encerrados", label: "Encerrados" }]} />}>
+        acao={<Group gap="xs"><ResumoDoPlantao /><SegmentedControl size="xs" value={estado} onChange={setEstado} data={[{ value: "abertos", label: "Em andamento" }, { value: "encerrados", label: "Encerrados" }]} /></Group>}>
         {!dados ? <Carregando erro={erro} /> : (
           <Tabela
             linhas={dados.casos}

@@ -19,10 +19,17 @@ const chave = document.querySelector<HTMLMetaElement>('meta[name="roar-chave-de-
 // Vale só para este carregamento: esse modo também tira as camadas flutuantes, e não pode ficar grudado no navegador de ninguém.
 const semAnimacao = new URLSearchParams(window.location.search).has("sem-animacao");
 
-createRoot(document.getElementById("raiz")!).render(
+const montar = () => createRoot(document.getElementById("raiz")!).render(
   <StrictMode>
     <MantineProvider theme={tema} defaultColorScheme="dark" forceColorScheme="dark" getStyleNonce={() => chave} env={semAnimacao ? "test" : "default"}>
       <Aplicacao />
     </MantineProvider>
   </StrictMode>,
 );
+
+// Na demonstração estática (npm run demo), as respostas da API vêm gravadas: liga isso antes de desenhar a primeira tela.
+if (import.meta.env.MODE === "demo") {
+  import("./demo").then((d) => d.ligarDemonstracao()).then(montar);
+} else {
+  montar();
+}

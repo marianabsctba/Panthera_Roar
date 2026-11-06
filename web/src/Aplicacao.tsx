@@ -2,7 +2,7 @@ import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconAlertTriangle, IconApi, IconBell, IconBriefcase, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
-  IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
+  IconLayoutDashboard, IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 
@@ -26,12 +26,14 @@ import { Integridade } from "./telas/Integridade";
 import { Logs } from "./telas/Logs";
 import { Normas } from "./telas/Normas";
 import { Organizacoes } from "./telas/Organizacoes";
+import { Paineis } from "./telas/Paineis";
 import { Panorama } from "./telas/Panorama";
 import { Prova } from "./telas/Prova";
 import { Regras } from "./telas/Regras";
 import { Relatorios } from "./telas/Relatorios";
 import { Usuarios } from "./telas/Usuarios";
 import { Vulnerabilidades } from "./telas/Vulnerabilidades";
+import { caminho, ir as irPara } from "./rota";
 
 
 interface Item { id: string; rotulo: string; icone: ComponentType<{ size?: number; stroke?: number }>; modulo?: string; permissao?: string; soPlataforma?: boolean; tela: ComponentType }
@@ -43,6 +45,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { id: "casos", rotulo: "Casos", icone: IconBriefcase, modulo: "siem", tela: Casos },
     { id: "eventos", rotulo: "Eventos", icone: IconListSearch, modulo: "siem", tela: Eventos },
     { id: "logs", rotulo: "Logs brutos", icone: IconFileText, modulo: "siem", tela: Logs },
+    { id: "paineis", rotulo: "Painéis e buscas", icone: IconLayoutDashboard, modulo: "siem", tela: Paineis },
   ] },
   { titulo: "Investigar", itens: [
     { id: "ataques", rotulo: "Ataque e defesa", icone: IconTargetArrow, modulo: "siem", tela: Ataques },
@@ -113,6 +116,8 @@ function SinoDeAvisos({ eu, aoIr }: { eu: Eu; aoIr: (tela: string) => void }) {
     // Indicador de ameaça se investiga em Inteligência, falha em Vulnerabilidades; o resto é de conta e acesso, que fica na auditoria.
     if (a.tipo === "indicador_encontrado" && eu.modulos.includes("siem")) aoIr("inteligencia");
     else if (TIPOS_DE_FALHA.includes(a.tipo) && eu.modulos.includes("vulnerabilidades")) aoIr("vulnerabilidades");
+    else if (a.tipo === "busca_agendada" && eu.modulos.includes("siem")) aoIr("paineis");
+    else if (a.tipo === "fonte_quieta" && eu.modulos.includes("siem")) aoIr("fontes");
     else aoIr("auditoria");
   };
   return (
@@ -162,7 +167,7 @@ function SeletorDeOrganizacao({ eu }: { eu: Eu }) {
   );
 }
 
-const vistaDaUrl = () => window.location.pathname.split("/")[1] || "panorama";
+const vistaDaUrl = () => caminho().split("/")[1] || "panorama";
 
 export function Aplicacao() {
   const [eu, setEu] = useState<Eu | null>(null);
@@ -202,7 +207,7 @@ export function Aplicacao() {
   const Tela = atual?.tela;
 
   const ir = (i: Item) => {
-    window.history.pushState(null, "", `/${i.id}`);
+    irPara(`/${i.id}`);
     setVista(i.id);
     close();
   };

@@ -18,7 +18,23 @@ CAMPOS_DE_USUARIO = (
     ("data", "dstuser"),
     ("data", "win", "eventdata", "targetUserName"),
     ("data", "win", "eventdata", "subjectUserName"),
+    # Firewalls: Sophos XG, Palo Alto, Cisco e FortiGate, nessa ordem, depois dos nomes de sempre.
+    ("data", "user_name"),
+    ("data", "source_user"),
+    ("data", "username"),
+    ("data", "user"),
 )
+# Os decodificadores de firewall do Wazuh não usam o mesmo nome para o endereço: Sophos XG e Cisco gravam src_ip, e o
+# Palo Alto, source_address. Quem lê o IP do evento (ingestão, armazém, inteligência) lê nesta ordem.
+CAMPOS_DE_IP_DE_ORIGEM = ("srcip", "src_ip", "source_address")
+CAMPOS_DE_IP_DE_DESTINO = ("dstip", "dst_ip", "destination_address")
+
+
+def primeiro_campo(dados, campos):
+    """O primeiro valor preenchido entre os campos de data, ou None."""
+    if not isinstance(dados, dict):
+        return None
+    return next((dados[c] for c in campos if isinstance(dados.get(c), (str, int)) and str(dados[c]).strip()), None)
 
 
 class AlertaInvalido(Exception):
@@ -168,7 +184,7 @@ def normalizar(origem_id, alerta):
         mitre=_lista_de_textos(mitre.get("id")),
         agente_id=agente_id,
         agente_nome=_texto(alerta["agent"].get("name")),
-        ip_origem=_ip(_caminho(alerta, ("data", "srcip"))),
+        ip_origem=_ip(primeiro_campo(alerta.get("data"), CAMPOS_DE_IP_DE_ORIGEM)),
         usuario=usuario,
         bruto=bruto,
     )

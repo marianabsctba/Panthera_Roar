@@ -8,6 +8,7 @@ import functools
 import hashlib
 import io
 import json
+import math
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import normas as catalogo_de_normas
+from . import nota_externa
 
 MODELOS = Path(__file__).parent / "modelos"
 NIVEL_MINIMO = 5
@@ -154,7 +156,46 @@ def coletar_vulnerabilidades(con, dias):
                                           count(*) FILTER (WHERE a.severidade = 'critica') AS criticas, count(*) FILTER (WHERE a.severidade = 'alta') AS altas
                                    FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id WHERE {ABERTO}
                                    GROUP BY t.id ORDER BY criticas DESC, altas DESC, total DESC LIMIT %(l)s""", **p)
+    v["superficie"] = coletar_superficie(con, dias)
     return v
+
+
+def coletar_superficie(con, dias):
+    """A superfície externa: nota, domínios, o que está mais exposto e o que mudou no período. None sem domínio cadastrado."""
+    nota = nota_externa.calcular(con)
+    if nota is None:
+        return None
+    p = {"d": dias, "l": 30}
+    dominios = _linhas(con, """SELECT d.id, d.dominio, count(h.id) FILTER (WHERE NOT h.sumiu) AS nomes, d.ultima_descoberta
+                               FROM superficie_dominios d LEFT JOIN superficie_hosts h ON h.dominio_id = d.id WHERE d.ativo GROUP BY d.id ORDER BY d.dominio""")
+    for d in dominios:
+        d.update(nota["dominios"].get(str(d["id"]), {"pontos": 100, "letra": "A"}))
+    achados = _linhas(con, f"""SELECT t.host AS nome, a.titulo, a.severidade, a.primeira_vez FROM vuln_achados a JOIN vuln_ativos t ON t.id = a.ativo_id
+                               WHERE a.fonte = 'externa' AND {ABERTO} ORDER BY {ORDEM_DA_SEVERIDADE}, a.primeira_vez LIMIT %(l)s""", **p)
+    mudancas = _linhas(con, """SELECT nome, tipo, detalhe, em FROM superficie_mudancas WHERE em >= now() - make_interval(days => %(d)s)
+                               ORDER BY em DESC LIMIT %(l)s""", **p)
+    return {**nota, "dominios_": dominios, "achados": achados, "mudancas": mudancas, "grafico": svg_nota(nota["historico"])}
+
+
+def svg_nota(historico):
+    """A nota dia a dia, de 0 a 100, com as faixas das letras ao fundo."""
+    if len(historico) < 2:
+        return ""
+    largura, altura, margem_e, margem_b, topo = 720, 180, 34, 22, 6
+    area, passo = altura - margem_b - topo, (largura - margem_e) / (len(historico) - 1)
+    y = lambda valor: topo + area * (100 - valor) / 100  # noqa: E731
+    partes = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {largura} {altura}" class="grafico" role="img">']
+    for minimo, rotulo in (*nota_externa.LETRAS, (0, "F")):
+        partes.append(f'<line x1="{margem_e}" y1="{y(minimo):.1f}" x2="{largura}" y2="{y(minimo):.1f}" stroke="#e4e4e4" stroke-width="1"/>')
+        partes.append(f'<text x="{margem_e - 6}" y="{y(minimo) - 2:.1f}" text-anchor="end" font-size="11" fill="#888">{rotulo}</text>')
+    pontos = " ".join(f"{margem_e + i * passo:.1f},{y(h['pontos']):.1f}" for i, h in enumerate(historico))
+    partes.append(f'<polyline points="{pontos}" fill="none" stroke="#c2185b" stroke-width="2.5"/>')
+    salto = max(1, len(historico) // 6)
+    for i, h in enumerate(historico):
+        if i % salto == 0 or i == len(historico) - 1:
+            partes.append(f'<text x="{margem_e + i * passo:.1f}" y="{altura - 6}" text-anchor="middle" font-size="11" fill="#666">{h["dia"][8:10]}/{h["dia"][5:7]}</text>')
+    partes.append("</svg>")
+    return "".join(partes)
 
 
 # Como cada norma aparece no mapeamento das checagens de configuração do Wazuh (SCA).
@@ -190,7 +231,8 @@ def coletar_norma(con, norma, dias):
     d["cobertos_sem_alerta"] = [{"controle": c, "nome": catalogo_de_normas.nome_do_controle(norma, c)} for c in cobertos if c not in com_alerta]
     d["regras_da_norma"] = catalogo_de_normas.regras_da_norma(con, norma)
     chave_no_alerta, mapa = catalogo_de_normas.origem(norma)
-    d["derivada_de"] = NORMAS[chave_no_alerta] if mapa else None
+    d["derivada_de"] = catalogo_de_normas.NOMES_DA_ORIGEM.get(chave_no_alerta, chave_no_alerta) if mapa else None
+    d["explicacao"] = catalogo_de_normas.EXPLICACOES.get(norma)
     d["so_pelas_checagens"] = norma in catalogo_de_normas.SO_PELAS_CHECAGENS
 
     # A última situação de cada checagem em cada ativo: a reprovada que depois passou não conta.
@@ -356,6 +398,178 @@ def montar_html(dados, sessao, dias, tipo, agora=None):
         "desconectados": [a for a in dados["ativos"] if a["estado"] != "active"],
     }
     return ambiente.get_template("relatorio.html").render(contexto)
+
+
+# ------------------------------------------------------------------ painel
+
+# Cores que imprimem bem em papel branco, na ordem dos gráficos da tela.
+CORES_DO_PAINEL = ("#c2185b", "#7e57c2", "#1e88e5", "#f9a825", "#2e7d32", "#e53935", "#90a4ae")
+NOMES_DE_CAMPO = {"timestamp": "quando", "agent.name": "ativo", "rule.description": "descrição", "rule.level": "nível", "rule.id": "regra", "data.srcip": "origem",
+                  "data.dstip": "destino", "data.srcuser": "usuário", "data.dstuser": "usuário de destino", "GeoLocation.country_name": "país", "decoder.name": "tipo",
+                  "location": "fonte", "syscheck.path": "arquivo", "syscheck.event": "mudança", "rule.groups": "grupo", "rule.mitre.technique": "técnica"}
+
+
+# O indexador escreve o país em inglês. Os mesmos países que a tela traduz (web/src/formato.ts).
+PAISES = {"Brazil": "Brasil", "United States": "Estados Unidos", "Russia": "Rússia", "China": "China", "Germany": "Alemanha", "France": "França",
+          "United Kingdom": "Reino Unido", "Japan": "Japão", "Australia": "Austrália", "Canada": "Canadá", "Mexico": "México", "Argentina": "Argentina",
+          "India": "Índia", "Netherlands": "Países Baixos", "Finland": "Finlândia", "Nigeria": "Nigéria", "South Africa": "África do Sul", "Singapore": "Singapura",
+          "Hong Kong": "Hong Kong", "Spain": "Espanha", "Italy": "Itália", "Portugal": "Portugal", "Ukraine": "Ucrânia", "Poland": "Polônia", "Turkey": "Turquia",
+          "South Korea": "Coreia do Sul", "Vietnam": "Vietnã", "Indonesia": "Indonésia", "Iran": "Irã", "Israel": "Israel"}
+
+
+def nome_do_pais(nome):
+    return PAISES.get(nome, nome)
+
+
+def _momento(texto):
+    """O horário do índice, como 2026-11-06T01:36:00.254+0000, vira data com fuso para o filtro do modelo."""
+    try:
+        return datetime.fromisoformat(re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", str(texto).replace("Z", "+00:00")))
+    except ValueError:
+        return texto
+
+
+def _escapar(texto):
+    return str(texto).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def svg_serie(pontos, nomes, rotulos):
+    """Barras empilhadas no tempo, uma cor por valor do campo, com a legenda embaixo. Sem nada de fora do arquivo."""
+    largura, altura, margem_e, margem_b, topo = 720, 300, 50, 26, 8
+    if not pontos:
+        return ""
+    def valores(p):
+        return [p.get("por", {}).get(n, 0) for n in nomes] if nomes != ["total"] else [p["total"]]
+    teto = _teto_redondo(max(sum(valores(p)) for p in pontos) or 1)
+    area = altura - margem_b - topo
+    passo = (largura - margem_e) / len(pontos)
+    barra = max(2.0, min(passo - 2, 22))
+    partes = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {largura} {altura + (24 if len(nomes) > 1 else 0)}" class="grafico" role="img">']
+    divisoes = next(d for d in (5, 4, 2, 1) if teto % d == 0)
+    for i in range(divisoes + 1):
+        y = topo + area * i / divisoes
+        partes.append(f'<line x1="{margem_e}" y1="{y:.1f}" x2="{largura}" y2="{y:.1f}" stroke="#e4e4e4" stroke-width="1"/>')
+        partes.append(f'<text x="{margem_e - 6}" y="{y + 3:.1f}" text-anchor="end" font-size="12" fill="#666">{teto * (divisoes - i) / divisoes:,.0f}</text>'.replace(",", "."))
+    salto = max(1, len(pontos) // 8)
+    for i, p in enumerate(pontos):
+        x = margem_e + i * passo + (passo - barra) / 2
+        y = topo + area
+        for j, valor in enumerate(valores(p)):
+            if valor:
+                h = area * valor / teto
+                y -= h
+                partes.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{barra:.1f}" height="{max(h - 0.5, 0.5):.1f}" fill="{CORES_DO_PAINEL[j % len(CORES_DO_PAINEL)]}"/>')
+        if i % salto == 0:
+            partes.append(f'<text x="{x + barra / 2:.1f}" y="{altura - 8}" text-anchor="middle" font-size="12" fill="#666">{_escapar(p["rotulo"])}</text>')
+    if len(nomes) > 1:
+        x = margem_e
+        for j, rotulo in enumerate(rotulos):
+            partes.append(f'<rect x="{x}" y="{altura + 6}" width="11" height="11" rx="2" fill="{CORES_DO_PAINEL[j % len(CORES_DO_PAINEL)]}"/>')
+            partes.append(f'<text x="{x + 13}" y="{altura + 17}" font-size="12" fill="#444">{_escapar(rotulo[:28])}</text>')
+            x += 26 + min(len(rotulo), 28) * 7
+    partes.append("</svg>")
+    return "".join(partes)
+
+
+def svg_rosca(fatias):
+    """Rosca com o total no meio. fatias: [{"rotulo", "total"}]."""
+    total = sum(f["total"] for f in fatias)
+    if not total:
+        return ""
+    raio, espessura, centro = 70, 24, 80
+    partes = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" class="rosca" role="img">']
+    angulo = -math.pi / 2
+    for j, f in enumerate(fatias):
+        fracao = f["total"] / total
+        cor = CORES_DO_PAINEL[j % len(CORES_DO_PAINEL)] if f["rotulo"] != "Outros" else CORES_DO_PAINEL[-1]
+        if fracao >= 0.9999:
+            partes.append(f'<circle cx="{centro}" cy="{centro}" r="{raio - espessura / 2}" fill="none" stroke="{cor}" stroke-width="{espessura}"/>')
+            break
+        fim = angulo + 2 * math.pi * fracao
+        r = raio - espessura / 2
+        x1, y1 = centro + r * math.cos(angulo), centro + r * math.sin(angulo)
+        x2, y2 = centro + r * math.cos(fim), centro + r * math.sin(fim)
+        grande = 1 if fracao > 0.5 else 0
+        partes.append(f'<path d="M{x1:.2f},{y1:.2f} A{r},{r} 0 {grande} 1 {x2:.2f},{y2:.2f}" fill="none" stroke="{cor}" stroke-width="{espessura}"/>')
+        angulo = fim
+    partes.append(f'<text x="{centro}" y="{centro + 5}" text-anchor="middle" font-size="16" font-weight="700" fill="#222">{total:,}</text>'.replace(",", "."))
+    partes.append("</svg>")
+    return "".join(partes)
+
+
+def _rotulo_do_tempo(quando, minutos, fuso):
+    momento = _momento(quando)
+    return momento.astimezone(fuso).strftime("%H:%M" if minutos <= 1440 else "%d/%m") if isinstance(momento, datetime) else str(quando)
+
+
+def _variacao_do_indicador(total, anterior):
+    if not anterior:
+        return "Nada no período anterior" if total else "Nada no período"
+    delta = round((total - anterior) * 100 / anterior)
+    return "Igual ao período anterior" if not delta else f"{'+' if delta > 0 else ''}{delta}% sobre o período anterior"
+
+
+def _bloco_para_o_pdf(bloco, resultado, fuso, janelas, nome_do_pais):
+    """O bloco pronto para o modelo: o que a tela desenha com gráfico interativo, aqui vira SVG ou tabela."""
+    tipo, r = bloco["tipo"], resultado
+    saida = {"titulo": bloco["titulo"], "tipo": tipo, "janela": janelas.get(bloco["minutos"], ""), "largura": bloco["largura"] * 6 if bloco["largura"] <= 2 else bloco["largura"]}
+    if r.get("erro"):
+        return {**saida, "erro": r["erro"]}
+    def valor(campo, v):
+        return nome_do_pais(str(v)) if campo == "GeoLocation.country_name" and v is not None else ("-" if v is None else str(v))
+    if tipo == "numero":
+        return {**saida, "total": r["total"], "variacao": _variacao_do_indicador(r["total"], r.get("anterior", 0))}
+    if tipo == "serie":
+        campo = r.get("campo")
+        if campo:
+            soma = defaultdict(int)
+            for p in r["pontos"]:
+                for k, v in (p.get("por") or {}).items():
+                    soma[k] += v
+            nomes = [k for k, _ in sorted(soma.items(), key=lambda kv: -kv[1])[:6]]
+            rotulos = [f"nível {n}" if campo == "rule.level" else valor(campo, n) for n in nomes]
+        else:
+            nomes, rotulos = ["total"], ["Logs"]
+        pontos = [{**p, "rotulo": _rotulo_do_tempo(p["quando"], bloco["minutos"], fuso)} for p in r["pontos"]]
+        return {**saida, "svg": svg_serie(pontos, nomes, rotulos)}
+    if tipo in ("rosca", "barras", "top", "mapa"):
+        chave = r["chave"]
+        linhas = [{"rotulo": valor(r["campo"], l[chave]), "total": l["total"]} for l in r["linhas"]]
+        if tipo == "rosca":
+            fatias = linhas + ([{"rotulo": "Outros", "total": r["outros"]}] if r.get("outros") else [])
+            return {**saida, "svg": svg_rosca(fatias), "legenda": [{**f, "cor": CORES_DO_PAINEL[j % len(CORES_DO_PAINEL)] if f["rotulo"] != "Outros" else CORES_DO_PAINEL[-1]}
+                                                                for j, f in enumerate(fatias)]}
+        # O mapa vira a lista de países: no papel, o nome e o número dizem mais que a cor do mapa.
+        return {**saida, "barras": barras_horizontais(linhas[:15], "rotulo")}
+    colunas = r.get("colunas", [])
+    return {**saida, "colunas": [NOMES_DE_CAMPO.get(c["campo"], c["campo"]) for c in colunas],
+            "linhas": [[valor(c["campo"], l.get(c["chave"])) if c["campo"] != "timestamp" else _momento(l.get(c["chave"])) for c in colunas] for l in r.get("linhas", [])]}
+
+
+def _em_linhas(blocos):
+    """Junta os blocos em linhas de 12 colunas, como a grade da tela: o papel não tem grade, mas tabela tem."""
+    linhas, atual, usado = [], [], 0
+    for b in blocos:
+        if atual and usado + b["largura"] > 12:
+            linhas.append(atual)
+            atual, usado = [], 0
+        atual.append(b)
+        usado += b["largura"]
+    if atual:
+        linhas.append(atual)
+    return linhas
+
+
+def montar_html_do_painel(painel, resultados, sessao, janelas, agora=None):
+    fuso = ZoneInfo(sessao["fuso"])
+    agora = agora or datetime.now(timezone.utc)
+    ambiente = Environment(loader=FileSystemLoader(MODELOS), autoescape=select_autoescape(["html"]))
+    _formatos(ambiente, fuso)
+    blocos = [_bloco_para_o_pdf(b, r, fuso, janelas, nome_do_pais) for b, r in zip(painel["blocos"], resultados)]
+    dias = max(1, math.ceil(max((b["minutos"] for b in painel["blocos"]), default=1440) / 1440))
+    return ambiente.get_template("painel.html").render({
+        "painel": painel["nome"], "linhas": _em_linhas(blocos), "cliente": sessao["cliente_nome"], "autor": sessao["nome"], "agora": agora,
+        "inicio": agora - timedelta(days=dias), "dias": dias})
 
 
 def gerar_pdf(html):

@@ -33,7 +33,8 @@ SEM_PERMISSAO = {("POST", "/api/entrar"), ("POST", "/api/sair"), ("GET", "/api/e
                  ("POST", "/api/organizacoes/{cliente}/entrar"), ("POST", "/api/organizacoes/voltar"),
                  # Entrada e conta da própria pessoa: valem para qualquer perfil, e testar_api.py cobra cada uma.
                  ("GET", "/api/passkeys"), ("POST", "/api/passkeys/cadastro/inicio"), ("POST", "/api/passkeys/cadastro/fim"), ("DELETE", "/api/passkeys/{identificador}"),
-                 ("POST", "/api/passkeys/entrar/inicio"), ("POST", "/api/passkeys/entrar/fim"), ("GET", "/api/sso/inicio"), ("GET", "/api/sso/retorno")}
+                 ("POST", "/api/passkeys/entrar/inicio"), ("POST", "/api/passkeys/entrar/fim"), ("GET", "/api/sso/inicio"), ("GET", "/api/sso/retorno"),
+                 ("POST", "/api/sso/saml/acs"), ("GET", "/api/sso/saml/metadados")}
 # O que se espera de cada perfil, escrito à mão de propósito.
 ESPERADO = {
     "administrador": {"ver", "ver_bruto", "ver_dado_pessoal", "triar", "gerir_regras", "gerir_fontes", "instalar_agente", "gerir_playbooks", "aprovar", "gerir_usuarios", "ver_auditoria", "gerir_vulnerabilidades"},
@@ -44,7 +45,8 @@ ESPERADO = {
 }
 # Leva o log original: quem vê dado pessoal mascarado também é recusado. O pacote de evidência
 # também, mas com corpo vazio para antes, na validação; o teste da API confere esse com corpo válido.
-PEDEM_O_ORIGINAL = {("POST", "/api/logs/evidencia")}
+# Pedem também ver o dado sem máscara: o pacote de prova e a evidência do caso levam o log como chegou.
+PEDEM_O_ORIGINAL = {("POST", "/api/logs/evidencia"), ("POST", "/api/casos/{identificador}/evidencias/pacote"), ("GET", "/api/casos/{identificador}/evidencias/{evidencia_id}")}
 ROTAS = {
     ("GET", "/api/fila"): "ver", ("GET", "/api/panorama"): "ver", ("GET", "/api/eventos"): "ver", ("GET", "/api/eventos/{identificador}/bruto"): "ver_bruto",
     ("GET", "/api/logs"): "ver_bruto", ("GET", "/api/ativos"): "ver", ("GET", "/api/mitre/matriz"): "ver", ("GET", "/api/mitre/tecnicas/{tecnica}"): "ver",
@@ -65,7 +67,16 @@ ROTAS = {
     ("POST", "/api/automacao/aprovacoes/{identificador}/aprovar"): "aprovar", ("POST", "/api/automacao/aprovacoes/{identificador}/recusar"): "aprovar",
     ("GET", "/api/riscos/{identificador}"): "ver", ("GET", "/api/grupos/{identificador}"): "ver", ("GET", "/api/usuarios"): "gerir_usuarios", ("POST", "/api/usuarios"): "gerir_usuarios",
     ("GET", "/api/auditoria"): "ver_auditoria", ("GET", "/api/auditoria/exportar"): "ver_auditoria", ("GET", "/api/notificacoes"): "ver_auditoria", ("POST", "/api/notificacoes/lidas"): "ver_auditoria",
-    ("GET", "/api/vuln/indicadores"): "ver", ("GET", "/api/vuln/correcao"): "ver", ("GET", "/api/listas"): "ver", ("POST", "/api/listas"): "gerir_regras", ("GET", "/api/listas/{identificador}"): "ver",
+    ("GET", "/api/vuln/indicadores"): "ver", ("GET", "/api/vuln/correcao"): "ver", ("GET", "/api/listas"): "ver", ("GET", "/api/parsers"): "ver", ("GET", "/api/vuln/superficie"): "ver", ("PUT", "/api/organizacao/armazenamento/leitura"): "gerir_usuarios", ("GET", "/api/vuln/superficie/nomes/{identificador}/servicos/{indice}"): "ver", ("POST", "/api/vuln/superficie"): "gerir_vulnerabilidades",
+    ("PUT", "/api/vuln/superficie/{identificador}"): "gerir_vulnerabilidades", ("POST", "/api/vuln/superficie/{identificador}/agora"): "gerir_vulnerabilidades",
+    ("DELETE", "/api/vuln/superficie/{identificador}"): "gerir_vulnerabilidades", ("POST", "/api/casos/{identificador}/notas/{nota}/situacao"): "triar", ("POST", "/api/casos/{identificador}/passagem"): "triar",
+    ("GET", "/api/casos-plantao"): "ver", ("POST", "/api/casos/{identificador}/evidencias/pacote"): "triar", ("POST", "/api/casos/{identificador}/evidencias/arquivo"): "triar",
+    ("GET", "/api/casos/{identificador}/evidencias/{evidencia_id}"): "ver_bruto", ("GET", "/api/organizacao/email"): "gerir_usuarios", ("PUT", "/api/organizacao/email"): "gerir_usuarios",
+    ("DELETE", "/api/organizacao/email"): "gerir_usuarios", ("POST", "/api/organizacao/email/teste"): "gerir_usuarios", ("GET", "/api/buscas/opcoes"): "ver", ("POST", "/api/buscas/bloco"): "ver_bruto", ("GET", "/api/buscas"): "ver",
+    ("POST", "/api/buscas"): "gerir_regras", ("PUT", "/api/buscas/{identificador}"): "gerir_regras", ("DELETE", "/api/buscas/{identificador}"): "gerir_regras",
+    ("GET", "/api/buscas/{identificador}/execucoes"): "ver", ("GET", "/api/paineis"): "ver", ("POST", "/api/paineis"): "ver_bruto",
+    ("PUT", "/api/paineis/{identificador}"): "ver_bruto", ("GET", "/api/paineis/{identificador}/pdf"): "ver_bruto", ("DELETE", "/api/paineis/{identificador}"): "ver_bruto", ("POST", "/api/parsers"): "gerir_regras", ("POST", "/api/parsers/testar"): "gerir_regras",
+    ("PUT", "/api/parsers/{identificador}"): "gerir_regras", ("POST", "/api/parsers/{identificador}/ativo"): "gerir_regras", ("DELETE", "/api/parsers/{identificador}"): "gerir_regras", ("POST", "/api/listas"): "gerir_regras", ("GET", "/api/listas/{identificador}"): "ver",
     ("PUT", "/api/listas/{identificador}"): "gerir_regras", ("DELETE", "/api/listas/{identificador}"): "gerir_regras", ("POST", "/api/listas/{identificador}/itens"): "gerir_regras",
     ("POST", "/api/listas/{identificador}/itens/remover"): "gerir_regras", ("PUT", "/api/vuln/prazos"): "gerir_vulnerabilidades", ("GET", "/api/vuln/achados"): "ver", ("GET", "/api/vuln/achados/exportar"): "ver", ("GET", "/api/vuln/achados/{identificador}"): "ver",
     ("POST", "/api/vuln/achados/{identificador}/estado"): "gerir_vulnerabilidades", ("POST", "/api/vuln/achados/{identificador}/confirmar"): "gerir_vulnerabilidades", ("GET", "/api/vuln/ativos"): "ver", ("PUT", "/api/vuln/ativos/{identificador}"): "gerir_vulnerabilidades",
@@ -89,7 +100,7 @@ ROTAS = {
     ("POST", "/api/organizacao/copia-fria/{identificador}/devolver"): "gerir_usuarios",
     ("PUT", "/api/usuarios/{identificador}"): "gerir_usuarios", ("POST", "/api/usuarios/{identificador}/nova-senha"): "gerir_usuarios",
 }
-VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "tipo": "grupo", "item": "999999", "acao": "ativar"}
+VALORES = {"nome": "ROAR_PROVA", "acao": "usar", "identificador": "999999", "agente": "999", "cve": "CVE-2021-44228", "tecnica": "T1110", "arquivo": "inexistente.xml", "regra_id": "999999", "tipo": "grupo", "item": "999999", "acao": "ativar", "nota": "999999", "evidencia_id": "999999", "indice": "0"}
 
 
 def registrar(nome, passou, detalhe=""):

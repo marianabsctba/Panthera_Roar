@@ -72,3 +72,14 @@ body { font-size: 14px; font-feature-settings: "cv11", "ss03"; -webkit-font-smoo
 /* Gráficos */
 .amostra-metal { display: inline-block; width: 12px; height: 4px; border-radius: 1px; }
 .dica-grafico { min-width: 150px; padding: 8px 10px; border: 1px solid var(--roar-borda); border-radius: 6px; background: var(--mantine-color-dark-7); box-shadow: 0 4px 16px rgb(0 0 0 / 50%); }
+
+/* Painéis: grade de 12 colunas. Cada bloco tem altura fixa pelo tipo, então nada pula enquanto carrega. */
+.grade-de-painel { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+.grade-de-painel .barra-trilho, .grade-de-painel .barra-cheia { height: 6px; border-radius: 3px; }
+@media (max-width: 62em) { .grade-de-painel:not(.previa) > * { grid-column: 1 / -1 !important; } }
+.previa-ao-vivo { overflow: hidden; border-radius: 6px; pointer-events: none; user-select: none; }
+.galeria { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 62em) { .galeria { grid-template-columns: 1fr; } }
+.miniatura-vazia { border: 1px dashed var(--mantine-color-dark-4); border-radius: 6px; }
+.cartao-de-modelo { transition: border-color .12s, background .12s; }
+.cartao-de-modelo:hover, .cartao-de-modelo[data-escolhido] { border-color: #e873bd; background: var(--mantine-color-dark-6); }

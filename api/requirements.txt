@@ -14,3 +14,4 @@ cryptography>=50,<53
 yara-python>=4.5,<5
 PyJWT[crypto]>=2.15,<3
 webauthn>=2.5,<3
+signxml>=5.2,<6

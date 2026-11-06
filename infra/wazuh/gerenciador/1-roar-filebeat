@@ -15,3 +15,18 @@ sed -i '/^    archives:/{n;s/enabled: false/enabled: true/}' "$ARQUIVO"
 sed -i '/^  index: /d' "$ARQUIVO"
 sed -i '/^  indices:/,+2d' "$ARQUIVO"
 sed -i "s|^output.elasticsearch:|output.elasticsearch:\n  index: '${ROAR_INDICE}%{+yyyy.MM.dd}'\n  indices:\n    - index: '${ROAR_INDICE_BRUTO}%{+yyyy.MM.dd}'\n      when.contains: {log.file.path: archives}|" "$ARQUIVO"
+
+# Com o armazém de eventos como destino dos logs e alertas (ROAR_SO_ARMAZEM=1, docs/clickhouse.md), o Filebeat não
+# envia nada: o coletor do gerenciador já leva tudo. O indexador continua recebendo o estado (vulnerabilidades e
+# inventário), que vai por outro caminho. O script de partida do serviço vira uma espera sem fim, e o original fica
+# guardado para voltar quando o ajuste for desligado.
+for pasta in /etc/services.d/filebeat /var/run/s6/services/filebeat; do
+  [ -f "$pasta/run" ] || continue
+  [ -f "$pasta/run.original" ] || cp "$pasta/run" "$pasta/run.original"
+  rm -f "$pasta/down"
+  if [ "${ROAR_SO_ARMAZEM:-0}" = 1 ]; then
+    printf '#!/bin/sh\nexec sleep infinity\n' >"$pasta/run"
+  else
+    cp "$pasta/run.original" "$pasta/run"
+  fi
+done

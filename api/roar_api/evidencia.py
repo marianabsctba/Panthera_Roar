@@ -7,12 +7,14 @@ entregue. É a divulgação seletiva: entrega o que importa ao caso, sem expor o
 import bisect
 import io
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from roar_ingestao import armazem as armazem_de_eventos
 from roar_ingestao import selo as selagem
 from roar_ingestao import verificador_de_evidencia as verificador
 
@@ -23,6 +25,8 @@ LIMITE_DO_PERIODO = 10000
 # Até aqui o laudo traz cada evento por extenso; acima, só a lista, e o conteúdo fica no arquivo de dados.
 EVENTOS_POR_EXTENSO = 200
 LOTE_DE_BUSCA = 1000
+# Id de evento do armazém de eventos (docs/clickhouse.md); o do indexador tem outro formato.
+ID_DO_ARMAZEM = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 class EvidenciaRecusada(Exception):
@@ -70,7 +74,25 @@ def montar_prova(identificador, documento, selo, segredo, pares, posicoes=None):
     return {"id": identificador, "documento": documento, "selo": selo, "indice": indice, "sal": sal.hex(), "caminho": selagem.caminho_de_merkle([h for _, h in pares], indice)}
 
 
-def _buscar_documentos(indexer, url, gerenciadores, fonte, ids):
+def _buscar_documentos(indexer, url, gerenciadores, fonte, ids, armazem=None, banco=None):
+    """{id: (gerenciador, documento, momento)}. Cada evento vem de onde foi selado: id do armazém, do armazém (o log como o
+    gerenciador gravou); os outros, do indexador."""
+    achados = {}
+    do_armazem = [i for i in ids if armazem is not None and ID_DO_ARMAZEM.fullmatch(i)]
+    for inicio in range(0, len(do_armazem), LOTE_DE_BUSCA):
+        lote = do_armazem[inicio:inicio + LOTE_DE_BUSCA]
+        for linha in armazem.linhas(f"""SELECT toString(id) AS i, gerenciador, dados, full_log, resumo_do_original, toUnixTimestamp64Milli(ocorrido_em) AS ms
+                                        FROM {banco}.{fonte} WHERE id IN (SELECT toUUID(arrayJoin(splitByChar(',', {{ids:String}}))))""", {"ids": ",".join(lote)}):
+            # O banco é o da organização da sessão; o gerenciador ainda tem de ser um dos dela.
+            if linha["gerenciador"] in gerenciadores:
+                achados[linha["i"]] = (linha["gerenciador"], armazem_de_eventos.documento_original(linha),
+                                       datetime.fromtimestamp(int(linha["ms"]) / 1000, timezone.utc))
+    restantes = [i for i in ids if i not in achados and not (armazem is not None and ID_DO_ARMAZEM.fullmatch(i))]
+    achados.update(_buscar_no_indexador(indexer, url, gerenciadores, fonte, restantes))
+    return achados
+
+
+def _buscar_no_indexador(indexer, url, gerenciadores, fonte, ids):
     indices = ",".join(f"{selagem.FONTES[fonte]}{g}-*" for g in gerenciadores)
     achados = {}
     for inicio in range(0, len(ids), LOTE_DE_BUSCA):
@@ -78,36 +100,37 @@ def _buscar_documentos(indexer, url, gerenciadores, fonte, ids):
         r = indexer.post(f"{url}/{indices}/_search?allow_no_indices=true&ignore_unavailable=true",
                          json={"size": len(lote), "query": {"ids": {"values": lote}}}, timeout=60)
         r.raise_for_status()
-        achados.update({h["_id"]: h for h in r.json()["hits"]["hits"]})
+        for h in r.json()["hits"]["hits"]:
+            gerenciador = next(g for g in gerenciadores if f"-{g}-" in h["_index"])
+            achados[h["_id"]] = (gerenciador, h["_source"], _momento(h["_source"]))
     return achados
 
 
-def montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica):
+def montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica, armazem=None, banco=None):
     """Um pacote por gerenciador, porque cada um tem a própria cadeia. Roda sob o RLS da sessão: selo e folhas de outro cliente nem aparecem aqui."""
-    achados = _buscar_documentos(indexer, url, gerenciadores, fonte, ids)
+    achados = _buscar_documentos(indexer, url, gerenciadores, fonte, ids, armazem, banco)
     faltando = [i for i in ids if i not in achados]
     if faltando:
         raise EvidenciaRecusada(f"Evento não encontrado: {faltando[0]}.")
     por_gerenciador = {}
     for identificador in ids:
-        gerenciador = next(g for g in gerenciadores if f"-{g}-" in achados[identificador]["_index"])
-        por_gerenciador.setdefault(gerenciador, []).append(identificador)
+        por_gerenciador.setdefault(achados[identificador][0], []).append(identificador)
     return [_montar_um(con, gerenciador, fonte, lista, achados, publica) for gerenciador, lista in por_gerenciador.items()]
 
 
-def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica):
-    pacotes = montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica)
+def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica, armazem=None, banco=None):
+    pacotes = montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica, armazem, banco)
     if len(pacotes) > 1:
         raise EvidenciaRecusada("Gere um pacote por gerenciador.")
     return pacotes[0][1], pacotes[0][2]
 
 
 def _montar_um(con, gerenciador, fonte, ids, achados, publica):
-    momentos = {i: _momento(achados[i]["_source"]) for i in ids}
+    momentos = {i: achados[i][2] for i in ids}
     janelas = _Janelas(con, gerenciador, fonte, min(momentos.values()), max(momentos.values()))
     eventos = []
     for identificador in ids:
-        documento = achados[identificador]["_source"]
+        documento = achados[identificador][1]
         prova = None
         for n in janelas.que_cobrem(momentos[identificador]):
             segredo, pares, posicoes = janelas.da_janela(n)

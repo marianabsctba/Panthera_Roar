@@ -43,6 +43,16 @@ EPSS_MEDIO = 0.05
 CVSS_CRITICO = 9.0
 CVSS_ALTO = 7.0
 NOME_DE_CVE = re.compile(r"CVE-\d{4}-\d+")
+# Produtos que a superfície externa reconhece pela resposta do servidor. Só deles a carga guarda as faixas de versão.
+PRODUTOS_RECONHECIDOS = frozenset({
+    "openbsd:openssh", "dropbear_ssh_project:dropbear_ssh", "proftpd:proftpd", "beasts:vsftpd", "filezilla-project:filezilla_server",
+    "apache:http_server", "f5:nginx", "nginx:nginx", "microsoft:internet_information_services", "lighttpd:lighttpd", "eclipse:jetty",
+    "php:php", "oracle:mysql", "mariadb:mariadb", "elastic:elasticsearch",
+    "wordpress:wordpress", "microsoft:exchange_server", "fortinet:fortios", "citrix:netscaler_gateway",
+    "citrix:netscaler_application_delivery_controller", "paloaltonetworks:pan-os", "ivanti:connect_secure", "pulsesecure:pulse_connect_secure",
+    "jenkins:jenkins", "grafana:grafana", "atlassian:confluence_server", "atlassian:confluence_data_center", "roundcube:webmail",
+    "phpmyadmin:phpmyadmin", "elastic:kibana", "gitlab:gitlab",
+})
 COLUNAS = ("cve", "publicado_em", "rejeitado", "titulo", "descricao", "produto", "cvss", "vetor", "cvss_fonte", "kev_desde",
            "kev_ransomware", "kev_prazo", "epss", "epss_percentil", "prioridade")
 
@@ -133,8 +143,32 @@ def _nota_da_nvd(item):
     return None
 
 
-def baixar_nvd(ano_final=None):
-    """Um arquivo por ano. Só serve para preencher o que o registro oficial não traz."""
+def _versoes_da_nvd(cve, item):
+    """[(cve, produto, exata, desde, desde_incluida, ate, ate_incluida)] dos produtos reconhecidos marcados como vulneráveis."""
+    saida = []
+    for configuracao in item.get("configurations") or []:
+        for no in configuracao.get("nodes") or []:
+            for m in no.get("cpeMatch") or []:
+                partes = str(m.get("criteria", "")).split(":")
+                if not m.get("vulnerable") or len(partes) < 7 or f"{partes[3]}:{partes[4]}" not in PRODUTOS_RECONHECIDOS:
+                    continue
+                versao, atualizacao = partes[5], partes[6]
+                exata = None
+                if versao not in ("*", "-", ""):
+                    # O CPE separa a correção da versão: openssh 8.2 com p1 é a 8.2p1.
+                    exata = versao + (atualizacao if atualizacao not in ("*", "-", "") else "")
+                desde = m.get("versionStartIncluding") or m.get("versionStartExcluding")
+                ate = m.get("versionEndExcluding") or m.get("versionEndIncluding")
+                if exata is None and desde is None and ate is None:
+                    continue  # "todas as versões" é largo demais para afirmar pela resposta do servidor
+                saida.append((cve, f"{partes[3]}:{partes[4]}", _texto(exata, 60), _texto(desde, 60), "versionStartExcluding" not in m,
+                              _texto(ate, 60), "versionEndIncluding" in m))
+    return saida
+
+
+def baixar_nvd(ano_final=None, versoes=None):
+    """Um arquivo por ano. Serve para preencher a nota que o registro oficial não traz e, em `versoes`, as faixas de
+    versão dos produtos reconhecidos."""
     notas = {}
     for ano in range(ANO_INICIAL_NVD, (ano_final or datetime.now(timezone.utc).year) + 1):
         r = requests.get(NVD.format(ano=ano), timeout=TEMPO_GRANDE)
@@ -147,6 +181,8 @@ def baixar_nvd(ano_final=None):
             nota = _nota_da_nvd(item)
             if nota and item.get("id"):
                 notas[item["id"]] = nota
+            if versoes is not None and NOME_DE_CVE.fullmatch(str(item.get("id", ""))):
+                versoes.extend(_versoes_da_nvd(item["id"], item))
     if len(notas) < MINIMO_NVD:
         raise FonteEstranha(f"NVD veio pequena demais: {len(notas)}")
     return notas
@@ -227,8 +263,9 @@ def carregar(banco):
     """Troca tudo em uma transação: ninguém vê a base pela metade, e uma falha mantém a anterior."""
     kev = baixar_kev()
     data_epss, epss = baixar_epss()
-    nvd = baixar_nvd()
-    log.info("KEV %d, EPSS %d (%s), NVD %d", len(kev), len(epss), data_epss, len(nvd))
+    versoes = []
+    nvd = baixar_nvd(versoes=versoes)
+    log.info("KEV %d, EPSS %d (%s), NVD %d, faixas de versão %d", len(kev), len(epss), data_epss, len(nvd), len(versoes))
     with tempfile.TemporaryDirectory(prefix="roar-cves-") as pasta, banco.con.transaction():
         banco.con.execute("CREATE TEMP TABLE cves_nova (LIKE cves INCLUDING DEFAULTS EXCLUDING GENERATED) ON COMMIT DROP")
         total = 0
@@ -243,6 +280,10 @@ def carregar(banco):
             """SELECT n.cve FROM cves_nova n LEFT JOIN cves c ON c.cve = n.cve
                WHERE n.kev_desde IS NOT NULL AND c.kev_desde IS NULL AND EXISTS (SELECT 1 FROM cves)""").fetchall()]
         banco.con.execute("DELETE FROM cves")
+        banco.con.execute("DELETE FROM cves_versoes")
+        with banco.con.cursor().copy("COPY cves_versoes (cve, produto, exata, desde, desde_incluida, ate, ate_incluida) FROM STDIN") as copia:
+            for linha in versoes:
+                copia.write_row(linha)
         colunas = ", ".join(COLUNAS)
         banco.con.execute(f"INSERT INTO cves ({colunas}) SELECT {colunas} FROM cves_nova ON CONFLICT (cve) DO NOTHING")
         if exploradas:

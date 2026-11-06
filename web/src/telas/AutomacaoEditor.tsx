@@ -6,6 +6,7 @@ import { detalhe, enviar, ler } from "../api";
 import { Data, Tabela } from "../componentes";
 import { nomeDoPais, numero } from "../formato";
 import { SEVERIDADES } from "../tema";
+import { recomecar } from "../rota";
 
 // ------------------------------------------------------------------ formato do playbook
 
@@ -459,7 +460,7 @@ function Formulario({ abertura, aoFechar, aoSalvar }: { abertura: AberturaDoPlay
         ? await fetch(`/api/automacao/playbooks/${abertura.id}`, { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(a) })
         : await enviar("/api/automacao/playbooks", a);
       if (r.status === 401) {
-        window.location.assign("/");
+        recomecar("/");
         return;
       }
       if (!r.ok) {

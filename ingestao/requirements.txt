@@ -4,3 +4,4 @@ pysigma>=1,<2
 pyyaml
 cryptography>=50,<53
 python-gvm>=26,<27
+dnspython>=2.8,<3

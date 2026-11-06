@@ -37,8 +37,8 @@ escrever_env() {
   install -m 640 -o root -g "$grupo" "$temporario" "$arquivo"
   rm -f "$temporario"
 }
-escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS
-escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA
+escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA
+escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA ROAR_SELOS_DO_ARMAZEM
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
 [ -f "$DESTINO/cofre/privada" ] || PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.cofre gerar
@@ -95,6 +95,8 @@ UNIDADE
 unidade api roar-api api.env api "$PY -m uvicorn roar_api.app:app --host 127.0.0.1 --port 8600 --no-access-log --proxy-headers --forwarded-allow-ips 127.0.0.1"
 unidade ingestao root .env ingestao "$PY -u -m roar_ingestao.ciclo"
 unidade fontes root .env ingestao "$PY -u -m roar_ingestao.fontes"
+unidade parsers root .env ingestao "$PY -u -m roar_ingestao.parsers"
+unidade avisos root .env ingestao "$PY -u -m roar_ingestao.avisos"
 unidade varredura root .env ingestao "$PY -u -m roar_ingestao.varredura"
 unidade inteligencia root .env ingestao "$PY -u -m roar_ingestao.inteligencia"
 # Quem cria gerenciador precisa do Docker, e a API não tem: ela só registra o pedido.
@@ -102,6 +104,8 @@ unidade organizacoes root .env ingestao "$PY -u -m roar_ingestao.organizacoes"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
+unidade buscas roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.buscas"
+unidade superficie roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.superficie"
 # Só os contêineres alcançam o gateway da rede deles. O certificado vem de provisao.preparar.
 unidade portao roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.portao" "Environment=ROAR_PORTAO_ENDERECO=$(docker network inspect panthera-roar-wazuh_default --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)"
 unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.biblioteca" "MemoryHigh=2G"
@@ -138,9 +142,9 @@ cp -a "$RAIZ/infra/wazuh/gerenciador" "$APP/infra/wazuh/gerenciador"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves organizacoes"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca portao" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="varredura" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="" ;;
+  vulnerabilidades) SERVICOS="api varredura cves organizacoes avisos superficie"; DESLIGAR="ingestao fontes parsers buscas selo ueba disparo inteligencia biblioteca portao" ;;
+  siem) SERVICOS="api ingestao fontes parsers buscas avisos cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="varredura superficie" ;;
+  *) SERVICOS="api ingestao fontes parsers buscas avisos varredura superficie cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="" ;;
 esac
 systemctl daemon-reload
 for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done

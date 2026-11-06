@@ -6,6 +6,8 @@ O cliente de cada consulta vem da sessão e vira a definição do RLS da transa�
 aceita cliente vindo do navegador, então um id de outro cliente simplesmente não é encontrado.
 """
 
+import base64
+import binascii
 import csv
 import hashlib
 import io
@@ -22,7 +24,8 @@ from collections import Counter, defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from typing import Literal
+from urllib.parse import parse_qs, urlencode
 from xml.etree.ElementTree import Element as ElementoXml
 from xml.etree.ElementTree import SubElement as SubElementoXml
 from xml.etree.ElementTree import tostring as xml_em_texto
@@ -49,10 +52,13 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import correcao, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
-from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
+from roar_api import buscas as blocos_de_busca, correcao, leitor_armazem, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
+from roar_ingestao import avisos as avisos_por_email, cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
+from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
+from roar_ingestao.normalizar import CAMPOS_DE_IP_DE_DESTINO, CAMPOS_DE_IP_DE_ORIGEM  # noqa: E402
+from roar_ingestao import superficie as superficie_externa_  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import contexto, inteligencia as inteligencia_de_ameacas, sigma, xml_proprio, yara_regras  # noqa: E402
 from roar_motor import acoes, blocos, fatos  # noqa: E402
@@ -77,6 +83,8 @@ TAMANHO_MAXIMO_DO_EVENTO = 60_000
 TAMANHO_MAXIMO_DO_ENVIO = 1_000_000
 LIMITE_DA_FILA_DO_WEBHOOK = 10_000
 MINUTOS_ATE_PARADA = 15
+# As fontes cujos eventos têm origem própria nos logs; webhook e API chegam todos pela mesma origem.
+TIPOS_COM_VOLUME = ("syslog", "github", "office365", "msgraph", "aws", "azure", "gcp")
 DESLOCAMENTO_SYSLOG = 3
 VERSAO_DO_AGENTE = "4.14.9"
 # Endereço que os ativos e equipamentos do cliente usam para chegar a este servidor.
@@ -146,6 +154,8 @@ async def ciclo_de_vida(app):
            f"{os.getenv('ROAR_BANCO_ENDERECO', '127.0.0.1:5433')}/roar")
     app.state.banco = ConnectionPool(url, min_size=1, max_size=10, open=True, kwargs={"row_factory": dict_row})
     app.state.indexer = _sessao_do_indexer(valores)
+    # O armazém de eventos (docs/clickhouse.md): sem a senha de leitura, a instalação ainda não tem um, e tudo lê do indexador.
+    app.state.armazem = armazem_de_eventos.leitor(valores)
     # O apelido de cada usuário não pode ser refeito por quem só vê a tela: vem de um segredo do servidor.
     app.state.cofre_do_sso = outras_entradas.Cofre(valores["ROAR_API_SENHA"])
     app.state.chave_de_apelido = hashlib.sha256(b"apelido:" + valores["ROAR_API_SENHA"].encode()).digest()
@@ -159,9 +169,11 @@ app = FastAPI(title="Panthera Roar", description="SIEM open source. Powered by M
 
 @app.middleware("http")
 async def cabecalhos(request: Request, chamada):
-    # Sem cabeçalho Origin é requisição fora do navegador; com ele, precisa ser a própria tela.
+    # Sem cabeçalho Origin é requisição fora do navegador; com ele, precisa ser a própria tela. A resposta do SAML vem
+    # do site do provedor por definição, e vale pela assinatura e pelo pedido de uso único, não pela origem.
     origem = request.headers.get("origin")
-    if request.method not in ("GET", "HEAD") and origem and origem.split("://")[-1] != request.headers.get("host"):
+    if (request.method not in ("GET", "HEAD") and origem and origem.split("://")[-1] != request.headers.get("host")
+            and request.url.path != "/api/sso/saml/acs"):
         return Response(status_code=403)
     if not modulos.rota_liberada(request.url.path, MODULOS):
         resposta = Response(status_code=404)
@@ -377,6 +389,12 @@ def _retorno_do_sso(request):
     return f"{esquema}://{request.headers.get('host', request.url.netloc)}/api/sso/retorno"
 
 
+def _enderecos_do_saml(request):
+    """O identificador do Roar e o endereço que recebe a resposta, que a organização cadastra no provedor."""
+    base = _retorno_do_sso(request).rsplit("/api/", 1)[0]
+    return f"{base}/api/sso/saml/metadados", f"{base}/api/sso/saml/acs"
+
+
 class SenhaParaPasskey(BaseModel):
     senha: str = Field(max_length=256)
 
@@ -502,6 +520,14 @@ def iniciar_sso(request: Request, email: str = "", provedor: str = ""):
     # O botão clicado tem de ser o da organização: quem é da Microsoft não vai parar no Google.
     if provedor in PROVEDORES_DE_SSO and provedor != quem["sso_provedor"]:
         raise HTTPException(status_code=409, detail=f"Sua organização entra pelo {PROVEDORES_DE_SSO[quem['sso_provedor']]}. Use o botão dele.")
+    if config["provedor"] == "saml":
+        estado, resumo = outras_entradas.novo_pedido()
+        _, acs = _enderecos_do_saml(request)
+        url, id_do_pedido = saml.pedido_de_entrada(config["emissor"], config["client_id"], acs, estado, email)
+        with request.app.state.banco.connection() as con:
+            con.execute("SELECT roar_guardar_pedido(%s, 'sso', %s, %s)", (resumo, Jsonb({
+                "cliente": str(quem["cliente_id"]), "email": email, "saml": id_do_pedido, "acs": acs}), 10))
+        return {"url": url}
     try:
         documento = outras_entradas.descobrir(config["emissor"])
     except outras_entradas.EntradaRecusada as erro:
@@ -548,7 +574,53 @@ def retorno_do_sso(request: Request, code: str = "", state: str = "", error: str
     return _abrir_sessao(request, quem["usuario_id"], "logon_sso", RedirectResponse("/", status_code=303))
 
 
-PROVEDORES_DE_SSO = {"google": "Google", "microsoft": "Microsoft", "outro": "login único"}
+@app.post("/api/sso/saml/acs", response_model=None)
+async def resposta_do_saml(request: Request):
+    """O provedor SAML devolve a pessoa aqui, com a resposta assinada num formulário. Falha volta para a entrada com o motivo."""
+    def falhou(motivo):
+        return RedirectResponse(f"/?{urlencode({'sso': motivo[:200]})}", status_code=303)
+
+    corpo = await request.body()
+    if len(corpo) > saml.TAMANHO_MAXIMO * 2:
+        return falhou("A resposta do provedor veio grande demais.")
+    campos = parse_qs(corpo.decode("ascii", errors="replace"), max_num_fields=10)
+    resposta, estado = (campos.get("SAMLResponse") or [""])[0], (campos.get("RelayState") or [""])[0]
+    return await run_in_threadpool(_concluir_saml, request, resposta, estado, falhou)
+
+
+def _concluir_saml(request, resposta, estado, falhou):
+    origem = f"sso:{_origem(request)}"
+    if _bloqueado(origem):
+        return falhou("Muitas tentativas. Aguarde alguns minutos.")
+    with request.app.state.banco.connection() as con:
+        pedido = con.execute("SELECT roar_tomar_pedido(%s, 'sso') AS d", (outras_entradas.resumo_do_pedido(estado[:100]),)).fetchone()["d"] if estado else None
+        if not pedido or not pedido.get("saml"):
+            return falhou("O pedido de login único venceu. Tente de novo.")
+        config = con.execute("SELECT * FROM roar_sso_da_organizacao(%s)", (pedido["cliente"],)).fetchone()
+    if not config or config["provedor"] != "saml":
+        return falhou("O login único desta organização foi desligado.")
+    try:
+        email = saml.conferir_resposta(resposta, config["saml_certificado"], config["saml_entidade"], config["client_id"], pedido["acs"], pedido["saml"])
+    except saml.SamlRecusado as erro:
+        falhas_de_login[origem].append(time.monotonic())
+        return falhou(str(erro))
+    if config["dominios"] and email.split("@")[1] not in config["dominios"]:
+        return falhou("Este e-mail não é de um domínio aceito pela organização.")
+    with request.app.state.banco.connection() as con:
+        quem = con.execute("SELECT * FROM roar_entrada_por_email(%s)", (email,)).fetchone()
+    if not quem or str(quem["cliente_id"]) != pedido["cliente"]:
+        return falhou("Não há usuário ativo com este e-mail nesta organização. Peça à administração.")
+    return _abrir_sessao(request, quem["usuario_id"], "logon_sso", RedirectResponse("/", status_code=303))
+
+
+@app.get("/api/sso/saml/metadados")
+def metadados_do_saml(request: Request):
+    """O que o provedor SAML lê para cadastrar o Roar. Não tem nada de nenhuma organização."""
+    entidade, acs = _enderecos_do_saml(request)
+    return Response(saml.metadados(entidade, acs), media_type="application/samlmetadata+xml")
+
+
+PROVEDORES_DE_SSO = {"google": "Google", "microsoft": "Microsoft", "outro": "login único", "saml": "login único (SAML)"}
 EMISSOR_DO_GOOGLE = "https://accounts.google.com"
 LOCATARIO_DA_MICROSOFT = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -569,10 +641,13 @@ def _emissor_do_provedor(dados):
 
 
 class ConfiguracaoDeSso(BaseModel):
-    provedor: str = Field(default="outro", pattern="^(google|microsoft|outro)$")
+    provedor: str = Field(default="outro", pattern="^(google|microsoft|outro|saml)$")
     emissor: str | None = Field(default=None, max_length=500)
     locatario: str | None = Field(default=None, max_length=100)
-    client_id: str = Field(min_length=1, max_length=300)
+    # No SAML, o Roar preenche o client_id com o próprio identificador.
+    client_id: str = Field(default="", max_length=300)
+    saml_entidade: str | None = Field(default=None, max_length=500)
+    saml_certificado: str | None = Field(default=None, max_length=20000)
     # Ausente mantém o guardado; vazio apaga, para cliente público com PKCE.
     segredo: str | None = Field(default=None, max_length=2000)
     dominios: list[str] = Field(default=[], max_length=20)
@@ -583,35 +658,65 @@ class ConfiguracaoDeSso(BaseModel):
 @app.get("/api/organizacao/sso")
 def ver_sso(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     with do_cliente(request, sessao) as con:
-        config = con.execute("SELECT provedor, emissor, client_id, segredo IS NOT NULL AS tem_segredo, dominios, ativo, exigir, atualizado_em FROM sso").fetchone()
+        config = con.execute("""SELECT provedor, emissor, client_id, segredo IS NOT NULL AS tem_segredo, dominios, ativo, exigir, atualizado_em, saml_entidade,
+                                       saml_certificado IS NOT NULL AS tem_certificado FROM sso""").fetchone()
     if config and config["provedor"] == "microsoft":
         config["locatario"] = config["emissor"].split("/")[3]
-    return {"config": config, "retorno": _retorno_do_sso(request)}
+    entidade, acs = _enderecos_do_saml(request)
+    return {"config": config, "retorno": _retorno_do_sso(request), "saml": {"entidade": entidade, "acs": acs, "metadados": entidade}}
 
 
 @app.put("/api/organizacao/sso", status_code=204)
 def definir_sso(dados: ConfiguracaoDeSso, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     """Confere o provedor antes de guardar: configuração que não funciona trancaria a organização se fosse exigida."""
-    emissor = _emissor_do_provedor(dados)
     dominios = sorted({d.strip().lower().lstrip("@") for d in dados.dominios if d.strip()})
     if any(not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", d) for d in dominios):
         raise HTTPException(status_code=422, detail="Domínio inválido. Use só o domínio, como empresa.com.br.")
-    if dados.ativo:
-        try:
-            outras_entradas.descobrir(emissor)
-        except outras_entradas.EntradaRecusada as erro:
-            raise HTTPException(status_code=422, detail=str(erro))
     with do_cliente(request, sessao) as con:
-        atual = con.execute("SELECT segredo FROM sso").fetchone()
-        if dados.segredo is None:
+        atual = con.execute("SELECT segredo, saml_certificado FROM sso").fetchone()
+    entidade_do_provedor = certificado = None
+    if dados.provedor == "saml":
+        # No SAML não há descoberta: o que dá para conferir é o endereço, o identificador e o certificado.
+        emissor = (dados.emissor or "").strip()
+        if not re.fullmatch(r"https://\S{3,500}", emissor):
+            raise HTTPException(status_code=422, detail="O endereço de login do provedor precisa começar com https://.")
+        entidade_do_provedor = (dados.saml_entidade or "").strip()
+        if not entidade_do_provedor:
+            raise HTTPException(status_code=422, detail="Informe o identificador do provedor (Entity ID ou emissor).")
+        if dados.saml_certificado:
+            try:
+                certificado = saml.certificado_em_pem(dados.saml_certificado)
+            except saml.SamlRecusado as erro:
+                raise HTTPException(status_code=422, detail=str(erro))
+        elif atual and atual["saml_certificado"]:
+            certificado = atual["saml_certificado"]
+        else:
+            raise HTTPException(status_code=422, detail="Cole o certificado de assinatura do provedor.")
+        client_id = _enderecos_do_saml(request)[0]
+    else:
+        emissor = _emissor_do_provedor(dados)
+        client_id = dados.client_id.strip()
+        if not client_id:
+            raise HTTPException(status_code=422, detail="Informe o ID do cliente.")
+        if dados.ativo:
+            try:
+                outras_entradas.descobrir(emissor)
+            except outras_entradas.EntradaRecusada as erro:
+                raise HTTPException(status_code=422, detail=str(erro))
+    with do_cliente(request, sessao) as con:
+        if dados.provedor == "saml" or dados.segredo == "":
+            segredo = None
+        elif dados.segredo is None:
             segredo = atual["segredo"] if atual else None
         else:
-            segredo = request.app.state.cofre_do_sso.fechar(dados.segredo) if dados.segredo else None
-        con.execute("""INSERT INTO sso (cliente_id, provedor, emissor, client_id, segredo, dominios, ativo, exigir, atualizado_por) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            segredo = request.app.state.cofre_do_sso.fechar(dados.segredo)
+        con.execute("""INSERT INTO sso (cliente_id, provedor, emissor, client_id, segredo, dominios, ativo, exigir, atualizado_por, saml_entidade, saml_certificado)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (cliente_id) DO UPDATE SET provedor = EXCLUDED.provedor, emissor = EXCLUDED.emissor, client_id = EXCLUDED.client_id,
                          segredo = EXCLUDED.segredo, dominios = EXCLUDED.dominios, ativo = EXCLUDED.ativo, exigir = EXCLUDED.exigir,
-                         atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
-                    (sessao["cliente_id"], dados.provedor, emissor, dados.client_id.strip(), segredo, dominios, dados.ativo, dados.exigir and dados.ativo, sessao["usuario_id"]))
+                         atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now(), saml_entidade = EXCLUDED.saml_entidade, saml_certificado = EXCLUDED.saml_certificado""",
+                    (sessao["cliente_id"], dados.provedor, emissor, client_id, segredo, dominios, dados.ativo, dados.exigir and dados.ativo, sessao["usuario_id"],
+                     entidade_do_provedor, certificado))
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_sso', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{emissor} {'ligado' if dados.ativo else 'desligado'}{', exigido' if dados.exigir and dados.ativo else ''}"))
 
@@ -1074,6 +1179,30 @@ class CasoAlterado(BaseModel):
 
 class NotaDoCaso(BaseModel):
     texto: str = Field(min_length=1, max_length=4000)
+    # Fato é o que foi visto; hipótese é o que se acha, e fica aberta até ser confirmada ou descartada.
+    tipo: str = Field(default="nota", pattern="^(nota|fato|hipotese)$")
+
+
+class SituacaoDaHipotese(BaseModel):
+    situacao: str = Field(pattern="^(aberta|confirmada|descartada)$")
+
+
+class PassagemDePlantao(BaseModel):
+    para: str = Field(min_length=1, max_length=64)
+    feito: str = Field(default="", max_length=2000)
+    pendente: str = Field(default="", max_length=2000)
+
+
+class ArquivoDoCaso(BaseModel):
+    nome: str = Field(min_length=1, max_length=200)
+    tipo_midia: str = Field(default="application/octet-stream", max_length=100)
+    descricao: str = Field(default="", max_length=1000)
+    # Em base64: a API não recebe formulário de arquivo. O teto fica em TAMANHO_DA_EVIDENCIA depois de decodificar.
+    conteudo: str = Field(max_length=14_000_000)
+
+
+TAMANHO_DA_EVIDENCIA = 10 * 1024 * 1024
+SITUACOES_DA_HIPOTESE = {"aberta": "reaberta", "confirmada": "confirmada", "descartada": "descartada"}
 
 
 def _responsaveis(con):
@@ -1087,9 +1216,9 @@ def _item_existe(con, item):
     return con.execute(f"SELECT 1 FROM {tabela} WHERE id = %s", (item.id,)).fetchone() is not None
 
 
-def _nota_do_caso(con, sessao, caso, texto, automatica=False):
-    con.execute("INSERT INTO casos_notas (cliente_id, caso_id, autor_id, autor_nome, automatica, texto) VALUES (%s, %s, %s, %s, %s, %s)",
-                (sessao["cliente_id"], caso, sessao["usuario_id"], sessao["nome"], automatica, texto[:4000]))
+def _nota_do_caso(con, sessao, caso, texto, automatica=False, tipo="nota"):
+    con.execute("INSERT INTO casos_notas (cliente_id, caso_id, autor_id, autor_nome, automatica, texto, tipo, situacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (sessao["cliente_id"], caso, sessao["usuario_id"], sessao["nome"], automatica, texto[:4000], tipo, "aberta" if tipo == "hipotese" else None))
 
 
 def _incluir_itens(con, sessao, caso, itens):
@@ -1182,10 +1311,13 @@ def caso(identificador: int, request: Request, sessao=Depends(exige(permissoes.V
                FROM casos_itens i JOIN eventos v ON v.id = i.item_id
                WHERE i.caso_id = %s AND i.tipo = 'evento' ORDER BY v.ocorrido_em DESC""", (identificador,)).fetchall()
         notas = con.execute(
-            "SELECT id, autor_nome, automatica, texto, criado_em FROM casos_notas WHERE caso_id = %s ORDER BY criado_em, id",
+            "SELECT id, autor_nome, automatica, texto, criado_em, tipo, situacao FROM casos_notas WHERE caso_id = %s ORDER BY criado_em, id",
             (identificador,)).fetchall()
+        evidencias = con.execute(
+            """SELECT id, tipo, nome, tipo_midia, descricao, tamanho, sha256, adicionado_por_nome, adicionado_em
+               FROM casos_evidencias WHERE caso_id = %s ORDER BY adicionado_em, id""", (identificador,)).fetchall()
         responsaveis = _responsaveis(con)
-    return {"caso": dados, "itens": grupos + riscos + eventos, "notas": notas, "responsaveis": responsaveis}
+    return {"caso": dados, "itens": grupos + riscos + eventos, "notas": notas, "evidencias": evidencias, "responsaveis": responsaveis}
 
 
 @app.patch("/api/casos/{identificador}", status_code=204)
@@ -1268,8 +1400,158 @@ def anotar_caso(identificador: int, dados: NotaDoCaso, request: Request, sessao=
     with do_cliente(request, sessao) as con:
         if not con.execute("SELECT 1 FROM casos WHERE id = %s", (identificador,)).fetchone():
             raise HTTPException(status_code=404)
-        _nota_do_caso(con, sessao, identificador, texto)
+        _nota_do_caso(con, sessao, identificador, texto, tipo=dados.tipo)
         con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (identificador,))
+
+
+@app.post("/api/casos/{identificador}/notas/{nota}/situacao", status_code=204)
+def situacao_da_hipotese(identificador: int, nota: int, dados: SituacaoDaHipotese, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    """Só a hipótese muda de situação, e a mudança fica no histórico: o texto dela continua como foi escrito."""
+    _inteiro_valido(identificador)
+    _inteiro_valido(nota)
+    with do_cliente(request, sessao) as con:
+        hipotese = con.execute("SELECT texto, situacao FROM casos_notas WHERE id = %s AND caso_id = %s AND tipo = 'hipotese' FOR UPDATE",
+                               (nota, identificador)).fetchone()
+        if not hipotese:
+            raise HTTPException(status_code=404)
+        if hipotese["situacao"] == dados.situacao:
+            return
+        con.execute("UPDATE casos_notas SET situacao = %s WHERE id = %s", (dados.situacao, nota))
+        resumo = hipotese["texto"] if len(hipotese["texto"]) <= 120 else hipotese["texto"][:117] + "..."
+        _nota_do_caso(con, sessao, identificador, f"Hipótese {SITUACOES_DA_HIPOTESE[dados.situacao]}: \"{resumo}\"", automatica=True)
+        con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (identificador,))
+
+
+@app.post("/api/casos/{identificador}/passagem", status_code=204)
+def passar_o_caso(identificador: int, dados: PassagemDePlantao, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    """Passa o caso para quem assume o plantão, com o que já foi feito e o que falta. O registro fica no histórico."""
+    _inteiro_valido(identificador)
+    if not dados.feito.strip() and not dados.pendente.strip():
+        raise HTTPException(status_code=422, detail="Conte o que já foi feito ou o que falta fazer.")
+    with do_cliente(request, sessao) as con:
+        atual = con.execute("SELECT estado, responsavel_nome FROM casos WHERE id = %s FOR UPDATE", (identificador,)).fetchone()
+        if not atual:
+            raise HTTPException(status_code=404)
+        if atual["estado"] == "encerrado":
+            raise HTTPException(status_code=409, detail="O caso está encerrado. Reabra antes de passar.")
+        novo = next((r for r in _responsaveis(con) if r["id"] == dados.para), None)
+        if not novo:
+            raise HTTPException(status_code=422, detail="Essa pessoa não pode cuidar de casos.")
+        con.execute("UPDATE casos SET responsavel_id = %s, responsavel_nome = %s, atualizado_em = now() WHERE id = %s", (novo["id"], novo["nome"], identificador))
+        partes = [f"Passou o caso para {novo['nome']}."]
+        if dados.feito.strip():
+            partes.append(f"Já feito: {dados.feito.strip()}")
+        if dados.pendente.strip():
+            partes.append(f"Falta: {dados.pendente.strip()}")
+        _nota_do_caso(con, sessao, identificador, "\n".join(partes), tipo="passagem")
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'passar_caso', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} para {novo['nome']}"))
+
+
+@app.get("/api/casos-plantao")
+def resumo_do_plantao(request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True)), horas: int = 12):
+    """O que mudou no plantão: casos novos, encerrados, passados, hipóteses abertas e atrasados. Vem também como texto pronto para colar."""
+    horas = max(1, min(horas, 72))
+    with do_cliente(request, sessao) as con:
+        desde = "now() - make_interval(hours => %(h)s)"
+        novos = con.execute(f"SELECT id, titulo, severidade, responsavel_nome FROM casos WHERE criado_em >= {desde} ORDER BY id", {"h": horas}).fetchall()
+        encerrados = con.execute(f"SELECT id, titulo, desfecho FROM casos WHERE encerrado_em >= {desde} ORDER BY id", {"h": horas}).fetchall()
+        abertos = con.execute(
+            """SELECT c.id, c.titulo, c.severidade, c.responsavel_nome, c.prazo < now() AS atrasado,
+                      (SELECT count(*) FROM casos_notas n WHERE n.caso_id = c.id AND n.tipo = 'hipotese' AND n.situacao = 'aberta') AS hipoteses,
+                      (SELECT n.texto FROM casos_notas n WHERE n.caso_id = c.id AND n.tipo = 'passagem' ORDER BY n.criado_em DESC, n.id DESC LIMIT 1) AS ultima_passagem
+               FROM casos c WHERE c.estado <> 'encerrado'
+               ORDER BY array_position(ARRAY['critica', 'alta', 'media', 'baixa'], c.severidade), c.prazo""").fetchall()
+    rotulos = {"critica": "crítica", "alta": "alta", "media": "média", "baixa": "baixa"}
+    linhas = [f"Passagem de plantão: últimas {horas} horas", ""]
+    linhas.append(f"Abertos: {len(abertos)}, dos quais {sum(1 for c in abertos if c['atrasado'])} atrasados.")
+    linhas.append(f"Novos: {len(novos)}. Encerrados: {len(encerrados)}.")
+    for c in abertos:
+        linhas.append(f"- #{c['id']} {c['titulo']} ({rotulos[c['severidade']]}{', atrasado' if c['atrasado'] else ''}), com {c['responsavel_nome'] or 'ninguém'}"
+                      + (f"; {c['hipoteses']} hipótese(s) aberta(s)" if c["hipoteses"] else ""))
+    return {"horas": horas, "novos": novos, "encerrados": encerrados, "abertos": abertos, "texto": "\n".join(linhas)}
+
+
+def _guardar_evidencia(con, sessao, caso, tipo, nome, tipo_midia, descricao, conteudo):
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    evidencia_id = con.execute(
+        """INSERT INTO casos_evidencias (cliente_id, caso_id, tipo, nome, tipo_midia, descricao, conteudo, tamanho, sha256, adicionado_por, adicionado_por_nome)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (sessao["cliente_id"], caso, tipo, nome, tipo_midia, descricao, conteudo, len(conteudo), resumo, sessao["usuario_id"], sessao["nome"])).fetchone()["id"]
+    _nota_do_caso(con, sessao, caso, f"Anexou a evidência \"{nome}\" ({len(conteudo):,} bytes, SHA-256 {resumo}).".replace(",", ".", 1), automatica=True)
+    con.execute("UPDATE casos SET atualizado_em = now() WHERE id = %s", (caso,))
+    con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'anexar_evidencia', %s)",
+                (sessao["cliente_id"], sessao["usuario_id"], f"caso {caso} {nome[:120]} sha256:{resumo}"))
+    return evidencia_id, resumo
+
+
+@app.post("/api/casos/{identificador}/evidencias/pacote", status_code=201)
+def pacote_do_caso(identificador: int, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    """O pacote de prova dos eventos do caso, com os selos, guardado no próprio caso."""
+    _inteiro_valido(identificador)
+    if not permissoes.pode(sessao["perfil"], permissoes.VER_BRUTO):
+        raise HTTPException(status_code=403, detail="Seu perfil não pode gerar o pacote de prova, que leva o log como chegou.")
+    _exige_o_original(sessao)
+    with do_cliente(request, sessao) as con:
+        caso = con.execute("SELECT titulo FROM casos WHERE id = %s", (identificador,)).fetchone()
+        if not caso:
+            raise HTTPException(status_code=404)
+        ids = [l["origem_id"] for l in con.execute(
+            """SELECT DISTINCT v.origem_id, v.ocorrido_em FROM casos_itens i
+               JOIN eventos v ON (i.tipo = 'evento' AND v.id = i.item_id) OR (i.tipo = 'grupo' AND v.grupo_id = i.item_id)
+               WHERE i.caso_id = %s ORDER BY v.ocorrido_em LIMIT %s""", (identificador, evidencia.LIMITE_DE_EVENTOS + 1)).fetchall()]
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+    if not ids:
+        raise HTTPException(status_code=409, detail="O caso ainda não tem alerta nem evento para levar no pacote.")
+    if len(ids) > evidencia.LIMITE_DE_EVENTOS:
+        raise HTTPException(status_code=409, detail=f"O caso tem mais de {evidencia.LIMITE_DE_EVENTOS} eventos. Tire alguns ou gere o pacote pela tela Prova e evidência.")
+    descricao = [("Caso", f"#{identificador} {caso['titulo']}"), ("Eventos no pacote", str(len(ids)))]
+    try:
+        with do_cliente(request, sessao) as con:
+            pacotes = evidencia.montar_pacotes(con, request.app.state.indexer, INDEXER_URL, gerenciadores, "alertas", ids, selagem.ler_chave_publica(),
+                                               **_armazem_da_pericia(request, sessao))
+        conteudo = evidencia.gerar_zip_de_varios(pacotes, sessao, relatorios.gerar_pdf, descricao=descricao)
+    except evidencia.EvidenciaRecusada as erro:
+        raise HTTPException(status_code=409, detail=str(erro))
+    nome = f"caso-{identificador}-evidencia-{datetime.now(timezone.utc):%Y%m%d-%H%M}.zip"
+    with do_cliente(request, sessao) as con:
+        evidencia_id, resumo = _guardar_evidencia(con, sessao, identificador, "pacote", nome, "application/zip", f"{len(ids)} eventos com os selos", conteudo)
+    return {"id": evidencia_id, "sha256": resumo}
+
+
+@app.post("/api/casos/{identificador}/evidencias/arquivo", status_code=201)
+def anexar_ao_caso(identificador: int, dados: ArquivoDoCaso, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    _inteiro_valido(identificador)
+    try:
+        conteudo = base64.b64decode(dados.conteudo, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="O arquivo não chegou inteiro. Tente de novo.")
+    if not conteudo or len(conteudo) > TAMANHO_DA_EVIDENCIA:
+        raise HTTPException(status_code=422, detail="O arquivo precisa ter até 10 MB.")
+    nome = re.sub(r"[\\/\x00-\x1f]", "_", dados.nome.strip())[:200] or "arquivo"
+    tipo_midia = dados.tipo_midia if re.fullmatch(r"[\w.+-]+/[\w.+-]+", dados.tipo_midia) else "application/octet-stream"
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT 1 FROM casos WHERE id = %s", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        evidencia_id, resumo = _guardar_evidencia(con, sessao, identificador, "arquivo", nome, tipo_midia, dados.descricao.strip(), conteudo)
+    return {"id": evidencia_id, "sha256": resumo}
+
+
+@app.get("/api/casos/{identificador}/evidencias/{evidencia_id}")
+def baixar_evidencia_do_caso(identificador: int, evidencia_id: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    """Sai como anexo e nunca é mostrado na tela: um HTML anexado não roda dentro da console."""
+    _inteiro_valido(identificador)
+    _inteiro_valido(evidencia_id)
+    _exige_o_original(sessao)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("SELECT nome, conteudo, sha256 FROM casos_evidencias WHERE id = %s AND caso_id = %s", (evidencia_id, identificador)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'baixar_evidencia', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"caso {identificador} {linha['nome'][:120]} sha256:{linha['sha256']}"))
+    nome = re.sub(r'[^\w.-]', "_", linha["nome"])[:120]
+    return Response(bytes(linha["conteudo"]), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": linha["sha256"], "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/api/panorama")
@@ -1528,6 +1810,41 @@ def evento_bruto(identificador: int, request: Request, sessao=Depends(exige(perm
 CAMPOS_DE_LOG = ("agent.name", "location", "decoder.name", "data.srcip", "data.srcuser", "data.dstuser", "data.protocol", "predecoder.program_name")
 
 
+def _armazem_da_organizacao(request, con, sessao):
+    """{"armazem", "banco"} quando a organização lê do armazém de eventos; vazio quando lê do indexador, inclusive quando
+    ela ainda não tem banco no armazém (gerenciador recém-criado, instalação antiga no meio da troca)."""
+    if request.app.state.armazem is None or not con.execute("SELECT ler_do_armazem FROM clientes").fetchone()["ler_do_armazem"]:
+        return {}
+    banco = armazem_de_eventos.banco_do(sessao["cliente_id"])
+    if not _banco_no_armazem(request, banco):
+        return {}
+    return {"armazem": request.app.state.armazem, "banco": banco}
+
+
+BANCOS_VISTOS = {}
+SEGUNDOS_DO_CACHE_DE_BANCOS = 60
+
+
+def _banco_no_armazem(request, banco):
+    """Se o banco existe, lembrado por um minuto: a pergunta é a mesma em toda requisição da organização."""
+    agora = time.monotonic()
+    visto = BANCOS_VISTOS.get(banco)
+    if visto is None or agora - visto[1] > SEGUNDOS_DO_CACHE_DE_BANCOS:
+        try:
+            existe = request.app.state.armazem.linhas("SELECT count() AS n FROM system.databases WHERE name = {b:String}", {"b": banco})[0]["n"] not in (0, "0")
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+            existe = False
+        visto = BANCOS_VISTOS[banco] = (existe, agora)
+    return visto[0]
+
+
+def _armazem_da_pericia(request, sessao):
+    """Para buscar os eventos selados no armazém: o pacote vê pelo id de onde cada evento veio."""
+    if request.app.state.armazem is None:
+        return {}
+    return {"armazem": request.app.state.armazem, "banco": armazem_de_eventos.banco_do(sessao["cliente_id"])}
+
+
 def _filtros_de_campo(texto):
     """Filtros clicados na tela: [{"campo", "valor", "negar"}]. Só viram comparação exata de campo."""
     if not texto:
@@ -1567,10 +1884,13 @@ def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=T
     pedido, condicoes, exclusoes = _consulta_de_logs(busca, filtros)
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        onde = _armazem_da_organizacao(request, con, sessao)
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'buscar_logs', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], (busca or "*")[:800] + (f" {filtros[:400]}" if filtros else "")))
     if not gerenciadores:
         return {"logs": [], "proximo": None, "total": 0, "linha_do_tempo": [], "campos": {}, "colunas": pedido.colunas, "contagem": None}
+    if onde:
+        return _logs_do_armazem(onde, pedido, condicoes, exclusoes, dias, depois_de)
 
     condicoes.append({"range": {"timestamp": {"gte": f"now-{dias}d"}}})
     condicoes.append(pedido.filtro)
@@ -1630,6 +1950,31 @@ def logs(request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=T
     }
 
 
+def _logs_do_armazem(onde, pedido, condicoes, exclusoes, dias, depois_de):
+    """A mesma resposta de /api/logs, lida do armazém de eventos."""
+    cursor = None
+    if depois_de:
+        try:
+            cursor = json.loads(depois_de)
+        except ValueError:
+            raise HTTPException(status_code=422)
+        if not (isinstance(cursor, list) and len(cursor) == 2 and isinstance(cursor[0], int) and isinstance(cursor[1], str)
+                and re.fullmatch(r"[0-9a-f-]{36}", cursor[1])):
+            raise HTTPException(status_code=422)
+    tamanho = min(pedido.limite, TAMANHO_DA_PAGINA) if pedido.limite else TAMANHO_DA_PAGINA
+    try:
+        r = leitor_armazem.logs(onde["armazem"], onde["banco"], pedido, condicoes, exclusoes, dias, cursor, tamanho, CAMPOS_DE_LOG, not depois_de)
+    except linguagem_de_consulta.ConsultaInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    except armazem_de_eventos.ArmazemRecusou:
+        raise HTTPException(status_code=422, detail="Este campo não aceita essa operação. Tente outro campo.")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.")
+    tem_mais = len(r["logs"]) == TAMANHO_DA_PAGINA and not pedido.limite
+    return {"logs": r["logs"], "proximo": json.dumps(r["cursor"]) if tem_mais and not pedido.ordem else None, "colunas": pedido.colunas,
+            "contagem": r["contagem"], "total": r["total"], "total_exato": r["total_exato"], "linha_do_tempo": r["linha_do_tempo"], "campos": r["campos"]}
+
+
 class PacoteDePericia(BaseModel):
     busca: str = Field(default="", max_length=2000)
     dias: int = Field(default=7, ge=1, le=90)
@@ -1648,8 +1993,13 @@ def pacote_de_pericia(dados: PacoteDePericia, request: Request, sessao=Depends(e
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         # Só entra o que já foi selado: o último trecho de cada gerenciador ainda está esperando o selo.
         cobertos = {l["gerenciador_id"]: l["ate"] for l in con.execute("SELECT gerenciador_id, max(fim) AS ate FROM selos WHERE fonte = 'logs' GROUP BY 1").fetchall()}
+        onde = _armazem_da_organizacao(request, con, sessao)
+        selados_no_armazem = {l["gerenciador_id"]: l["ate"] for l in con.execute(
+            "SELECT gerenciador_id, max(fim) AS ate FROM selos WHERE fonte = 'logs' AND origem = 'armazem' GROUP BY 1").fetchall()} if onde else {}
     if not gerenciadores:
         raise HTTPException(status_code=404)
+    if selados_no_armazem:
+        return _pericia_do_armazem(request, sessao, dados, busca, pedido, condicoes, exclusoes, gerenciadores, onde, selados_no_armazem)
     indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
     base = [*condicoes, {"range": {"timestamp": {"gte": f"now-{dados.dias}d"}}}, pedido.filtro]
     selados = {"bool": {"should": [{"bool": {"filter": [{"prefix": {"_index": f"wazuh-archives-4.x-{g}-"}}, {"range": {"timestamp": {"lt": ate.isoformat()}}}]}}
@@ -1685,6 +2035,35 @@ def pacote_de_pericia(dados: PacoteDePericia, request: Request, sessao=Depends(e
     try:
         with do_cliente(request, sessao) as con:
             pacotes = evidencia.montar_pacotes(con, request.app.state.indexer, INDEXER_URL, gerenciadores, "logs", ids, selagem.ler_chave_publica())
+        conteudo = evidencia.gerar_zip_de_varios(pacotes, sessao, relatorios.gerar_pdf, descricao=descricao)
+    except evidencia.EvidenciaRecusada as erro:
+        raise HTTPException(status_code=409, detail=str(erro))
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_evidencia_de_periodo', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.dias}d {(busca or '*')[:300]} {dados.filtros[:300]} {len(ids)} logs sha256:{resumo}"))
+    nome = f"pericia-roar-{datetime.now(timezone.utc):%Y%m%d-%H%M}.zip"
+    return Response(conteudo, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo,
+                                                                    "X-Logs": str(len(ids)), "X-Fora-Do-Pacote": str(todos - len(ids))})
+
+
+def _pericia_do_armazem(request, sessao, dados, busca, pedido, condicoes, exclusoes, gerenciadores, onde, selados):
+    """O mesmo pacote de perícia, com os logs e os selos do armazém de eventos."""
+    try:
+        ids, todos = leitor_armazem.ids_para_pericia(onde["armazem"], onde["banco"], pedido, condicoes, exclusoes, dados.dias, selados, evidencia.LIMITE_DO_PERIODO)
+    except linguagem_de_consulta.ConsultaInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    if len(ids) > evidencia.LIMITE_DO_PERIODO:
+        raise HTTPException(status_code=409, detail=f"A busca acha mais de {evidencia.LIMITE_DO_PERIODO:,} logs. Diminua o período ou refine a busca.".replace(",", "."))
+    if not ids:
+        raise HTTPException(status_code=409, detail="Nenhum log selado com essa busca nesse período. Os mais recentes são selados em até 30 minutos.")
+    descricao = [("Período", f"últimos {dados.dias} {'dia' if dados.dias == 1 else 'dias'}"), ("Busca", busca or "todos os logs"),
+                 ("Filtros", dados.filtros or "nenhum"), ("Logs no pacote", f"{len(ids):,}".replace(",", ".")),
+                 ("Fora do pacote", f"{todos - len(ids)} log(s) ainda não selado(s), dos últimos minutos" if todos > len(ids) else "nenhum")]
+    try:
+        with do_cliente(request, sessao) as con:
+            pacotes = evidencia.montar_pacotes(con, request.app.state.indexer, INDEXER_URL, gerenciadores, "logs", ids, selagem.ler_chave_publica(),
+                                               armazem=onde["armazem"], banco=onde["banco"])
         conteudo = evidencia.gerar_zip_de_varios(pacotes, sessao, relatorios.gerar_pdf, descricao=descricao)
     except evidencia.EvidenciaRecusada as erro:
         raise HTTPException(status_code=409, detail=str(erro))
@@ -1800,7 +2179,8 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
     chave, mapa = catalogo_de_normas.origem(norma)
     # A gaveta procura as regras pela marcação que vem nelas: a da LGPD é a do GDPR.
     return {"norma": norma, "chave": chave, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma,
-            "derivada_de": NORMAS_CONHECIDAS[chave] if mapa else None, "so_pelas_checagens": norma in catalogo_de_normas.SO_PELAS_CHECAGENS}
+            "derivada_de": catalogo_de_normas.NOMES_DA_ORIGEM.get(chave, chave) if mapa else None, "explicacao": catalogo_de_normas.EXPLICACOES.get(norma),
+            "so_pelas_checagens": norma in catalogo_de_normas.SO_PELAS_CHECAGENS}
 
 
 @app.get("/api/normas/relatorio")
@@ -1948,7 +2328,7 @@ def historico_de_relatorios(request: Request, sessao=Depends(exige(permissoes.VE
         l["pode_apagar"] = _pode_apagar_relatorio(sessao, l)
         # Quem vê mascarado não baixa o que saiu sem máscara.
         l["pode_baixar"] = l["mascarado"] or not mascarado
-        l["norma_nome"] = NORMAS_CONHECIDAS.get(l["norma"]) if l["norma"] else None
+        l["norma_nome"] = (NORMAS_CONHECIDAS.get(l["norma"]) or l["norma"]) if l["norma"] else None
         del l["gerado_por"]
     return {"relatorios": linhas}
 
@@ -2041,7 +2421,8 @@ def gerar_evidencia(dados: PedidoDeEvidencia, request: Request, sessao=Depends(e
             gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
             if not gerenciadores:
                 raise HTTPException(status_code=404)
-            pacote, ancoras = evidencia.montar_pacote(con, request.app.state.indexer, INDEXER_URL, gerenciadores, dados.fonte, ids, selagem.ler_chave_publica())
+            pacote, ancoras = evidencia.montar_pacote(con, request.app.state.indexer, INDEXER_URL, gerenciadores, dados.fonte, ids, selagem.ler_chave_publica(),
+                                                      **_armazem_da_pericia(request, sessao))
         conteudo = evidencia.gerar_zip(pacote, ancoras, sessao, relatorios.gerar_pdf)
     except evidencia.EvidenciaRecusada as erro:
         raise HTTPException(status_code=409, detail=str(erro))
@@ -2353,6 +2734,141 @@ def mudar_ativo_de_vulnerabilidade(identificador: int, dados: MudancaDeAtivo, re
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_peso_de_ativo', %s)", (sessao["cliente_id"], sessao["usuario_id"], f"{identificador} peso {dados.peso}"))
 
 
+class DominioExterno(BaseModel):
+    dominio: str = Field(min_length=3, max_length=253)
+    # Quem cadastra declara que a organização é dona do domínio ou tem autorização para varrer.
+    autorizado: bool = False
+    descobrir_a_cada_horas: int = Field(default=24, ge=6, le=720)
+    conferir_a_cada_horas: int = Field(default=6, ge=1, le=168)
+
+
+class MudancaDeDominio(BaseModel):
+    ativo: bool = True
+    descobrir_a_cada_horas: int = Field(default=24, ge=6, le=720)
+    conferir_a_cada_horas: int = Field(default=6, ge=1, le=168)
+
+
+DOMINIO = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}")
+
+
+@app.get("/api/vuln/superficie")
+def superficie_externa(request: Request, sessao=Depends(exige(permissoes.VER))):
+    """Os domínios com o andamento da fila (quantos nomes já foram conferidos, quantos esperam e quem está sendo conferido
+    agora) e os nomes encontrados."""
+    with do_cliente(request, sessao) as con:
+        dominios = con.execute("""SELECT d.id, d.dominio, d.autorizado_por_nome, d.autorizado_em, d.ativo, d.descobrir_a_cada_horas, d.conferir_a_cada_horas,
+                                         d.proxima_descoberta, d.ultima_descoberta, d.ultimo_erro,
+                                         count(h.id) FILTER (WHERE NOT h.sumiu) AS nomes,
+                                         count(h.id) FILTER (WHERE NOT h.sumiu AND h.conferido_em IS NOT NULL) AS conferidos,
+                                         count(h.id) FILTER (WHERE NOT h.sumiu AND h.proxima_conferencia <= now()) AS na_fila,
+                                         max(h.nome) FILTER (WHERE h.conferindo_desde > now() - interval '10 minutes') AS conferindo_agora,
+                                         min(h.proxima_conferencia) FILTER (WHERE NOT h.sumiu) AS proxima_conferencia
+                                  FROM superficie_dominios d LEFT JOIN superficie_hosts h ON h.dominio_id = d.id
+                                  GROUP BY d.id ORDER BY d.dominio""").fetchall()
+        hosts = con.execute("""SELECT h.id, h.dominio_id, h.nome, h.ips, h.origem, h.interno, h.sumiu, h.portas, h.servicos, h.email, h.cname, h.tls_vence, h.tls_emissor, h.tls_problema,
+                                      h.conferido_em, h.proxima_conferencia, coalesce(h.conferindo_desde > now() - interval '10 minutes', false) AS conferindo,
+                                      h.primeira_vez, h.ultima_vez, t.id AS ativo_id,
+                                      (SELECT count(*) FROM vuln_achados a WHERE a.ativo_id = t.id AND a.fonte = 'externa'
+                                        AND a.estado IN ('aberto', 'correcao_informada')) AS abertos
+                               FROM superficie_hosts h LEFT JOIN vuln_ativos t ON t.host = h.nome
+                               ORDER BY h.sumiu, h.interno, h.nome LIMIT 5000""").fetchall()
+        mudancas = con.execute("SELECT id, dominio_id, nome, tipo, detalhe, em FROM superficie_mudancas ORDER BY em DESC, id DESC LIMIT 500").fetchall()
+        nota = nota_externa.calcular(con)
+    return {"dominios": dominios, "hosts": hosts, "mudancas": mudancas, "nota": nota}
+
+
+@app.get("/api/vuln/superficie/nomes/{identificador}/servicos/{indice}")
+def cves_do_servico(identificador: int, indice: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    """As CVEs que pegam o serviço, refeitas na hora (a base muda todo dia), com a situação de cada uma: confirmada pelo
+    pacote da distribuição, corrigida pela distribuição, a confirmar, pela versão, ou já explorada no produto (quando a
+    versão não aparece)."""
+    _inteiro_valido(identificador)
+    colunas = "c.cve, coalesce(c.titulo, left(c.descricao, 200)) AS titulo, c.cvss, c.epss, c.kev_desde, c.kev_ransomware, c.prioridade"
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("SELECT nome, servicos FROM superficie_hosts WHERE id = %s", (identificador,)).fetchone()
+        if not linha or not 0 <= indice < len(linha["servicos"]):
+            raise HTTPException(status_code=404)
+        servico = linha["servicos"][indice]
+        produtos = superficie_externa_.PRODUTOS_DO_SERVICO.get(servico.get("nome"), [])
+        tipo, versao, pacote = servico.get("tipo", "servico"), servico.get("versao"), servico.get("pacote") or {}
+        if tipo == "borda" or not versao:
+            # Sem versão, não dá para dizer quais pegam: mostra as que já foram exploradas no produto, para conferir no equipamento.
+            cves = con.execute(f"""SELECT DISTINCT ON (c.cve) {colunas}, 'explorada_no_produto' AS situacao FROM cves_versoes v JOIN cves c ON c.cve = v.cve
+                                    WHERE v.produto = ANY(%s) AND c.kev_desde IS NOT NULL AND NOT c.rejeitado""", (produtos,)).fetchall()
+        else:
+            candidatas = con.execute(f"""SELECT v.exata, v.desde, v.desde_incluida, v.ate, v.ate_incluida, {colunas}
+                                         FROM cves_versoes v JOIN cves c ON c.cve = v.cve WHERE v.produto = ANY(%s) AND NOT c.rejeitado""", (produtos,)).fetchall()
+            pela_versao = {}
+            for c in candidatas:
+                if c["cve"] not in pela_versao and superficie_externa_.afeta(versao, c["exata"], c["desde"], c["desde_incluida"], c["ate"], c["ate_incluida"]):
+                    pela_versao[c["cve"]] = {k: c[k] for k in ("cve", "titulo", "cvss", "epss", "kev_desde", "kev_ransomware", "prioridade")}
+            abertas = None
+            if pacote.get("confirmado"):
+                guardada = con.execute("SELECT cves FROM distro_consultas WHERE distribuicao = %s AND pacote = %s AND versao = %s",
+                                       (pacote.get("distribuicao"), pacote.get("nome"), pacote.get("versao"))).fetchone()
+                abertas = set(guardada["cves"] or []) if guardada else None
+            if abertas is not None:
+                # A distribuição é quem sabe: a que ainda pega o pacote vale, mesmo que a faixa da NVD não a tenha trazido.
+                extras = con.execute(f"SELECT {colunas} FROM cves c WHERE c.cve = ANY(%s) AND NOT c.rejeitado", (list(abertas - set(pela_versao)),)).fetchall()
+                cves = [{**c, "situacao": "confirmada" if c["cve"] in abertas else "corrigida_na_distribuicao"} for c in [*pela_versao.values(), *extras]]
+            else:
+                cves = [{**c, "situacao": "a_confirmar" if servico.get("distribuicao") else "pela_versao"} for c in pela_versao.values()]
+    ordem = ["agora", "alta", "media", "baixa", "sem_dados"]
+    situacoes = ["confirmada", "pela_versao", "explorada_no_produto", "a_confirmar", "corrigida_na_distribuicao"]
+    lista = sorted(cves, key=lambda c: (situacoes.index(c["situacao"]), ordem.index(c["prioridade"]), -(c["epss"] or 0), -(c["cvss"] or 0), c["cve"]))
+    return {"nome": linha["nome"], "servico": servico, "cves": lista}
+
+
+@app.post("/api/vuln/superficie", status_code=201)
+def cadastrar_dominio(dados: DominioExterno, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    dominio = dados.dominio.strip().lower().removeprefix("http://").removeprefix("https://").split("/")[0].rstrip(".")
+    if not DOMINIO.fullmatch(dominio):
+        raise HTTPException(status_code=422, detail="Use só o domínio, como empresa.com.br.")
+    if not dados.autorizado:
+        raise HTTPException(status_code=422, detail="Confirme que a organização é dona do domínio ou tem autorização para varrê-lo.")
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("""INSERT INTO superficie_dominios (cliente_id, dominio, autorizado_por, autorizado_por_nome, descobrir_a_cada_horas, conferir_a_cada_horas)
+                                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                                (sessao["cliente_id"], dominio, sessao["usuario_id"], sessao["nome"], dados.descobrir_a_cada_horas, dados.conferir_a_cada_horas)).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'cadastrar_dominio_externo', %s)",
+                        (sessao["cliente_id"], sessao["usuario_id"], f"{dominio}, declarado como da organização"))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Este domínio já está cadastrado.")
+    return {"id": linha["id"]}
+
+
+@app.put("/api/vuln/superficie/{identificador}", status_code=204)
+def mudar_dominio(identificador: int, dados: MudancaDeDominio, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE superficie_dominios SET ativo = %s, descobrir_a_cada_horas = %s, conferir_a_cada_horas = %s WHERE id = %s RETURNING id",
+                           (dados.ativo, dados.descobrir_a_cada_horas, dados.conferir_a_cada_horas, identificador)).fetchone():
+            raise HTTPException(status_code=404)
+
+
+@app.post("/api/vuln/superficie/{identificador}/agora", status_code=204)
+def varrer_dominio_agora(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    """Põe o domínio na frente da descoberta e os nomes dele na fila. Continua um por vez: só muda a ordem."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE superficie_dominios SET proxima_descoberta = now() WHERE id = %s AND ativo RETURNING id", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        con.execute("UPDATE superficie_hosts SET proxima_conferencia = now() WHERE dominio_id = %s AND NOT sumiu AND proxima_conferencia > now()", (identificador,))
+
+
+@app.delete("/api/vuln/superficie/{identificador}", status_code=204)
+def tirar_dominio(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_VULNERABILIDADES))):
+    """Os achados já feitos continuam em Vulnerabilidades, com a história: tirar o domínio não apaga o que foi visto."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("DELETE FROM superficie_dominios WHERE id = %s RETURNING dominio", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'tirar_dominio_externo', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], linha["dominio"]))
+
+
 @app.get("/api/vuln/modelos")
 def modelos_de_varredura(request: Request, sessao=Depends(exige(permissoes.VER))):
     with do_cliente(request, sessao) as con:
@@ -2512,8 +3028,19 @@ def volume(request: Request, sessao=Depends(exige(permissoes.VER)), dias: int = 
     with do_cliente(request, sessao) as con:
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         prazos = con.execute("SELECT retencao_alertas_dias, retencao_logs_dias FROM clientes").fetchone()
+        onde = _armazem_da_organizacao(request, con, sessao)
     if not gerenciadores:
         return {"logs": None, "alertas": None, "dias": dias}
+    if onde:
+        try:
+            resposta = {"logs": leitor_armazem.volume(onde["armazem"], onde["banco"], "logs", dias, HORAS_DE_EPS, AMOSTRA_DE_TAMANHO),
+                        "alertas": leitor_armazem.volume(onde["armazem"], onde["banco"], "alertas", dias, HORAS_DE_EPS, AMOSTRA_DE_TAMANHO), "dias": dias}
+            resposta["ocupado"] = leitor_armazem.ocupado(onde["armazem"], onde["banco"])
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException, KeyError, ValueError):
+            raise HTTPException(status_code=503, detail="Não foi possível medir o volume agora.")
+        resposta["ocupado_bytes"] = resposta["ocupado"]["logs"] + resposta["ocupado"]["alertas"]
+        resposta["ocupado"].update(prazos)
+        return resposta
     logs = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
     alertas = ",".join(f"wazuh-alerts-4.x-{g}-*" for g in gerenciadores)
     try:
@@ -2537,8 +3064,36 @@ class Armazenamento(BaseModel):
 @app.get("/api/organizacao/armazenamento")
 def ver_armazenamento(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     with do_cliente(request, sessao) as con:
-        dados = con.execute("SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs, armazenamento_estado AS estado, armazenamento_mensagem AS mensagem FROM clientes").fetchone()
-    return {**dados, "arquivo": _ultima_copia_fria(request.app.state.indexer)}
+        dados = con.execute("""SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs, armazenamento_estado AS estado,
+                                      armazenamento_mensagem AS mensagem, ler_do_armazem FROM clientes""").fetchone()
+    return {**dados, "arquivo": _ultima_copia_fria(request.app.state.indexer), "armazem_disponivel": _armazem_disponivel(request, sessao)}
+
+
+def _armazem_disponivel(request, sessao):
+    """A organização já tem banco no armazém de eventos: algum gerenciador dela tem coletor."""
+    armazem = request.app.state.armazem
+    if armazem is None:
+        return False
+    try:
+        return bool(armazem.linhas("SELECT count() AS n FROM system.databases WHERE name = {b:String}",
+                                   {"b": armazem_de_eventos.banco_do(sessao["cliente_id"])})[0]["n"] not in (0, "0"))
+    except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+        return False
+
+
+class LeituraDoArmazem(BaseModel):
+    ler: bool
+
+
+@app.put("/api/organizacao/armazenamento/leitura", status_code=204)
+def definir_leitura_do_armazem(dados: LeituraDoArmazem, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Durante a migração: a tela de logs, os painéis e as buscas agendadas passam a ler do armazém novo, ou voltam ao indexador."""
+    if dados.ler and not _armazem_disponivel(request, sessao):
+        raise HTTPException(status_code=409, detail="Esta organização ainda não tem o armazém novo.")
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_leitura_do_armazem(%s)", (dados.ler,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_leitura_do_armazem', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], "armazém novo" if dados.ler else "indexador"))
 
 
 class Recuperacao(BaseModel):
@@ -2748,7 +3303,7 @@ def _valores_do_evento(ip, bruto):
     dados = bruto.get("data") if isinstance(bruto.get("data"), dict) else {}
     arquivo = bruto.get("syscheck") if isinstance(bruto.get("syscheck"), dict) else {}
     saida = defaultdict(set)
-    for candidato in (ip, dados.get("srcip"), dados.get("dstip")):
+    for candidato in (ip, *(dados.get(c) for c in CAMPOS_DE_IP_DE_ORIGEM + CAMPOS_DE_IP_DE_DESTINO)):
         try:
             saida["ip"].add(str(ipaddress.ip_address(str(candidato))))
         except ValueError:
@@ -2764,11 +3319,17 @@ def _valores_do_evento(ip, bruto):
     return saida
 
 
-def _contar_nos_logs(request, con, indicadores, dias):
+def _contar_nos_logs(request, con, sessao, indicadores, dias):
     """Quantas vezes cada indicador aparece nos logs brutos, inclusive os que não viraram alerta."""
     gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
     if not gerenciadores or not indicadores:
         return {}
+    onde = _armazem_da_organizacao(request, con, sessao)
+    if onde:
+        try:
+            return leitor_armazem.contar_indicadores(onde["armazem"], onde["banco"], indicadores, dias)
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+            return {}
     indices = ",".join(f"wazuh-archives-4.x-{g}-*" for g in gerenciadores)
     linhas = []
     for _, valor in indicadores:
@@ -2825,7 +3386,7 @@ def cacar_indicadores(dados: Caca, request: Request, sessao=Depends(exige(permis
             "SELECT DISTINCT tipo, valor FROM intel_indicadores WHERE valor = ANY(%s)", ([v for _, v in reconhecidos],)).fetchall()}
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'cacar_indicadores', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{len(reconhecidos)} indicadores, {dados.dias} dias, {len(achados)} eventos"))
-        nos_logs = _contar_nos_logs(request, con, list(reconhecidos), dados.dias) if permissoes.pode(sessao["perfil"], permissoes.VER_BRUTO) else {}
+        nos_logs = _contar_nos_logs(request, con, sessao, list(reconhecidos), dados.dias) if permissoes.pode(sessao["perfil"], permissoes.VER_BRUTO) else {}
     achados.sort(key=lambda a: a["ocorrido_em"], reverse=True)
     return {"dias": dados.dias, "ignorados": ignorados,
             "indicadores": [{"tipo": t, "valor": v, "eventos": contagem[(t, v)], "logs": nos_logs.get((t, v)), "vigiado": (t, v) in vigiados}
@@ -3202,6 +3763,405 @@ def converter_regra(dados: RegraNova, sessao=Depends(exige(permissoes.GERIR_REGR
     return {"titulo": titulo, "sigma": origem, "xml": xml, "regras_geradas": ramos}
 
 
+EMAIL = re.compile(r"[^@\s<>,;\"']{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}")
+SEGUNDOS_ESPERANDO_O_EMAIL_DE_TESTE = 40
+
+
+class ConfiguracaoDeEmail(BaseModel):
+    servidor: str = Field(pattern=r"^[A-Za-z0-9.-]{1,253}$")
+    porta: int
+    seguranca: str = Field(pattern="^(starttls|ssl)$")
+    usuario: str = Field(default="", max_length=200)
+    # None mantém a senha guardada; texto vazio tira.
+    senha: str | None = Field(default=None, max_length=500)
+    remetente: str = Field(max_length=254)
+    destinatarios: list[str] = Field(min_length=1, max_length=20)
+    tipos: list[str] = Field(default_factory=list, max_length=40)
+    ativo: bool = True
+
+
+@app.get("/api/organizacao/email")
+def email_da_organizacao(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        config = con.execute("""SELECT servidor, porta, seguranca, usuario, remetente, destinatarios, tipos, ativo, ultimo_envio, ultimo_erro, teste_resultado, teste_em
+                                FROM email_config""").fetchone()
+        tem_senha = con.execute("SELECT 1 FROM segredos WHERE nome = %s", (avisos_por_email.SEGREDO,)).fetchone() is not None
+    return {"config": config, "tem_senha": tem_senha, "tipos": avisos_por_email.NOMES}
+
+
+@app.put("/api/organizacao/email", status_code=204)
+def configurar_email(dados: ConfiguracaoDeEmail, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    if dados.porta not in (25, 465, 587, 2525):
+        raise HTTPException(status_code=422, detail="Use a porta 25, 465, 587 ou 2525.")
+    enderecos = [e.strip() for e in dados.destinatarios if e.strip()]
+    if not EMAIL.fullmatch(dados.remetente.strip()) or not enderecos or not all(EMAIL.fullmatch(e) for e in enderecos):
+        raise HTTPException(status_code=422, detail="Confira o remetente e os destinatários: cada um precisa ser um e-mail.")
+    with do_cliente(request, sessao) as con:
+        # Começa do aviso mais novo: ligar o e-mail não manda o sino inteiro do passado.
+        ultima = con.execute("SELECT coalesce(max(id), 0) AS n FROM notificacoes").fetchone()["n"]
+        valores = (dados.servidor, dados.porta, dados.seguranca, dados.usuario.strip(), dados.remetente.strip(), enderecos, sorted(set(dados.tipos)), dados.ativo)
+        con.execute("""INSERT INTO email_config (cliente_id, servidor, porta, seguranca, usuario, remetente, destinatarios, tipos, ativo, ultima_notificacao, atualizado_por)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (cliente_id) DO UPDATE SET servidor = EXCLUDED.servidor, porta = EXCLUDED.porta, seguranca = EXCLUDED.seguranca, usuario = EXCLUDED.usuario,
+                         remetente = EXCLUDED.remetente, destinatarios = EXCLUDED.destinatarios, tipos = EXCLUDED.tipos, ativo = EXCLUDED.ativo,
+                         atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
+                    (sessao["cliente_id"], *valores, ultima, sessao["usuario_id"]))
+        if dados.senha is not None:
+            con.execute("DELETE FROM segredos WHERE nome = %s", (avisos_por_email.SEGREDO,))
+            if dados.senha:
+                con.execute("INSERT INTO segredos (cliente_id, nome, selado, criado_por) VALUES (%s, %s, %s, %s)",
+                            (sessao["cliente_id"], avisos_por_email.SEGREDO, cofre.selar(cofre.ler_publica(), sessao["cliente_id"], avisos_por_email.SEGREDO, dados.senha),
+                             sessao["usuario_id"]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'configurar_email', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{dados.servidor}:{dados.porta} para {len(enderecos)} destinatários"))
+
+
+@app.delete("/api/organizacao/email", status_code=204)
+def tirar_email(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    with do_cliente(request, sessao) as con:
+        con.execute("DELETE FROM email_config")
+        con.execute("DELETE FROM segredos WHERE nome = %s", (avisos_por_email.SEGREDO,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'tirar_email', 'avisos por e-mail')", (sessao["cliente_id"], sessao["usuario_id"]))
+
+
+@app.post("/api/organizacao/email/teste")
+def testar_email(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Quem manda é o serviço de avisos, que abre a senha: o pedido fica marcado e a resposta volta em alguns segundos."""
+    with do_cliente(request, sessao) as con:
+        if not con.execute("UPDATE email_config SET teste_pedido_em = now(), teste_resultado = NULL RETURNING 1").fetchone():
+            raise HTTPException(status_code=409, detail="Salve a configuração antes de testar.")
+    fim = time.monotonic() + SEGUNDOS_ESPERANDO_O_EMAIL_DE_TESTE
+    while time.monotonic() < fim:
+        time.sleep(0.5)
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("SELECT teste_pedido_em, teste_resultado FROM email_config").fetchone()
+        if linha and linha["teste_pedido_em"] is None and linha["teste_resultado"]:
+            if linha["teste_resultado"] != "ok":
+                raise HTTPException(status_code=422, detail=linha["teste_resultado"])
+            return {"enviado": True}
+    raise HTTPException(status_code=504, detail="O servidor de e-mail demorou para responder. Tente de novo em instantes.")
+
+
+class BlocoDeBusca(BaseModel):
+    texto: str = Field(default="", max_length=2000)
+    tipo: str = Field(pattern="^(numero|serie|rosca|barras|top|mapa|tabela)$")
+    minutos: int
+    campo: str | None = Field(default=None, max_length=120)
+    tamanho: int = Field(default=10, ge=1, le=blocos_de_busca.MAXIMO_DE_LINHAS)
+
+
+class BlocoDePainel(BlocoDeBusca):
+    titulo: str = Field(min_length=1, max_length=80)
+    # Colunas numa grade de 12. Os painéis da primeira versão guardaram 1 (metade) e 2 (inteira).
+    largura: int = Field(default=6, ge=1, le=12)
+
+
+class Painel(BaseModel):
+    nome: str = Field(min_length=1, max_length=80)
+    blocos: list[BlocoDePainel] = Field(default_factory=list, max_length=24)
+
+
+class BuscaSalva(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    texto: str = Field(default="", max_length=2000)
+    janela_minutos: int
+    a_cada_minutos: int | None = Field(default=None, ge=5, le=10080)
+    condicao: str = Field(default="qualquer", pattern="^(qualquer|mais_de|nenhum)$")
+    limite: int = Field(default=0, ge=0, le=1_000_000_000)
+    ativa: bool = True
+
+
+def _conferir_busca(texto, tipo, minutos, campo=None, tamanho=10):
+    try:
+        blocos_de_busca.montar(texto, tipo, minutos, campo, tamanho)
+    except blocos_de_busca.BuscaInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro)) from None
+
+
+@app.get("/api/buscas/opcoes")
+def opcoes_de_busca(sessao=Depends(exige(permissoes.VER))):
+    return {"tipos": blocos_de_busca.TIPOS, "janelas": blocos_de_busca.JANELAS, "modelos": blocos_de_busca.MODELOS}
+
+
+@app.post("/api/buscas/bloco")
+def rodar_bloco(dados: BlocoDeBusca, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=True))):
+    """Um bloco de painel. Os valores voltam na chave curta do campo, para a máscara reconhecer usuário e endereço."""
+    with do_cliente(request, sessao) as con:
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        onde = _armazem_da_organizacao(request, con, sessao)
+    try:
+        return blocos_de_busca.executar(request.app.state.indexer.post, INDEXER_URL, gerenciadores, dados.texto, dados.tipo, dados.minutos, dados.campo, dados.tamanho, **onde)
+    except blocos_de_busca.BuscaInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro)) from None
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar os logs.") from None
+
+
+@app.get("/api/buscas")
+def buscas_salvas(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("""SELECT id, nome, texto, janela_minutos, a_cada_minutos, condicao, limite, ativa, proxima_em, ultima_em, ultimo_total, ultimo_erro,
+                                       criada_em, alterada_em,
+                                       (SELECT count(*) FROM buscas_execucoes e WHERE e.busca_id = b.id AND e.disparou AND e.em >= now() - interval '7 days') AS disparos_7_dias
+                                FROM buscas_salvas b ORDER BY nome""").fetchall()
+    return {"buscas": linhas}
+
+
+def _gravar_busca(con, dados, sessao, identificador=None):
+    _conferir_busca(dados.texto, "numero", dados.janela_minutos)
+    valores = (dados.nome.strip(), dados.texto.strip(), dados.janela_minutos, dados.a_cada_minutos, dados.condicao, dados.limite, dados.ativa)
+    if identificador is None:
+        return con.execute("""INSERT INTO buscas_salvas (cliente_id, nome, texto, janela_minutos, a_cada_minutos, condicao, limite, ativa, criada_por)
+                              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""", (sessao["cliente_id"], *valores, sessao["usuario_id"])).fetchone()
+    # Mudou a busca: roda no próximo ciclo, sem esperar o horário antigo.
+    return con.execute("""UPDATE buscas_salvas SET nome = %s, texto = %s, janela_minutos = %s, a_cada_minutos = %s, condicao = %s, limite = %s, ativa = %s,
+                          proxima_em = NULL, alterada_em = now() WHERE id = %s RETURNING id""", (*valores, identificador)).fetchone()
+
+
+@app.post("/api/buscas", status_code=201)
+def salvar_busca(dados: BuscaSalva, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = _gravar_busca(con, dados, sessao)
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'salvar_busca', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome[:200]))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe uma busca com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.put("/api/buscas/{identificador}", status_code=204)
+def mudar_busca(identificador: int, dados: BuscaSalva, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    _inteiro_valido(identificador)
+    try:
+        with do_cliente(request, sessao) as con:
+            if not _gravar_busca(con, dados, sessao, identificador):
+                raise HTTPException(status_code=404)
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_busca', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome[:200]))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe uma busca com esse nome.")
+
+
+@app.delete("/api/buscas/{identificador}", status_code=204)
+def apagar_busca(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("DELETE FROM buscas_salvas WHERE id = %s RETURNING nome", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'apagar_busca', %s)", (sessao["cliente_id"], sessao["usuario_id"], linha["nome"][:200]))
+
+
+@app.get("/api/buscas/{identificador}/execucoes")
+def execucoes_da_busca(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        return {"execucoes": con.execute("SELECT em, total, disparou, erro FROM buscas_execucoes WHERE busca_id = %s ORDER BY id DESC LIMIT 50", (identificador,)).fetchall()}
+
+
+@app.get("/api/paineis")
+def paineis(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        return {"paineis": con.execute("SELECT id, nome, blocos, criado_em, alterado_em FROM paineis ORDER BY nome").fetchall()}
+
+
+def _gravar_painel(con, dados, sessao, identificador=None):
+    for bloco in dados.blocos:
+        _conferir_busca(bloco.texto, bloco.tipo, bloco.minutos, bloco.campo, bloco.tamanho)
+    blocos = Jsonb([b.model_dump() for b in dados.blocos])
+    if identificador is None:
+        return con.execute("INSERT INTO paineis (cliente_id, nome, blocos, criado_por) VALUES (%s, %s, %s, %s) RETURNING id",
+                           (sessao["cliente_id"], dados.nome.strip(), blocos, sessao["usuario_id"])).fetchone()
+    return con.execute("UPDATE paineis SET nome = %s, blocos = %s, alterado_em = now() WHERE id = %s RETURNING id", (dados.nome.strip(), blocos, identificador)).fetchone()
+
+
+@app.post("/api/paineis", status_code=201)
+def criar_painel(dados: Painel, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = _gravar_painel(con, dados, sessao)
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_painel', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome[:200]))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe um painel com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.put("/api/paineis/{identificador}", status_code=204)
+def mudar_painel(identificador: int, dados: Painel, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    _inteiro_valido(identificador)
+    try:
+        with do_cliente(request, sessao) as con:
+            if not _gravar_painel(con, dados, sessao, identificador):
+                raise HTTPException(status_code=404)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe um painel com esse nome.")
+
+
+@app.get("/api/paineis/{identificador}/pdf")
+def pdf_do_painel(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO, mascarar=True))):
+    """O painel como está agora, em PDF, com a capa dos relatórios. Fica no histórico de relatórios, com o resumo do arquivo."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        painel = con.execute("SELECT nome, blocos FROM paineis WHERE id = %s", (identificador,)).fetchone()
+        if not painel:
+            raise HTTPException(status_code=404)
+        gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
+        onde = _armazem_da_organizacao(request, con, sessao)
+    resultados = []
+    for b in painel["blocos"]:
+        try:
+            resultados.append(blocos_de_busca.executar(request.app.state.indexer.post, INDEXER_URL, gerenciadores, b["texto"], b["tipo"], b["minutos"], b.get("campo"), b.get("tamanho", 10), **onde))
+        except blocos_de_busca.BuscaInvalida as erro:
+            resultados.append({"erro": str(erro)})
+        except requests.RequestException:
+            resultados.append({"erro": "Não foi possível consultar os logs."})
+    mascara = getattr(request.state, "mascara", None)
+    if mascara:
+        resultados = mascara.dado(resultados)
+        request.state.mascara = None
+    conteudo = relatorios.gerar_pdf(relatorios.montar_html_do_painel(painel, resultados, sessao, blocos_de_busca.JANELAS))
+    resumo = relatorios.resumo_do_arquivo(conteudo)
+    nome = f"painel-{re.sub(r'[^a-z0-9]+', '-', painel['nome'].lower()).strip('-')[:60] or 'roar'}-{datetime.now(timezone.utc):%Y%m%d}.pdf"
+    dias = max(1, -(-max((b["minutos"] for b in painel["blocos"]), default=1440) // 1440))
+    with do_cliente(request, sessao) as con:
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'gerar_pdf_de_painel', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{painel['nome'][:120]} sha256:{resumo}"))
+        guardado = _guardar_relatorio(con, sessao, "painel", painel["nome"][:120], dias, "pdf", nome, conteudo, resumo)
+    return Response(conteudo, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{nome}"', "X-Resumo-SHA256": resumo, "X-Relatorio": str(guardado)})
+
+
+@app.delete("/api/paineis/{identificador}", status_code=204)
+def apagar_painel(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER_BRUTO))):
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        linha = con.execute("DELETE FROM paineis WHERE id = %s RETURNING nome", (identificador,)).fetchone()
+        if not linha:
+            raise HTTPException(status_code=404)
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'apagar_painel', %s)", (sessao["cliente_id"], sessao["usuario_id"], linha["nome"][:200]))
+
+
+class PedidoDeParser(BaseModel):
+    nome: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,40}$")
+    modo: str = Field(pattern="^(guiado|xml)$")
+    definicao: dict | None = None
+    xml: str | None = Field(default=None, max_length=parsers_proprios.TAMANHO_MAXIMO)
+
+
+class NovoParser(PedidoDeParser):
+    titulo: str = Field(min_length=1, max_length=120)
+    exemplo: str = Field(default="", max_length=8000)
+
+
+class TesteDeParser(BaseModel):
+    log: str = Field(min_length=1, max_length=8000)
+    parser: PedidoDeParser | None = None
+
+
+SEGUNDOS_ESPERANDO_O_TESTE = 30
+
+
+def _xml_do_parser(dados):
+    try:
+        return parsers_proprios.xml_do_pedido(dados.nome, dados.modo, dados.definicao, dados.xml)
+    except parsers_proprios.ParserInvalido as erro:
+        raise HTTPException(status_code=422, detail=str(erro)) from None
+
+
+@app.get("/api/parsers")
+def parsers_da_organizacao(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("""SELECT id, nome, titulo, modo, definicao, xml, exemplo, ativo, estado, mensagem, criado_em, alterado_em, aplicado_em
+                                FROM parsers ORDER BY titulo""").fetchall()
+    return {"parsers": linhas, "valores": parsers_proprios.NOMES_DE_VALOR, "campos": parsers_proprios.CAMPOS_CONHECIDOS}
+
+
+@app.post("/api/parsers/testar")
+def testar_parser(dados: TesteDeParser, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    return _testar_no_servidor(request, sessao, dados.log, _xml_do_parser(dados.parser) if dados.parser else None)
+
+
+class LinhaDeEquipamento(BaseModel):
+    log: str = Field(min_length=1, max_length=8000)
+
+
+@app.post("/api/fontes/testar-linha")
+def testar_linha_de_equipamento(dados: LinhaDeEquipamento, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Como o servidor lê uma linha do equipamento, antes de apontar o envio. Só lê: parser novo é na aba Parsers."""
+    return _testar_no_servidor(request, sessao, dados.log, None)
+
+
+def _testar_no_servidor(request, sessao, texto, xml):
+    """Quem fala com o servidor é a ingestão: o pedido fica na fila e a resposta volta em um ou dois segundos."""
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY id LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Esta organização ainda não tem servidor para testar.")
+        teste = con.execute("INSERT INTO parser_testes (cliente_id, gerenciador_id, log, xml) VALUES (%s, %s, %s, %s) RETURNING id",
+                            (sessao["cliente_id"], gerenciador["id"], texto.strip(), xml)).fetchone()["id"]
+    fim = time.monotonic() + SEGUNDOS_ESPERANDO_O_TESTE
+    while time.monotonic() < fim:
+        time.sleep(0.3)
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("SELECT estado, resultado FROM parser_testes WHERE id = %s", (teste,)).fetchone()
+        if linha["estado"] == "erro":
+            raise HTTPException(status_code=502, detail=linha["resultado"].get("erro"))
+        if linha["estado"] == "pronto":
+            return {**linha["resultado"], "xml": xml}
+    raise HTTPException(status_code=504, detail="O servidor demorou para responder ao teste. Tente de novo em instantes.")
+
+
+@app.post("/api/parsers", status_code=201)
+def criar_parser(dados: NovoParser, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    xml = _xml_do_parser(dados)
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("""INSERT INTO parsers (cliente_id, nome, titulo, modo, definicao, xml, exemplo, criado_por)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                (sessao["cliente_id"], dados.nome, dados.titulo.strip(), dados.modo, Jsonb(dados.definicao) if dados.modo == "guiado" else None,
+                                 xml, dados.exemplo, sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_parser', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe um parser com esse nome.")
+    return {"id": linha["id"]}
+
+
+def _parser(con, identificador):
+    _inteiro_valido(identificador)
+    linha = con.execute("SELECT id, nome FROM parsers WHERE id = %s", (identificador,)).fetchone()
+    if not linha:
+        raise HTTPException(status_code=404)
+    return linha
+
+
+@app.put("/api/parsers/{identificador}", status_code=204)
+def mudar_parser(identificador: int, dados: NovoParser, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    with do_cliente(request, sessao) as con:
+        atual = _parser(con, identificador)
+        if atual["nome"] != dados.nome:
+            raise HTTPException(status_code=422, detail="O nome do parser não muda depois de criado.")
+        xml = _xml_do_parser(dados)
+        con.execute("""UPDATE parsers SET titulo = %s, modo = %s, definicao = %s, xml = %s, exemplo = %s, estado = 'pendente', mensagem = NULL,
+                       alterado_em = now() WHERE id = %s""",
+                    (dados.titulo.strip(), dados.modo, Jsonb(dados.definicao) if dados.modo == "guiado" else None, xml, dados.exemplo, identificador))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'mudar_parser', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome))
+
+
+@app.post("/api/parsers/{identificador}/ativo", status_code=204)
+def ligar_parser(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS)), ligado: bool = True):
+    with do_cliente(request, sessao) as con:
+        atual = _parser(con, identificador)
+        con.execute("UPDATE parsers SET ativo = %s, estado = 'pendente', mensagem = NULL, alterado_em = now() WHERE id = %s", (ligado, identificador))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, %s, %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], "ligar_parser" if ligado else "desligar_parser", atual["nome"]))
+
+
+@app.delete("/api/parsers/{identificador}", status_code=204)
+def apagar_parser(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    with do_cliente(request, sessao) as con:
+        atual = _parser(con, identificador)
+        con.execute("DELETE FROM parsers WHERE id = %s", (identificador,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'apagar_parser', %s)", (sessao["cliente_id"], sessao["usuario_id"], atual["nome"]))
+
+
 class NovaLista(BaseModel):
     nome: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
     titulo: str = Field(min_length=1, max_length=120)
@@ -3566,10 +4526,17 @@ class FonteNova(BaseModel):
     nome: str = Field(min_length=1, max_length=120)
     protocolo: str = "tcp"
     origens: list[str] = Field(max_length=200)
+    # O cartão do catálogo de onde veio (web/src/telas/Fontes.tsx): só para a tela mostrar a fonte no cartão certo.
+    fabricante: Literal["fortigate", "pfsense", "opnsense", "paloalto", "sophos", "ciscoasa", "mikrotik"] | None = None
 
 
-def _agregar_origens_de_syslog(request, gerenciador_id):
+def _agregar_origens_de_syslog(request, gerenciador_id, onde=None):
     """Última vez que cada endereço mandou algo. Sem dado no índice, a tela diz que nunca recebeu."""
+    if onde:
+        try:
+            return leitor_armazem.origens(onde["armazem"], onde["banco"], gerenciador_id, DIAS_DE_SAUDE)
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+            return None
     corpo = {"size": 0, "query": {"range": {"timestamp": {"gte": f"now-{DIAS_DE_SAUDE}d"}}},
              "aggs": {"origens": {"terms": {"field": "location", "size": 500}, "aggs": {"ultimo": {"max": {"field": "timestamp"}}}}}}
     try:
@@ -3622,9 +4589,21 @@ def listar_fontes(request: Request, sessao=Depends(exige(permissoes.VER))):
         agentes = con.execute(
             """SELECT count(*) AS total, count(*) FILTER (WHERE estado = 'active') AS conectados
                FROM ativos WHERE agente_id <> '000' AND gerenciador_id = %s""", (gerenciador["id"] if gerenciador else "",)).fetchone()
-    origens = _agregar_origens_de_syslog(request, gerenciador["id"]) if gerenciador and fontes else []
+        onde = _armazem_da_organizacao(request, con, sessao)
+    resumo = None
+    if onde and gerenciador and fontes:
+        try:
+            resumo = saude_das_fontes.ler(onde["armazem"], onde["banco"], gerenciador["id"])
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+            resumo = None  # Banco ainda sem o resumo por hora: a saúde sai da leitura antiga, sem a vazão.
+    if resumo is not None:
+        origens = [(local, o["ultimo"]) for local, o in resumo.items()]
+    else:
+        origens = _agregar_origens_de_syslog(request, gerenciador["id"], onde) if gerenciador and fontes else []
     for fonte in fontes:
         fonte.update(_saude_da_fonte(fonte, origens) if fonte["estado"] == "ativa" else {"saude": None, "ultimo_dado": None})
+        if resumo is not None and fonte["estado"] == "ativa" and fonte["tipo"] in TIPOS_COM_VOLUME:
+            fonte["volume"] = saude_das_fontes.da_fonte(fonte, resumo)
     return {"fontes": fontes, "agentes": agentes, "endereco": ENDERECO_PUBLICO,
             "porta_syslog": gerenciador["porta_base"] + DESLOCAMENTO_SYSLOG if gerenciador else None}
 
@@ -3641,7 +4620,7 @@ def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(exige(permiss
             raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
         nova = con.execute(
             "INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, criada_por) VALUES (%s, %s, 'syslog', %s, %s, %s) RETURNING id",
-            (sessao["cliente_id"], gerenciador["id"], dados.nome, json.dumps({"protocolo": dados.protocolo, "origens": origens}), sessao["usuario_id"])).fetchone()["id"]
+            (sessao["cliente_id"], gerenciador["id"], dados.nome, json.dumps({"protocolo": dados.protocolo, "origens": origens, **({"fabricante": dados.fabricante} if dados.fabricante else {})}), sessao["usuario_id"])).fetchone()["id"]
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
     return {"id": nova, "estado": "pendente"}

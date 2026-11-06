@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useEu } from "../api";
 import { Busca, Cabecalho, Carregando, Painel } from "../componentes";
+import { caminho, ir, trocar } from "../rota";
 
 type Bloco =
   | string
@@ -57,7 +58,7 @@ function MontarBloco({ bloco, aoAbrirArtigo }: { bloco: Bloco; aoAbrirArtigo: (i
   );
 }
 
-const artigoDaUrl = () => window.location.pathname.split("/")[2] || "primeiros-passos";
+const artigoDaUrl = () => caminho().split("/")[2] || "primeiros-passos";
 
 export function Ajuda() {
   const eu = useEu();
@@ -70,7 +71,8 @@ export function Ajuda() {
 
   useEffect(() => {
     // O texto continua em um só lugar, coberto pelos testes dele. Em variável, para o empacotador não tentar incluir o arquivo.
-    const rota = "/estatico/ajuda.js";
+    // Na demonstração, o arquivo mora ao lado da página, e o import resolve a partir do script: precisa do endereço inteiro.
+    const rota = import.meta.env.MODE === "demo" ? new URL("estatico/ajuda.js", document.baseURI).href : "/estatico/ajuda.js";
     import(/* @vite-ignore */ rota)
       .then((m: { AJUDA: Grupo[] }) => setAjuda(m.AJUDA))
       .catch(() => setErro("Não foi possível carregar a ajuda."));
@@ -98,12 +100,12 @@ export function Ajuda() {
 
   const abrir = (id: string) => {
     setArtigoAberto(id);
-    window.history.replaceState(null, "", `/ajuda/${id}`);
+    trocar(`/ajuda/${id}`);
     // Em tela estreita o artigo fica abaixo do índice: sem isto, o clique parece não fazer nada.
     refArtigo.current?.scrollIntoView({ block: "start" });
   };
   const irParaTela = (vista: string) => {
-    window.history.pushState(null, "", `/${vista}`);
+    ir(`/${vista}`);
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
 

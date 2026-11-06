@@ -8,7 +8,7 @@ import argparse
 import logging
 import time
 
-from . import copia_fria, provisao
+from . import copia_do_armazem, copia_fria, provisao, vigia_do_coletor
 
 log = logging.getLogger("roar.organizacoes")
 SEGUNDOS_ENTRE_CICLOS = 10
@@ -101,6 +101,7 @@ def main():
     # Pedido que ficou pela metade numa queda não pode prender a fila nem repetir sozinho.
     with provisao.banco_admin(env) as b:
         b.execute("UPDATE organizacoes_pedidos SET estado = 'falhou', senha_hash = NULL, mensagem = 'O serviço reiniciou no meio. Confira a organização e peça de novo.' WHERE estado = 'em_andamento'")
+    proxima_copia_do_armazem = proxima_vigia = 0.0
     while True:
         feito = processar_um(env)
         try:
@@ -108,6 +109,20 @@ def main():
             feito = copia_fria.processar(env) or feito
         except Exception:
             log.exception("cópia fria")
+        if time.monotonic() >= proxima_copia_do_armazem:
+            try:
+                # Um dia por vez de cada organização, depois que o dia fecha; a meia hora basta.
+                copia_do_armazem.processar(env)
+            except Exception:
+                log.exception("cópia fria do armazém")
+            proxima_copia_do_armazem = time.monotonic() + 1800
+        if time.monotonic() >= proxima_vigia:
+            try:
+                # Coletor que parou de entregar sem erro volta com um reinício; o buffer em disco guarda o que faltou.
+                vigia_do_coletor.processar(env)
+            except Exception:
+                log.exception("vigia dos coletores")
+            proxima_vigia = time.monotonic() + 60
         if a.uma_vez:
             return
         if not feito:

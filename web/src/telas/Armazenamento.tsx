@@ -8,6 +8,27 @@ import { tamanho } from "../formato";
 interface Configuracao {
   retencao_alertas_dias: number; retencao_logs_dias: number; guardar_logs: boolean; estado: string; mensagem: string | null;
   arquivo: { ultima: string | null; copias: number; dias: number } | null;
+  ler_do_armazem: boolean; armazem_disponivel: boolean;
+}
+
+/** Durante a migração para o armazém novo: de onde a tela de logs, os painéis e as buscas agendadas leem. */
+function LeituraDoArmazem({ ler, aoMudar }: { ler: boolean; aoMudar: () => void }) {
+  const [aviso, setAviso] = useState<string | null>(null);
+  const trocar = async (valor: boolean) => {
+    const r = await pedir("/api/organizacao/armazenamento/leitura", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ler: valor }) });
+    setAviso(r.ok ? null : await detalhe(r));
+    aoMudar();
+  };
+  return (
+    <Painel titulo="Armazém novo">
+      <Stack gap="xs">
+        <Text size="sm">Os logs desta organização já chegam também ao armazém novo, feito para volumes grandes. Os dois guardam os mesmos logs, então dá para trocar e voltar quando quiser.</Text>
+        <Switch label="Ler logs, painéis e buscas agendadas do armazém novo" checked={ler} onChange={(e) => trocar(e.currentTarget.checked)} />
+        <Text size="xs" c="dimmed">Em teste. Também passam a ler de lá a caça de indicadores, a saúde das fontes e o volume. O pacote de perícia e os relatórios ainda leem do armazenamento atual.</Text>
+        {aviso && <Alert color="red" variant="light" p="xs"><Text size="sm">{aviso}</Text></Alert>}
+      </Stack>
+    </Painel>
+  );
 }
 interface Volume { ocupado: { logs: number; alertas: number; por_dia: { dia: string; logs: number; alertas: number }[] } | null }
 
@@ -180,6 +201,7 @@ export function Armazenamento() {
           )}
         </Painel>
         {dados.arquivo && <Recuperar />}
+        {dados.armazem_disponivel && <LeituraDoArmazem ler={dados.ler_do_armazem} aoMudar={recarregar} />}
       </Stack>
     </>
   );

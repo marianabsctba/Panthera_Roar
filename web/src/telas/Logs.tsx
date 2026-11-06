@@ -7,6 +7,7 @@ import { BotaoDaCesta } from "../cesta";
 import { AcoesDaLinha, BarrasMetalicas, Cabecalho, Carregando, Data, METAL_ROSA, Numero, Painel, Ranking, Tabela, Vazio, type Coluna } from "../componentes";
 import { numero, quando } from "../formato";
 import { BlocoDeJson } from "./Eventos";
+import { ModalDeBusca, type Busca } from "./Paineis";
 import { salvarArquivo } from "./Prova";
 
 const LIMITE_DO_PACOTE = 10000;
@@ -378,6 +379,7 @@ export function Logs() {
   const [colunasEscolhidas, setColunasEscolhidas] = useState(colunasSalvas);
   const [escolhendo, setEscolhendo] = useState(false);
   const [aberto, setAberto] = useState<(LogBruto & { plano: Plano }) | null>(null);
+  const [salvando, setSalvando] = useState<Busca | null>(null);
   const [pericia, setPericia] = useState(false);
   const pedido = useRef(0);
   const verBruto = pode("ver_bruto");
@@ -487,6 +489,8 @@ export function Logs() {
           <AjudaDaConsulta aoEscolher={setTexto} />
           <Select w={130} aria-label="Período" value={dias} onChange={(v) => setDias(v ?? "7")} allowDeselect={false} data={PERIODOS} />
           <Button onClick={() => setEscolhendo(true)} disabled={Boolean(colunasDaConsulta) || Boolean(contagem)} title={colunasDaConsulta ? "A consulta já escolhe as colunas" : undefined}>Colunas</Button>
+          {pode("gerir_regras") && <Button onClick={() => setSalvando({ nome: "", texto: consulta, janela_minutos: Math.min(Number(dias), 30) * 1440, a_cada_minutos: null, condicao: "qualquer", limite: 0, ativa: true })}
+            title="Guardar esta busca, ou fazer ela rodar sozinha e avisar">Salvar busca</Button>}
           {!eu.dados_mascarados && <Button onClick={() => setPericia(true)} disabled={!resposta || Boolean(contagem) || !resposta.total} title={contagem ? "Tire a contagem da consulta" : undefined}>Pacote para perícia</Button>}
         </Group>
 
@@ -545,6 +549,7 @@ export function Logs() {
         aoFiltrar={(campo, valor, negar) => { setAberto(null); alternarFiltro(campo, valor, negar); }}
         aoAlternarColuna={alternarColuna}
       />
+      <ModalDeBusca busca={salvando} aoFechar={() => setSalvando(null)} aoSalvar={() => setSalvando(null)} />
       <PacoteDePericia aberto={pericia} aoFechar={() => setPericia(false)} consulta={consulta} dias={dias} filtros={filtros} total={resposta?.total ?? 0} exato={resposta?.total_exato !== false} />
     </>
   );

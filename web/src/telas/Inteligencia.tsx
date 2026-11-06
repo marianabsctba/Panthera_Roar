@@ -6,6 +6,7 @@ import { detalhe, enviar, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDoBruto, Painel, Severidade, Tabela } from "../componentes";
 import { numero } from "../formato";
 import { Fatos } from "./Ataques";
+import { recomecar } from "../rota";
 
 interface Fonte { id: number; nome: string; tipo: string; endereco: string; colecao: string | null; com_credencial: boolean; ativa: boolean; interna: boolean; a_cada_minutos: number; proxima_em: string | null; ultima_em: string | null; ultimo_erro: string | null; indicadores: number }
 interface Ocorrencia { evento_id: number; ocorrido_em: string; encontrada_em: string | null; no_passado: boolean; tipo: string; valor: string; descricao: string | null; fonte: string; regra_descricao: string | null; severidade: string; ativo: string | null }
@@ -164,7 +165,7 @@ function ConfirmarDesativar({ fonte, aoFechar, aoDesativar }: { fonte: Fonte | n
     // O envio da API só cobre POST, e esta rota é DELETE.
     const r = await fetch(`/api/inteligencia/fontes/${fonte?.id}`, { method: "DELETE", credentials: "same-origin" });
     if (r.status === 401) {
-      window.location.assign("/");
+      recomecar("/");
       return;
     }
     if (!r.ok) {

@@ -120,7 +120,38 @@ services:
       - roar-borda-config:/config
     restart: unless-stopped
 
+  # Armazém de eventos (docs/clickhouse.md). Também entra na rede dos gerenciadores, onde o coletor de cada um grava.
+  armazem:
+    image: clickhouse/clickhouse-server:26.8.36.3@sha256:d426d2f612e1e189c90f9a3f8dcd85a03c6851273833817a296bb327e63aa7a7
+    container_name: roar-armazem
+    environment:
+      ARMAZEM_SENHA: ${ARMAZEM_SENHA}
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      - "127.0.0.1:${ARMAZEM_PORTA:-8123}:8123"
+    volumes:
+      - roar-armazem:/var/lib/clickhouse
+      - ${ARMAZEM_FRIO:-./armazem-frio}:/var/lib/clickhouse-frio
+      - ${ARMAZEM_COPIAS:-./armazem-copias}:/var/lib/clickhouse-copias
+      - ./clickhouse/roar.xml:/etc/clickhouse-server/config.d/roar.xml:ro
+      - ./clickhouse/usuarios.xml:/etc/clickhouse-server/users.d/roar.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - roar
+      - gerenciadores
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
+  roar-armazem:
   roar-borda-dados:
   roar-borda-config:
   roar-banco:
@@ -129,3 +160,7 @@ volumes:
 networks:
   roar:
     driver: bridge
+  # Criada pelo Wazuh (infra/subir.sh sobe o indexador antes do armazém).
+  gerenciadores:
+    external: true
+    name: panthera-roar-wazuh_default

@@ -396,7 +396,7 @@ def buscar_apis(banco, gerenciador_id, cliente):
 
 
 def ciclo(banco):
-    from . import fim, yara_regras
+    from . import fabricantes, fim, parsers, yara_regras
     from .regras import aplicar_regras_proprias
 
     for gerenciador_id, cliente in banco.gerenciadores():
@@ -411,6 +411,10 @@ def ciclo(banco):
             # Antes das fontes: a resposta que entra na configuração cita a detecção instalada aqui.
             yara_regras.aplicar_regras(banco, gerenciador_id, cliente)
             aplicar_fontes(banco, gerenciador_id, cliente)
+            # Os do produto antes dos da organização, e os dois antes das regras: uma regra própria pode usar o campo que
+            # um parser tira do log.
+            fabricantes.aplicar(gerenciador_id)
+            parsers.aplicar(banco, gerenciador_id, cliente)
             # No mesmo ciclo curto: regra criada ou editada na tela não pode esperar a sincronização de hora em hora.
             aplicar_regras_proprias(banco, gerenciador_id, cliente)
         except Exception:  # Um gerenciador com problema não pode travar a configuração dos outros.

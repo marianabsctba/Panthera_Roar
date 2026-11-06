@@ -3,6 +3,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 
 import { detalhe, enviar } from "./api";
 import { passkeyDisponivel, usarPasskey } from "./passkey";
+import { caminho, consulta, trocar } from "./rota";
 
 export function LogoDoGoogle({ tamanho = 18 }: { tamanho?: number }) {
   return (
@@ -28,8 +29,8 @@ export function LogoDaMicrosoft({ tamanho = 18 }: { tamanho?: number }) {
 
 /** O login único volta para a tela com o motivo da falha no endereço: mostra uma vez e limpa. */
 function erroDoSso() {
-  const motivo = new URLSearchParams(window.location.search).get("sso");
-  if (motivo) window.history.replaceState(null, "", window.location.pathname);
+  const motivo = new URLSearchParams(consulta()).get("sso");
+  if (motivo) trocar(caminho());
   return motivo;
 }
 

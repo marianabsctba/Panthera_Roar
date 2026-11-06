@@ -6,6 +6,7 @@
 Usa o banco de verdade e apaga no final tudo o que criou.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from pathlib import Path
 
 import psycopg
@@ -37,6 +39,7 @@ URL_API = f"postgresql://roar_api:{ENV['ROAR_API_SENHA']}@127.0.0.1:5433/roar"
 from roar_api.app import COOKIE, ESTATICO, app, falhas_de_login  # noqa: E402
 
 XSS = '<img src=x onerror="alert(1)">'
+COOKIE_DE_SESSAO = "roar_sessao"
 RESULTADOS = []
 CRIADOS = []
 
@@ -92,7 +95,7 @@ def novo_cliente(nome):
 
 def limpar():
     ids = [c["id"] for c in CRIADOS]
-    for tabela in ("sso", "chaves_api", "relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
+    for tabela in ("email_config", "segredos", "sso", "chaves_api", "relatorios_gerados", "notificacoes", "intel_ocorrencias", "intel_indicadores", "intel_fontes", "casos_notas", "casos_itens", "casos", "regras_proprias", "ativos", "auditoria", "regras", "sinais", "alertas_risco", "vistos", "horas", "silencios", "pares", "entidades", "eventos", "grupos_alerta",
                    "gerenciadores", "usuarios"):
         ADMIN.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (ids,))
     ADMIN.execute("DELETE FROM clientes WHERE id = ANY(%s)", (ids,))
@@ -383,6 +386,385 @@ def testar_sso(http, a, b):
         modulo._descobertas.clear()
 
 
+def testar_saml(http, a, b):
+    """Um provedor SAML de mentira, com chave e certificado próprios, assinando respostas de verdade."""
+    print("\n== Login único por SAML", flush=True)
+    import base64
+    import zlib
+    from urllib.parse import parse_qs, urlsplit
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    from lxml import etree
+    from signxml import XMLSigner
+
+    def chave_e_certificado(nome):
+        chave = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        sujeito = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, nome)])
+        agora_ = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(sujeito).issuer_name(sujeito).public_key(chave.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(agora_ - timedelta(days=1)).not_valid_after(agora_ + timedelta(days=30)).sign(chave, hashes.SHA256()))
+        return chave.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()), cert.public_bytes(serialization.Encoding.PEM)
+
+    chave, cert = chave_e_certificado("idp.exemplo.test")
+    outra_chave, outro_cert = chave_e_certificado("atacante.exemplo.test")
+    entidade_idp = "https://idp.exemplo.test/metadata"
+    entrar(http, a)
+    sem_cabecalho = "".join(cert.decode().splitlines()[1:-1])
+    feito = http.put("/api/organizacao/sso", json={"provedor": "saml", "emissor": "https://idp.exemplo.test/sso", "saml_entidade": entidade_idp,
+                                                   "saml_certificado": sem_cabecalho, "ativo": True})
+    registrar("salva o SAML, aceitando o certificado sem as linhas BEGIN e END", feito.status_code == 204, feito.text[:200])
+    registrar("certificado inválido é recusado", http.put("/api/organizacao/sso", json={"provedor": "saml", "emissor": "https://idp.exemplo.test/sso", "saml_entidade": entidade_idp,
+                                                                                        "saml_certificado": "não é certificado", "ativo": True}).status_code == 422)
+    visto = http.get("/api/organizacao/sso").json()
+    entidade_roar, acs = visto["saml"]["entidade"], visto["saml"]["acs"]
+    registrar("a tela mostra o identificador e o endereço de retorno para cadastrar no provedor", acs.endswith("/api/sso/saml/acs") and visto["config"]["tem_certificado"])
+    metadados = http.get("/api/sso/saml/metadados")
+    registrar("os metadados do Roar saem para o provedor ler", metadados.status_code == 200 and acs in metadados.text and entidade_roar in metadados.text)
+    http.post("/api/sair")
+
+    def pedir():
+        r = http.get("/api/sso/inicio", params={"email": a["email"]})
+        url = urlsplit(r.json()["url"])
+        q = parse_qs(url.query)
+        pedido = zlib.decompress(base64.b64decode(q["SAMLRequest"][0]), -15)
+        return etree.fromstring(pedido).get("ID"), q["RelayState"][0], url
+
+    def resposta(id_do_pedido, email=None, assinar_com=(chave, cert), publico=None, validade=timedelta(minutes=5), quando=None, extra_antes=""):
+        agora_ = quando or datetime.now(timezone.utc)
+        z = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+        email = email or a["email"]
+        xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_r{secrets.token_hex(8)}" Version="2.0" IssueInstant="{z(agora_)}" InResponseTo="{id_do_pedido}"><saml:Issuer>{entidade_idp}</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>{extra_antes}<saml:Assertion ID="_a{secrets.token_hex(8)}" Version="2.0" IssueInstant="{z(agora_)}"><saml:Issuer>{entidade_idp}</saml:Issuer><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="placeholder"/><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{email}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData InResponseTo="{id_do_pedido}" Recipient="{acs}" NotOnOrAfter="{z(agora_ + validade)}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{z(agora_ - timedelta(minutes=1))}" NotOnOrAfter="{z(agora_ + validade)}"><saml:AudienceRestriction><saml:Audience>{publico or entidade_roar}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{z(agora_)}"/></saml:Assertion></samlp:Response>"""
+        raiz = etree.fromstring(xml.encode())
+        assercao = raiz.find("{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")
+        assinada = XMLSigner(c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#").sign(assercao, key=assinar_com[0], cert=assinar_com[1], reference_uri=assercao.get("ID"))
+        raiz.replace(assercao, assinada)
+        return raiz
+
+    def mandar(raiz, estado, origem="https://idp.exemplo.test"):
+        corpo = urlencode({"SAMLResponse": base64.b64encode(etree.tostring(raiz)).decode(), "RelayState": estado})
+        return http.post("/api/sso/saml/acs", content=corpo, headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": origem}, follow_redirects=False)
+
+    id_do_pedido, estado, url = pedir()
+    registrar("o pedido vai ao endereço de login do provedor, com o e-mail como dica", url.netloc == "idp.exemplo.test" and "login_hint" in url.query)
+    certo = mandar(resposta(id_do_pedido), estado)
+    registrar("resposta assinada abre a sessão, mesmo vindo do site do provedor", certo.status_code == 303 and certo.headers["location"] == "/" and COOKIE_DE_SESSAO in certo.cookies,
+              f"{certo.status_code} {certo.headers.get('location')}")
+    registrar("e a pessoa está dentro", http.get("/api/eu").status_code == 200)
+    http.post("/api/sair")
+    registrar("a mesma resposta não serve de novo", "sso=" in mandar(resposta(id_do_pedido), estado).headers.get("location", ""))
+
+    def recusado(nome, montar, origem="https://idp.exemplo.test"):
+        # Cada recusa conta como tentativa: sem zerar, a proteção contra força bruta bloquearia os casos seguintes.
+        falhas_de_login.clear()
+        id_, estado_, _ = pedir()
+        r = mandar(montar(id_), estado_, origem)
+        destino = r.headers.get("location", "")
+        registrar(nome, r.status_code == 303 and destino.startswith("/?sso=") and COOKIE_DE_SESSAO not in r.cookies, destino[:160])
+        http.cookies.clear()
+
+    def trocado(id_):
+        raiz = resposta(id_)
+        raiz.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}NameID").text = b["email"]
+        return raiz
+    recusado("e-mail trocado depois da assinatura é recusado", trocado)
+
+    def embrulho(id_):
+        raiz = resposta(id_)
+        falsa = etree.fromstring(etree.tostring(raiz.find("{urn:oasis:names:tc:SAML:2.0:assertion}Assertion")))
+        falsa.find(".//{urn:oasis:names:tc:SAML:2.0:assertion}NameID").text = "chefe@exemplo.test"
+        for assinatura in falsa.findall("{http://www.w3.org/2000/09/xmldsig#}Signature"):
+            falsa.remove(assinatura)
+        raiz.insert(2, falsa)
+        return raiz
+    recusado("asserção falsa embrulhando a verdadeira é recusada", embrulho)
+
+    def comentario(id_):
+        usuario, dominio = a["email"].split("@")
+        return resposta(id_, email=f"{usuario}@{dominio}<!---->.atacante.test")
+    recusado("comentário escondido no e-mail é recusado", comentario)
+    recusado("resposta assinada por outra chave é recusada", lambda id_: resposta(id_, assinar_com=(outra_chave, outro_cert)))
+    recusado("resposta feita para outro sistema é recusada", lambda id_: resposta(id_, publico="https://outro.sistema.test"))
+    recusado("resposta vencida é recusada", lambda id_: resposta(id_, quando=datetime.now(timezone.utc) - timedelta(hours=1)))
+    recusado("resposta a outro pedido é recusada", lambda id_: resposta("_pedido_inventado"))
+    recusado("e-mail de outra organização não entra", lambda id_: resposta(id_, email=b["email"]))
+    falhas_de_login.clear()
+    bloqueou = False
+    for _ in range(10):
+        inicio = http.get("/api/sso/inicio", params={"email": a["email"]})
+        if inicio.status_code == 429:
+            bloqueou = True
+            break
+        q = parse_qs(urlsplit(inicio.json()["url"]).query)
+        id_ = etree.fromstring(zlib.decompress(base64.b64decode(q["SAMLRequest"][0]), -15)).get("ID")
+        mandar(resposta(id_, assinar_com=(outra_chave, outro_cert)), q["RelayState"][0])
+    registrar("muitas respostas recusadas da mesma origem bloqueiam por um tempo", bloqueou)
+    falhas_de_login.clear()
+    entrar(http, a)
+    http.delete("/api/organizacao/sso")
+    http.post("/api/sair")
+
+
+def testar_email(http, a, b):
+    print("\n== Avisos por e-mail", flush=True)
+    entrar(http, a)
+    config = {"servidor": "smtp.nao-existe.invalid", "porta": 587, "seguranca": "starttls", "usuario": "roar", "senha": "segredo-do-smtp",
+              "remetente": "roar@exemplo.test", "destinatarios": ["soc@exemplo.test", "chefe@exemplo.test"]}
+    registrar("porta fora da lista é recusada", http.put("/api/organizacao/email", json={**config, "porta": 22}).status_code == 422)
+    registrar("destinatário que não é e-mail é recusado", http.put("/api/organizacao/email", json={**config, "destinatarios": ["não é e-mail"]}).status_code == 422)
+    registrar("servidor com caractere estranho é recusado", http.put("/api/organizacao/email", json={**config, "servidor": "smtp;rm -rf"}).status_code == 422)
+    ADMIN.execute("INSERT INTO notificacoes (cliente_id, tipo, alvo) VALUES (%s, 'busca_agendada', 'antes de ligar')", (a["id"],))
+    registrar("salva a configuração", http.put("/api/organizacao/email", json=config).status_code == 204)
+    visto = http.get("/api/organizacao/email").json()
+    registrar("a senha fica no cofre e não volta", visto["tem_senha"] is True and "segredo-do-smtp" not in str(visto) and "senha" not in (visto["config"] or {}), str(visto)[:200])
+    selado = ADMIN.execute("SELECT selado FROM segredos WHERE cliente_id = %s AND nome = 'email-senha'", (a["id"],)).fetchone()
+    registrar("no banco, a senha está cifrada", selado and b"segredo-do-smtp" not in bytes(selado[0]))
+    inicio = ADMIN.execute("SELECT ultima_notificacao, (SELECT max(id) FROM notificacoes WHERE cliente_id = %s) FROM email_config WHERE cliente_id = %s", (a["id"], a["id"])).fetchone()
+    registrar("ligar o e-mail não manda o sino do passado", inicio[0] == inicio[1], str(inicio))
+    registrar("sem mudar a senha, ela continua guardada", http.put("/api/organizacao/email", json={**config, "senha": None}).status_code == 204 and http.get("/api/organizacao/email").json()["tem_senha"])
+    teste = http.post("/api/organizacao/email/teste")
+    registrar("o e-mail de teste passa pelo serviço e volta o motivo da falha", teste.status_code == 422 and "encontrar" in teste.json()["detail"], teste.text[:200])
+    entrar(http, b)
+    registrar("outra organização não vê a configuração", http.get("/api/organizacao/email").json()["config"] is None)
+    registrar("e não pede teste por ela", http.post("/api/organizacao/email/teste").status_code == 409)
+    entrar(http, a)
+    registrar("para os avisos por e-mail", http.delete("/api/organizacao/email").status_code == 204 and http.get("/api/organizacao/email").json() == {"config": None, "tem_senha": False, "tipos": http.get("/api/organizacao/email").json()["tipos"]})
+
+
+def testar_superficie(http, a, b):
+    print("\n== Superfície externa", flush=True)
+    entrar(http, a)
+    registrar("sem a declaração de autorização, o domínio é recusado", http.post("/api/vuln/superficie", json={"dominio": "exemplo.test"}).status_code == 422)
+    registrar("endereço que não é domínio é recusado", http.post("/api/vuln/superficie", json={"dominio": "exemplo;ls", "autorizado": True}).status_code == 422)
+    criado = http.post("/api/vuln/superficie", json={"dominio": "https://Exemplo.test/", "autorizado": True, "conferir_a_cada_horas": 12})
+    registrar("cadastra o domínio limpando o endereço", criado.status_code == 201, criado.text[:200])
+    dominio = criado.json()["id"]
+    registrar("o mesmo domínio duas vezes é recusado", http.post("/api/vuln/superficie", json={"dominio": "exemplo.test", "autorizado": True}).status_code == 409)
+    alvo = ADMIN.execute("SELECT alvo FROM auditoria WHERE cliente_id = %s AND acao = 'cadastrar_dominio_externo'", (a["id"],)).fetchone()
+    registrar("a declaração fica na auditoria", alvo and "exemplo.test" in alvo[0])
+    for i, nome in enumerate(("exemplo.test", "vpn.exemplo.test", "www.exemplo.test")):
+        ADMIN.execute("""INSERT INTO superficie_hosts (cliente_id, dominio_id, nome, origem, proxima_conferencia, conferido_em, conferindo_desde)
+                         VALUES (%s, %s, %s, 'dns', now() + make_interval(hours => %s), CASE WHEN %s > 0 THEN now() END, CASE WHEN %s = 2 THEN now() END)""",
+                      (a["id"], dominio, nome, i, i, i))
+    visto = http.get("/api/vuln/superficie").json()
+    d = visto["dominios"][0]
+    registrar("mostra o andamento da fila", (d["dominio"], d["nomes"], d["conferidos"], d["na_fila"], d["conferindo_agora"], d["conferir_a_cada_horas"])
+              == ("exemplo.test", 3, 2, 1, "www.exemplo.test", 12), str(d)[:300])
+    registrar("e os nomes, com quem está sendo conferido", [h["conferindo"] for h in visto["hosts"]] == [False, False, True], str(visto["hosts"])[:300])
+    falsas = ["CVE-1999-9800001", "CVE-1999-9800002"]
+    try:
+        for cve, kev in zip(falsas, ("2021-11-03", None)):
+            ADMIN.execute("INSERT INTO cves (cve, titulo, cvss, kev_desde, prioridade) VALUES (%s, 'Falha de teste', 9.8, %s, %s)", (cve, kev, "agora" if kev else "alta"))
+        ADMIN.execute("""INSERT INTO cves_versoes (cve, produto, exata, desde, ate) VALUES (%s, 'beasts:vsftpd', NULL, NULL, '3.0.4'), (%s, 'beasts:vsftpd', '2.3.4', NULL, NULL)""", falsas)
+        ADMIN.execute("""UPDATE superficie_hosts SET servicos = '[{"porta": 21, "nome": "vsftpd", "versao": "3.0.3", "resposta": "220 (vsFTPd 3.0.3)", "distribuicao": false, "falhas": 1}]'
+                         WHERE dominio_id = %s AND nome = 'vpn.exemplo.test'""", (dominio,))
+        host = next(h["id"] for h in http.get("/api/vuln/superficie").json()["hosts"] if h["nome"] == "vpn.exemplo.test")
+        lista = http.get(f"/api/vuln/superficie/nomes/{host}/servicos/0").json()
+        nossas = [c["cve"] for c in lista["cves"] if c["cve"] in falsas]
+        registrar("o serviço mostra as CVEs da versão, cruzadas com a base", nossas == falsas[:1] and lista["cves"][0]["prioridade"] == "agora" and lista["servico"]["nome"] == "vsftpd",
+                  str(lista)[:300])
+        registrar("cada CVE vem com a situação", lista["cves"] and all(c["situacao"] == "pela_versao" for c in lista["cves"]))
+        ADMIN.execute("INSERT INTO cves_versoes (cve, produto, exata) VALUES (%s, 'fortinet:fortios', '7.0.0')", (falsas[0],))
+        ADMIN.execute("""UPDATE superficie_hosts SET servicos = '[{"porta": 443, "nome": "Fortinet SSL VPN", "versao": null, "tipo": "borda", "resposta": "", "distribuicao": false, "falhas": 0}]'
+                         WHERE id = %s""", (host,))
+        borda = http.get(f"/api/vuln/superficie/nomes/{host}/servicos/0").json()["cves"]
+        registrar("VPN sem versão mostra as falhas já exploradas no produto", falsas[0] in [c["cve"] for c in borda]
+                  and all(c["situacao"] == "explorada_no_produto" and c["kev_desde"] for c in borda), str(borda)[:300])
+        registrar("serviço que não existe dá 404", http.get(f"/api/vuln/superficie/nomes/{host}/servicos/5").status_code == 404)
+        entrar(http, b)
+        registrar("outra organização não vê os serviços", http.get(f"/api/vuln/superficie/nomes/{host}/servicos/0").status_code == 404)
+        entrar(http, a)
+    finally:
+        ADMIN.execute("DELETE FROM cves_versoes WHERE cve = ANY(%s)", (falsas,))
+        ADMIN.execute("DELETE FROM cves WHERE cve = ANY(%s)", (falsas,))
+    from roar_api import nota_externa
+    registrar("nota: uma crítica derruba para C, duas para F", (nota_externa.letra(nota_externa.pontos({"critica": 1})), nota_externa.letra(nota_externa.pontos({"critica": 2})),
+                                                                nota_externa.letra(100)) == ("C", "F", "A"))
+    ativo = ADMIN.execute("INSERT INTO vuln_ativos (cliente_id, host) VALUES (%s, 'vpn.exemplo.test') RETURNING id", (a["id"],)).fetchone()[0]
+    try:
+        ADMIN.execute("""INSERT INTO vuln_achados (cliente_id, ativo_id, chave, fonte, titulo, severidade) VALUES
+                         (%s, %s, 'externa|porta|3389', 'externa', 'RDP aberto para a internet', 'critica'),
+                         (%s, %s, 'externa|sem-https', 'externa', 'Site sem HTTPS', 'media')""", (a["id"], ativo, a["id"], ativo))
+        nota = http.get("/api/vuln/superficie").json()["nota"]
+        registrar("a nota desconta os achados externos abertos", (nota["pontos"], nota["letra"], nota["por_severidade"]["critica"]) == (71, "C", 1), str(nota)[:300])
+        registrar("e a do domínio também", nota["dominios"][str(dominio)] == {"pontos": 71, "letra": "C"})
+        registrar("a evolução termina hoje com a nota de agora", nota["historico"] and nota["historico"][-1]["pontos"] == 71, str(nota["historico"][-3:]))
+        rel = http.get("/api/relatorios", params={"tipo": "completo", "formato": "json", "dias": 30})
+        sup = rel.json()["vuln"]["superficie"] if rel.status_code == 200 else None
+        registrar("o relatório traz a superfície externa", sup and sup["letra"] == "C" and sup["achados"][0]["severidade"] == "critica" and "<svg" in (sup["grafico"] or "<svg"),
+                  rel.text[:200] if not sup else str(sup)[:200])
+        pdf = http.get("/api/relatorios", params={"tipo": "completo", "formato": "pdf", "dias": 30})
+        registrar("e o PDF sai com ela", pdf.status_code == 200 and pdf.content[:4] == b"%PDF")
+    finally:
+        ADMIN.execute("DELETE FROM vuln_achados WHERE ativo_id = %s", (ativo,))
+        ADMIN.execute("DELETE FROM vuln_ativos WHERE id = %s", (ativo,))
+    registrar("conferir agora põe tudo na frente da fila", http.post(f"/api/vuln/superficie/{dominio}/agora").status_code == 204
+              and http.get("/api/vuln/superficie").json()["dominios"][0]["na_fila"] == 3)
+    registrar("pausa o domínio", http.put(f"/api/vuln/superficie/{dominio}", json={"ativo": False}).status_code == 204
+              and http.get("/api/vuln/superficie").json()["dominios"][0]["ativo"] is False)
+    registrar("domínio pausado não vai para a frente da fila", http.post(f"/api/vuln/superficie/{dominio}/agora").status_code == 404)
+    entrar(http, b)
+    registrar("outra organização não vê o domínio", http.get("/api/vuln/superficie").json() == {"dominios": [], "hosts": [], "mudancas": [], "nota": None})
+    registrar("nem tira", http.delete(f"/api/vuln/superficie/{dominio}").status_code == 404)
+    registrar("e pode cadastrar o mesmo domínio para ela", http.post("/api/vuln/superficie", json={"dominio": "exemplo.test", "autorizado": True}).status_code == 201)
+    entrar(http, a)
+    registrar("tira o domínio e os nomes dele", http.delete(f"/api/vuln/superficie/{dominio}").status_code == 204
+              and ADMIN.execute("SELECT count(*) FROM superficie_hosts WHERE dominio_id = %s", (dominio,)).fetchone()[0] == 0)
+
+
+def testar_buscas_e_paineis(http, a, b):
+    print("\n== Buscas e painéis", flush=True)
+    from roar_api import buscas
+    corpo, _ = buscas.montar('usuario=maria E "falha"', "numero", 60)
+    filtros = corpo["query"]["bool"]["filter"]
+    registrar("o indicador busca a janela e a anterior, e conta a atual à parte", corpo["size"] == 0 and filtros[0] == {"range": {"timestamp": {"gte": "now-120m"}}}
+              and corpo["aggs"]["atual"] == {"filter": {"range": {"timestamp": {"gte": "now-60m"}}}} and len(filtros) == 2, str(corpo)[:300])
+    lido = buscas.ler({"hits": {"total": {"value": 30}, "hits": []}, "aggregations": {"atual": {"doc_count": 12}}}, "numero")
+    registrar("o indicador separa o período atual do anterior", lido == {"total": 12, "anterior": 18})
+    corpo, campo = buscas.montar("nivel>=3", "serie", 10080, "nivel")
+    registrar("a linha do tempo divide pelo campo", campo == "rule.level" and corpo["aggs"]["serie"]["aggs"]["por"]["terms"]["field"] == "rule.level")
+    lido = buscas.ler({"hits": {"total": {"value": 5}, "hits": []}, "aggregations": {"serie": {"buckets": [{"key_as_string": "t", "doc_count": 5, "por": {"buckets": [{"key": 3, "doc_count": 4}]}}]}}}, "serie", "rule.level")
+    registrar("cada ponto traz a divisão", lido["pontos"] == [{"quando": "t", "total": 5, "por": {"3": 4}}])
+    corpo, campo = buscas.montar("", "mapa", 60)
+    registrar("o mapa agrupa pelo país", campo == "GeoLocation.country_name" and corpo["aggs"]["top"]["terms"]["field"] == campo)
+    lido = buscas.ler({"hits": {"total": {"value": 10}, "hits": []}, "aggregations": {"top": {"buckets": [{"key": "a", "doc_count": 7}], "sum_other_doc_count": 1}}}, "rosca", "agent.name")
+    registrar("outros na rosca são só os valores que ficaram de fora, não os logs sem o campo", lido["outros"] == 1)
+    registrar("colunas que terminam igual ganham chaves diferentes", buscas.chaves_da_tabela(["agent.name", "decoder.name", "data.srcip"]) == ["agent_name", "decoder_name", "srcip"])
+    corpo, campo = buscas.montar("", "top", 1440, "usuario", 5)
+    registrar("mais frequentes conta pelo campo, com o apelido trocado", campo == "data.srcuser" and corpo["aggs"]["top"]["terms"] == {"field": "data.srcuser", "size": 5})
+    corpo, campo = buscas.montar("ativo=x | contar por origem", "top", 1440)
+    registrar("ou pelo campo que a busca já conta", campo == "data.srcip")
+    corpo, colunas = buscas.montar("", "tabela", 60, tamanho=500)
+    registrar("tabela tem teto de linhas", corpo["size"] == buscas.MAXIMO_DE_LINHAS and colunas == buscas.COLUNAS_PADRAO)
+    for nome, args in (("janela fora da lista", ("", "numero", 61)), ("tipo desconhecido", ("", "pizza", 60)), ("busca quebrada", ('"aberta', "numero", 60)),
+                       ("mais frequentes sem campo", ("", "top", 60)), ("campo com caractere estranho", ("", "top", 60, "a b"))):
+        try:
+            buscas.montar(*args)
+            registrar(f"recusa {nome}", False)
+        except buscas.BuscaInvalida:
+            registrar(f"recusa {nome}", True)
+    ruins = []
+    for chave, modelo in buscas.MODELOS.items():
+        for bloco in modelo["blocos"]:
+            try:
+                buscas.montar(bloco["texto"], bloco["tipo"], bloco["minutos"], bloco["campo"], bloco["tamanho"])
+            except buscas.BuscaInvalida as erro:
+                ruins.append(f"{chave}/{bloco['titulo']}: {erro}")
+    registrar("todo bloco dos painéis prontos é uma busca válida", not ruins and len(buscas.MODELOS) >= 2, str(ruins))
+    registrar("grupo e descricao viram os campos da regra", buscas.montar("", "top", 60, "grupo")[1] == "rule.groups" and buscas.montar("", "top", 60, "descricao")[1] == "rule.description")
+    lido = buscas.ler({"hits": {"total": {"value": 9}, "hits": []}, "aggregations": {"top": {"buckets": [{"key": "maria", "doc_count": 7}]}}}, "top", "data.srcuser")
+    registrar("o valor volta na chave curta do campo, para a máscara reconhecer", lido["linhas"] == [{"srcuser": "maria", "total": 7}] and lido["chave"] == "srcuser")
+    lido = buscas.ler({"hits": {"total": {"value": 1}, "hits": [{"_source": {"agent": {"name": "srv"}, "timestamp": "t"}}]}}, "tabela", ["timestamp", "agent.name", "data.srcip"])
+    registrar("tabela tira os campos aninhados", lido["linhas"] == [{"timestamp": "t", "name": "srv", "srcip": None}], str(lido))
+
+    entrar(http, a)
+    registrar("bloco sem logs na janela volta zero", http.post("/api/buscas/bloco", json={"texto": "", "tipo": "numero", "minutos": 60}).json() == {"total": 0, "anterior": 0})
+    registrar("bloco de rosca sem campo volta o motivo", http.post("/api/buscas/bloco", json={"texto": "", "tipo": "rosca", "minutos": 60}).status_code == 422)
+    registrar("bloco com busca quebrada volta o motivo", http.post("/api/buscas/bloco", json={"texto": '"aberta', "tipo": "numero", "minutos": 60}).status_code == 422)
+    nova = {"nome": "Admin fora do horário", "texto": "usuario=admin", "janela_minutos": 60, "a_cada_minutos": 15, "condicao": "mais_de", "limite": 3}
+    criada = http.post("/api/buscas", json=nova)
+    registrar("salva a busca agendada", criada.status_code == 201, criada.text[:200])
+    bid = criada.json()["id"]
+    registrar("busca quebrada não é salva", http.post("/api/buscas", json={**nova, "nome": "x", "texto": '"aberta'}).status_code == 422)
+    registrar("intervalo curto demais é recusado", http.post("/api/buscas", json={**nova, "nome": "y", "a_cada_minutos": 1}).status_code == 422)
+    registrar("nome repetido é recusado", http.post("/api/buscas", json=nova).status_code == 409)
+    lista = http.get("/api/buscas").json()["buscas"]
+    registrar("a lista mostra a agenda", [(x["nome"], x["a_cada_minutos"], x["condicao"], x["disparos_7_dias"]) for x in lista] == [("Admin fora do horário", 15, "mais_de", 0)], str(lista)[:200])
+    ADMIN.execute("UPDATE buscas_salvas SET proxima_em = now() + interval '1 hour' WHERE id = %s", (bid,))
+    registrar("mudar a busca faz ela rodar já", http.put(f"/api/buscas/{bid}", json={**nova, "limite": 10}).status_code == 204
+              and ADMIN.execute("SELECT proxima_em FROM buscas_salvas WHERE id = %s", (bid,)).fetchone()[0] is None)
+    painel = {"nome": "Diretoria", "blocos": [{"titulo": "Falhas", "tipo": "numero", "texto": "falha", "minutos": 1440}, {"titulo": "Quem", "tipo": "top", "texto": "", "minutos": 60, "campo": "usuario", "largura": 2}]}
+    feito = http.post("/api/paineis", json=painel)
+    registrar("cria o painel com os blocos", feito.status_code == 201, feito.text[:200])
+    pid = feito.json()["id"]
+    visto = http.get("/api/paineis").json()["paineis"][0]
+    registrar("o painel guarda os blocos com os padrões", [b["titulo"] for b in visto["blocos"]] == ["Falhas", "Quem"] and visto["blocos"][1]["largura"] == 2 and visto["blocos"][0]["tamanho"] == 10)
+    registrar("bloco inválido não entra no painel", http.put(f"/api/paineis/{pid}", json={"nome": "Diretoria", "blocos": [{"titulo": "x", "tipo": "top", "texto": "", "minutos": 60}]}).status_code == 422)
+    pdf = http.get(f"/api/paineis/{pid}/pdf")
+    registrar("o painel sai em PDF", pdf.status_code == 200 and pdf.content.startswith(b"%PDF") and pdf.headers["content-type"] == "application/pdf", str(pdf.status_code))
+    historico = http.get("/api/relatorios/historico").json()["relatorios"]
+    registrar("e entra no histórico de relatórios", any(r["tipo"] == "painel" and r["norma"] == "Diretoria" for r in historico), str(historico)[:200])
+    from roar_api import relatorios
+    from datetime import datetime as _data, timezone as _fuso
+    painel_de_teste = {"nome": "Teste", "blocos": [
+        {"titulo": "Logs", "tipo": "numero", "minutos": 10080, "largura": 3}, {"titulo": "Por nível", "tipo": "serie", "minutos": 10080, "largura": 8},
+        {"titulo": "Países", "tipo": "rosca", "minutos": 10080, "largura": 4}, {"titulo": "Regras", "tipo": "barras", "minutos": 10080, "largura": 6},
+        {"titulo": "Mapa", "tipo": "mapa", "minutos": 10080, "largura": 6}, {"titulo": "Últimos", "tipo": "tabela", "minutos": 10080, "largura": 12}]}
+    resultados = [
+        {"total": 30, "anterior": 20},
+        {"total": 5, "campo": "rule.level", "pontos": [{"quando": "2026-11-01T00:00:00.000Z", "total": 5, "por": {"3": 4, "7": 1}}]},
+        {"total": 9, "campo": "GeoLocation.country_name", "chave": "country_name", "linhas": [{"country_name": "Brazil", "total": 6}], "outros": 3},
+        {"total": 2, "campo": "rule.description", "chave": "description", "linhas": [{"description": "<script>alert(1)</script>", "total": 2}], "outros": 0},
+        {"erro": "Não foi possível consultar os logs."},
+        {"total": 1, "colunas": [{"campo": "timestamp", "chave": "timestamp"}, {"campo": "agent.name", "chave": "name"}],
+         "linhas": [{"timestamp": "2026-11-06T01:36:00.254+0000", "name": "srv-a"}]}]
+    html = relatorios.montar_html_do_painel(painel_de_teste, resultados, {"fuso": "America/Sao_Paulo", "cliente_nome": "Org", "nome": "Ana"},
+                                            buscas.JANELAS, agora=_data(2026, 11, 6, tzinfo=_fuso.utc))
+    registrar("cada tipo de bloco vira desenho ou tabela no papel", html.count("<svg") >= 2 and "+50% sobre o período anterior" in html and "nível 7" in html, html[:0])
+    registrar("o país sai em português, e Outros só com os que ficaram de fora", "Brasil" in html and "Outros" in html)
+    registrar("valor vindo do log não vira HTML", "<script>alert(1)" not in html and "&lt;script&gt;" in html)
+    registrar("o horário do índice sai no fuso da pessoa", "05/11/2026 22:36" in html)
+    registrar("bloco que falhou mostra o motivo sem derrubar o painel", "Não foi possível consultar os logs." in html)
+    registrar("blocos se juntam em linhas de 12 colunas", [len(l) for l in relatorios._em_linhas([{"largura": w} for w in (3, 3, 3, 3, 8, 4, 6, 6, 12)])] == [4, 2, 2, 1])
+    registrar("o PDF é gerado com os desenhos", relatorios.gerar_pdf(html).startswith(b"%PDF"))
+    entrar(http, b)
+    registrar("outra organização não baixa o painel", http.get(f"/api/paineis/{pid}/pdf").status_code == 404)
+    registrar("outra organização não vê buscas nem painéis", http.get("/api/buscas").json()["buscas"] == [] and http.get("/api/paineis").json()["paineis"] == [])
+    registrar("outra organização não apaga", http.delete(f"/api/buscas/{bid}").status_code == 404 and http.delete(f"/api/paineis/{pid}").status_code == 404)
+    entrar(http, a)
+    registrar("apaga busca e painel", http.delete(f"/api/buscas/{bid}").status_code == 204 and http.delete(f"/api/paineis/{pid}").status_code == 204)
+
+
+def testar_parsers(http, a, b):
+    print("\n== Parsers próprios", flush=True)
+    from roar_api import parsers
+    guiado = {"reconhecer": "programa", "valor": "FWX", "campos": [{"nome": "srcip", "antes": "src=", "tipo": "ip"}, {"nome": "msg", "antes": 'texto "', "tipo": "resto"}]}
+    xml = parsers.gerar_xml("fw", guiado)
+    registrar("o guiado vira um pai e um irmão por campo", xml.count("<decoder ") == 3 and "<program_name>FWX</program_name>" in xml
+              and xml.count("<parent>roar_fw</parent>") == 2 and "src=([0-9A-Fa-f:.]+)" in xml, xml)
+    registrar("o texto antes entra literal e escapado no XML", 'texto\\ &quot;' in xml or 'texto\\ "' in xml, xml)
+    por_texto = parsers.gerar_xml("fw", {**guiado, "reconhecer": "texto", "valor": "a<b (x)"})
+    registrar("reconhecer por texto escapa a expressão e o XML", '<prematch type="pcre2">a&lt;b\\ \\(x\\)</prematch>' in por_texto, por_texto)
+    for nome, definicao in (("sem campos", {**guiado, "campos": []}), ("campo repetido", {**guiado, "campos": guiado["campos"] * 2}),
+                            ("campo com nome ruim", {**guiado, "campos": [{"nome": "Src IP", "antes": "x", "tipo": "ip"}]}),
+                            ("programa com espaço", {**guiado, "valor": "meu programa"}), ("sem texto antes", {**guiado, "campos": [{"nome": "x", "antes": " ", "tipo": "ip"}]})):
+        try:
+            parsers.gerar_xml("fw", definicao)
+            registrar(f"guiado recusa {nome}", False)
+        except parsers.ParserInvalido:
+            registrar(f"guiado recusa {nome}", True)
+    for nome, ruim in (("outro nome", '<decoder name="sshd"><prematch>x</prematch></decoder>'), ("entidade", '<!DOCTYPE x [<!ENTITY a "b">]><decoder name="roar_fw"/>'),
+                       ("elemento estranho", '<decoder name="roar_fw"><script>x</script></decoder>'), ("pai de fora", '<decoder name="roar_fw_x"><parent>sshd</parent></decoder>'),
+                       ("regra no lugar", '<rule id="1"/>'), ("mal formado", '<decoder name="roar_fw">')):
+        try:
+            parsers.conferir_xml("fw", ruim)
+            registrar(f"XML à mão recusa {nome}", False)
+        except parsers.ParserInvalido:
+            registrar(f"XML à mão recusa {nome}", True)
+    registrar("XML à mão bom passa", parsers.conferir_xml("fw", xml) == xml)
+
+    entrar(http, a)
+    criado = http.post("/api/parsers", json={"titulo": "Firewall X", "nome": "fw_x", "modo": "guiado", "definicao": guiado, "exemplo": "FWX: src=1.2.3.4"})
+    registrar("cria o parser guiado", criado.status_code == 201, criado.text[:200])
+    pid = criado.json()["id"]
+    lista = http.get("/api/parsers").json()
+    registrar("o parser fica esperando o servidor, com o XML gerado", [(p["nome"], p["estado"], "roar_fw_x" in p["xml"]) for p in lista["parsers"]] == [("fw_x", "pendente", True)]
+              and "srcip" in lista["campos"], str(lista["parsers"])[:200])
+    registrar("guiado ruim é recusado com o motivo", http.post("/api/parsers", json={"titulo": "x", "nome": "x", "modo": "guiado", "definicao": {"reconhecer": "programa", "valor": "a"}}).status_code == 422)
+    registrar("nome repetido é recusado", http.post("/api/parsers", json={"titulo": "x", "nome": "fw_x", "modo": "guiado", "definicao": guiado}).status_code == 409)
+    registrar("o nome não muda", http.put(f"/api/parsers/{pid}", json={"titulo": "x", "nome": "outro", "modo": "guiado", "definicao": guiado}).status_code == 422)
+    mudou = http.put(f"/api/parsers/{pid}", json={"titulo": "Firewall X novo", "nome": "fw_x", "modo": "xml", "xml": '<decoder name="roar_fw_x"><program_name>FWX</program_name></decoder>'})
+    registrar("muda para XML à mão", mudou.status_code == 204 and http.get("/api/parsers").json()["parsers"][0]["modo"] == "xml", mudou.text[:200])
+    registrar("desliga o parser", http.post(f"/api/parsers/{pid}/ativo", params={"ligado": "false"}).status_code == 204
+              and http.get("/api/parsers").json()["parsers"][0]["ativo"] is False)
+    entrar(http, b)
+    registrar("outra organização não vê nem mexe", http.get("/api/parsers").json()["parsers"] == [] and http.delete(f"/api/parsers/{pid}").status_code == 404)
+    entrar(http, a)
+    registrar("apaga o parser", http.delete(f"/api/parsers/{pid}").status_code == 204 and http.get("/api/parsers").json()["parsers"] == [])
+
+
 def testar_listas(http, a, b):
     print("\n== Listas de observação", flush=True)
     from roar_api import listas
@@ -535,7 +917,44 @@ def testar_casos(http, a, b):
               and http.request("DELETE", f"/api/casos/{caso}/itens/risco/{a['alerta']}").status_code == 204)
     registrar("nota vazia é recusada", http.post(f"/api/casos/{caso}/notas", json={"texto": "  "}).status_code == 422)
     registrar("nota entra no histórico", http.post(f"/api/casos/{caso}/notas", json={"texto": "bloqueei o IP"}).status_code == 201)
+    print("\n== Casos: fato, hipótese, plantão e evidências", flush=True)
+    registrar("tipo de nota inventado é recusado", http.post(f"/api/casos/{caso}/notas", json={"texto": "x", "tipo": "palpite"}).status_code == 422)
+    http.post(f"/api/casos/{caso}/notas", json={"texto": "a conta admin entrou de 203.0.113.9", "tipo": "fato"})
+    http.post(f"/api/casos/{caso}/notas", json={"texto": "a senha vazou no phishing", "tipo": "hipotese"})
+    notas = http.get(f"/api/casos/{caso}").json()["notas"]
+    hipotese = next(n for n in notas if n["tipo"] == "hipotese")
+    registrar("fato e hipótese ficam com o tipo, e a hipótese nasce aberta", any(n["tipo"] == "fato" for n in notas) and hipotese["situacao"] == "aberta")
+    fato = next(n for n in notas if n["tipo"] == "fato")
+    registrar("fato não tem situação para mudar", http.post(f"/api/casos/{caso}/notas/{fato['id']}/situacao", json={"situacao": "confirmada"}).status_code == 404)
+    registrar("a hipótese é confirmada", http.post(f"/api/casos/{caso}/notas/{hipotese['id']}/situacao", json={"situacao": "confirmada"}).status_code == 204)
+    notas = http.get(f"/api/casos/{caso}").json()["notas"]
+    registrar("o texto da hipótese não muda, e a confirmação vai para o histórico",
+              next(n for n in notas if n["id"] == hipotese["id"]) == {**hipotese, "situacao": "confirmada"}
+              and any(n["automatica"] and n["texto"].startswith("Hipótese confirmada") for n in notas))
+    registrar("passar sem dizer nada é recusado", http.post(f"/api/casos/{caso}/passagem", json={"para": eu["id"]}).status_code == 422)
+    registrar("passar para quem não pode triar é recusado", http.post(f"/api/casos/{caso}/passagem", json={"para": str(uuid.uuid4()), "feito": "x"}).status_code == 422)
+    registrar("passa o plantão", http.post(f"/api/casos/{caso}/passagem", json={"para": eu["id"], "feito": "bloqueei o IP", "pendente": "trocar a senha"}).status_code == 204)
+    passagem = [n for n in http.get(f"/api/casos/{caso}").json()["notas"] if n["tipo"] == "passagem"]
+    registrar("a passagem fica no histórico com o feito e o que falta", passagem and "Já feito: bloqueei o IP" in passagem[-1]["texto"] and "Falta: trocar a senha" in passagem[-1]["texto"])
+    plantao = http.get("/api/casos-plantao", params={"horas": 12}).json()
+    linha = next((c for c in plantao["abertos"] if c["id"] == caso), None)
+    registrar("o resumo do plantão traz o caso, a última passagem e o texto para colar", linha and "Falta: trocar a senha" in (linha["ultima_passagem"] or "")
+              and f"#{caso} Força bruta no servidor" in plantao["texto"] and plantao["novos"], str(linha)[:200])
+    conteudo = b"print de tela \x00\x01"
+    anexo = http.post(f"/api/casos/{caso}/evidencias/arquivo", json={"nome": "../print.png", "tipo_midia": "image/png", "descricao": "tela do phishing",
+                                                                     "conteudo": base64.b64encode(conteudo).decode()})
+    registrar("anexa um arquivo ao caso, com o resumo", anexo.status_code == 201 and anexo.json()["sha256"] == hashlib.sha256(conteudo).hexdigest(), anexo.text[:160])
+    registrar("arquivo em base64 quebrado é recusado", http.post(f"/api/casos/{caso}/evidencias/arquivo", json={"nome": "x", "conteudo": "não é base64"}).status_code == 422)
+    baixado = http.get(f"/api/casos/{caso}/evidencias/{anexo.json()['id']}")
+    registrar("a evidência baixa igual, como anexo e com nome sem caminho", baixado.content == conteudo and "attachment" in baixado.headers["content-disposition"]
+              and "/" not in baixado.headers["content-disposition"].split("filename=")[1], baixado.headers.get("content-disposition"))
+    evidencias = http.get(f"/api/casos/{caso}").json()["evidencias"]
+    registrar("o caso lista a evidência sem o conteúdo, e o histórico guarda o resumo", evidencias[0]["descricao"] == "tela do phishing" and "conteudo" not in evidencias[0]
+              and any(hashlib.sha256(conteudo).hexdigest() in n["texto"] for n in http.get(f"/api/casos/{caso}").json()["notas"]))
+    sem_selo = http.post(f"/api/casos/{caso}/evidencias/pacote")
+    registrar("pacote de prova de evento que não está no índice é recusado com o motivo", sem_selo.status_code == 409 and sem_selo.json()["detail"], sem_selo.text[:160])
     registrar("caso encerra com desfecho", http.patch(f"/api/casos/{caso}", json={"estado": "encerrado", "desfecho": "incidente"}).status_code == 204)
+    registrar("caso encerrado não é passado", http.post(f"/api/casos/{caso}/passagem", json={"para": eu["id"], "feito": "x"}).status_code == 409)
     registrar("caso encerrado sai dos abertos e vai para os encerrados",
               caso not in [c["id"] for c in http.get("/api/casos").json()["casos"]]
               and caso in [c["id"] for c in http.get("/api/casos", params={"estado": "encerrados"}).json()["casos"]])
@@ -546,6 +965,8 @@ def testar_casos(http, a, b):
     entrar(http, b)
     registrar("outra organização não vê o caso", http.get(f"/api/casos/{caso}").status_code == 404
               and http.post(f"/api/casos/{caso}/notas", json={"texto": "x"}).status_code == 404)
+    registrar("nem a evidência dele", http.get(f"/api/casos/{caso}/evidencias/{anexo.json()['id']}").status_code == 404
+              and http.post(f"/api/casos/{caso}/evidencias/arquivo", json={"nome": "x", "conteudo": "eA=="}).status_code == 404)
     http.post("/api/sair")
     http.cookies.clear()
 
@@ -1018,9 +1439,19 @@ def main():
         falhas_de_login.clear()
         testar_listas(http, a, b)
         falhas_de_login.clear()
+        testar_parsers(http, a, b)
+        falhas_de_login.clear()
+        testar_buscas_e_paineis(http, a, b)
+        falhas_de_login.clear()
+        testar_email(http, a, b)
+        falhas_de_login.clear()
+        testar_superficie(http, a, b)
+        falhas_de_login.clear()
         testar_passkeys(http, a)
         falhas_de_login.clear()
         testar_sso(http, a, b)
+        falhas_de_login.clear()
+        testar_saml(http, a, b)
         falhas_de_login.clear()
 
         print("\n== Tentativas em série", flush=True)

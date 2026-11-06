@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from . import cofre, rede_externa
+from .normalizar import CAMPOS_DE_IP_DE_DESTINO, CAMPOS_DE_IP_DE_ORIGEM
 
 log = logging.getLogger("roar.inteligencia")
 
@@ -186,7 +187,7 @@ def observaveis(evento_ip, bruto):
     bruto = bruto if isinstance(bruto, dict) else {}
     dados = bruto.get("data") if isinstance(bruto.get("data"), dict) else {}
     arquivo = bruto.get("syscheck") if isinstance(bruto.get("syscheck"), dict) else {}
-    for candidato in (evento_ip, dados.get("srcip"), dados.get("dstip")):
+    for candidato in (evento_ip, *(dados.get(c) for c in CAMPOS_DE_IP_DE_ORIGEM + CAMPOS_DE_IP_DE_DESTINO)):
         normal = normalizar("ip", candidato)
         if normal:
             saida.add(("ip", normal))
