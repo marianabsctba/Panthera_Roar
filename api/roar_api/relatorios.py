@@ -161,6 +161,7 @@ def coletar_vulnerabilidades(con, dias):
 NORMA_NA_CHECAGEM = {
     "pci_dss": ("pci_dss_v4", "pci_dss_v3", "pci_dss"), "tsc": ("soc_2", "tsc"), "hipaa": ("hipaa",),
     "nist_800_53": ("nist_sp_800-53", "nist_800_53"), "gdpr": ("gdpr_IV", "gdpr"), "gpg13": ("gpg_13", "gpg13"),
+    "iso_27001-2013": ("iso_27001-2013",),
 }
 LIMITE_DE_CONTROLES = 200
 
@@ -190,6 +191,7 @@ def coletar_norma(con, norma, dias):
     d["regras_da_norma"] = catalogo_de_normas.regras_da_norma(con, norma)
     chave_no_alerta, mapa = catalogo_de_normas.origem(norma)
     d["derivada_de"] = NORMAS[chave_no_alerta] if mapa else None
+    d["so_pelas_checagens"] = norma in catalogo_de_normas.SO_PELAS_CHECAGENS
 
     # A última situação de cada checagem em cada ativo: a reprovada que depois passou não conta.
     checagens = _linhas(con, f"""

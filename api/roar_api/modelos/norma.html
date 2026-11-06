@@ -20,6 +20,7 @@
   <div class="numero"><b>{{ resumo.controles_cobertos|n }}</b><span>controles cobertos pelas {{ regras_da_norma|n }} regras</span></div>
   <div class="numero"><b>{{ resumo.controles_com_checagem_reprovada|n }}</b><span>controles com checagem de configuração reprovada</span></div>
 </div>
+{% if so_pelas_checagens %}<p class="achado">As regras não marcam a {{ norma }}: os controles vêm das checagens de configuração segura de cada ativo. Por isso não há controles cobertos por regra, e os alertas por controle são os das checagens.</p>{% endif %}
 {% if derivada_de %}<p class="achado">O Wazuh não marca a {{ norma }} nas regras. Os controles saem do {{ derivada_de }}, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) do {{ derivada_de }} no Art. 6, VII; Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38. Artigos sem correspondência, como o Art. 48 (comunicação de incidente), não aparecem aqui.</p>{% endif %}
 <p>Cada alerta do Wazuh traz os controles de {{ derivada_de or norma }} que a regra atende{% if norma == "PCI DSS" %}, na versão 3.2.1{% endif %}. A coluna "O que pede" resume cada controle em português; não é a redação oficial da norma. Os números acima contam os alertas do período por controle, os controles que as regras cobrem, e as checagens de configuração segura que estão reprovadas em algum ativo.</p>
 

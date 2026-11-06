@@ -94,7 +94,7 @@ def main():
         def checagem(cl, id_, titulo, resultado, quando):
             evento(cl, "19007", "Checagem de configuração", 7, "media", quando, grupos=("sca",), extra={"data": {"sca": {
                 "type": "check", "policy": "CIS Debian 12", "policy_id": "cis_debian12",
-                "check": {"id": id_, "title": titulo, "result": resultado, "compliance": {"pci_dss_v4": {"0": "2.2.4,8.3.1"}, "cis": "1.1"}}}}})
+                "check": {"id": id_, "title": titulo, "result": resultado, "compliance": {"pci_dss_v4": {"0": "2.2.4,8.3.1"}, "cis": "1.1", "iso_27001-2013": "A.9.4.3"}}}}})
         # Uma varredura concluída em A, com uma crítica aberta e uma corrigida no período.
         modelo = admin.execute("INSERT INTO vuln_modelos (cliente_id, nome, ferramenta, criado_por) VALUES (%s, 'Rede', 'rede', %s) RETURNING id", (a["id"], uuid.uuid4())).fetchone()[0]
         alvo = admin.execute("INSERT INTO vuln_alvos (cliente_id, nome, hosts, modelo_id, criado_por) VALUES (%s, 'Servidores', '{10.0.0.5}', %s, %s) RETURNING id",
@@ -220,6 +220,9 @@ def main():
             _, paginas_l = texto_do_pdf(http.get("/api/normas/relatorio", params={"norma": "lgpd", "dias": 30}).content)
             texto_l = " ".join(" ".join(paginas_l).split())
             registrar("o PDF da LGPD explica de onde vêm os controles", "Relatório de conformidade: LGPD" in texto_l and "O Wazuh não marca a LGPD nas regras" in texto_l)
+            ji = http.get("/api/normas/relatorio", params={"norma": "iso_27001", "dias": 30, "formato": "json"}).json()
+            registrar("a ISO 27001 vem das checagens, com o nome do controle", ji["so_pelas_checagens"] is True
+                      and [(c["controle"], c["nome"]) for c in ji["configuracao"]] == [("A.9.4.3", "Gestão de senhas")], str(ji["configuracao"])[:200])
             registrar("norma inventada é recusada", http.get("/api/normas/relatorio", params={"norma": "iso_inventada"}).status_code == 422)
             registrar("a geração do relatório de norma fica registrada", admin.execute(
                 "SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'gerar_relatorio_de_norma' AND alvo LIKE %s",

@@ -24,10 +24,10 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | | Playbooks | 3 | Pronto: blocos, modelos, simulação e YAML |
 | Inteligência | Feeds e IOC | 5 | Feito: MISP local já ligado, MISP e TAXII externos, conferência na chegada e nos últimos 90 dias quando chega indicador novo, e lista manual vinda da caça |
 | | STIX | 3 | Feito: indicadores STIX 2.1 por TAXII 2.1 |
-| Retenção | Período mínimo | 5 | Parcial: 90 dias configuráveis, sem camada fria para anos |
+| Retenção | Período mínimo | 5 | Feito: prazo por organização para alertas e logs brutos, de 30 dias a 10 anos, cópia fria diária e recuperação de dias antigos |
 | | Log bruto | 3 | Feito |
 | Relatórios | Dashboards e exportação | 5 | Parcial: panorama, sem exportar |
-| Compliance | Relatório por norma | 2 | Feito: PDF e JSON de LGPD (pela correspondência com o GDPR), PCI DSS, GDPR, HIPAA, NIST 800-53, TSC e GPG13, com o nome de cada controle em português, com alertas por controle, controles cobertos sem alerta, checagens de configuração reprovadas por controle e a guarda dos registros. ISO 27001 e normas do Bacen faltam |
+| Compliance | Relatório por norma | 2 | Feito: PDF e JSON de LGPD (pela correspondência com o GDPR), ISO 27001:2013 (pelas checagens de configuração), PCI DSS, GDPR, HIPAA, NIST 800-53, TSC e GPG13, com o nome de cada controle em português, com alertas por controle, controles cobertos sem alerta, checagens de configuração reprovadas por controle e a guarda dos registros. Normas do Bacen e a ISO 27001:2022 faltam |
 | | Ofuscar campos sensíveis | 2 | Feito: usuário vira apelido, IP, CPF, CNPJ, e-mail, cartão e telefone mascarados na saída para quem não é administrador nem N2, com liga e desliga por organização; o log guardado não muda. IPv6 só é mascarado em campo de IP, não no meio do texto |
 | Acesso | Separação por unidade | 3 | Feito: isolamento por cliente |
 | | Papéis (RBAC) | 5 | Feito: cinco perfis, checados em cada rota |

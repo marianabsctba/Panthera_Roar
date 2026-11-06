@@ -6,7 +6,7 @@ Quando um controle não está aqui, vale o nome do requisito ou da família acim
 
 import re
 
-NORMAS = {"lgpd": "LGPD", "pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
+NORMAS = {"lgpd": "LGPD", "iso_27001": "ISO 27001:2013", "pci_dss": "PCI DSS", "gdpr": "GDPR", "hipaa": "HIPAA", "nist_800_53": "NIST 800-53", "tsc": "TSC", "gpg13": "GPG13"}
 
 # As regras do Wazuh seguem o PCI DSS 3.2.1.
 PCI_DSS = {
@@ -95,6 +95,30 @@ LGPD = {
     "Art. 50": "Boas práticas e programa de governança em privacidade",
 }
 
+# Anexo A da versão 2013, a que as checagens de configuração marcam. A de 2022 renumerou tudo.
+ISO_27001 = {
+    "A.5": "Políticas de segurança da informação", "A.6": "Organização da segurança da informação", "A.7": "Segurança em recursos humanos",
+    "A.8": "Gestão de ativos", "A.9": "Controle de acesso", "A.10": "Criptografia", "A.11": "Segurança física e do ambiente",
+    "A.12": "Segurança nas operações", "A.13": "Segurança nas comunicações", "A.14": "Aquisição, desenvolvimento e manutenção de sistemas",
+    "A.15": "Relação com fornecedores", "A.16": "Gestão de incidentes de segurança", "A.17": "Continuidade do negócio", "A.18": "Conformidade",
+    "A.8.1.1": "Inventário dos ativos", "A.8.1.3": "Uso aceitável dos ativos", "A.8.3.1": "Gestão de mídias removíveis",
+    "A.9.1.1": "Política de controle de acesso", "A.9.2.1": "Cadastro e descadastro de usuários", "A.9.2.3": "Gestão de acessos privilegiados",
+    "A.9.2.5": "Revisão dos direitos de acesso", "A.9.2.6": "Retirada ou ajuste de direitos de acesso", "A.9.4.1": "Restrição de acesso à informação",
+    "A.9.4.2": "Entrada segura nos sistemas", "A.9.4.3": "Gestão de senhas", "A.10.1.1": "Política de uso de criptografia",
+    "A.12.1.2": "Gestão de mudanças", "A.12.2.1": "Controles contra malware", "A.12.3.1": "Cópias de segurança", "A.12.4.1": "Registro de eventos",
+    "A.12.4.2": "Proteção dos registros", "A.12.4.3": "Registros de administradores e operadores", "A.12.4.4": "Relógios sincronizados",
+    "A.12.5.1": "Instalação de software em sistemas em produção", "A.12.6.1": "Gestão de vulnerabilidades técnicas",
+    "A.12.6.2": "Restrição à instalação de software", "A.13.1.1": "Controles de rede", "A.13.1.3": "Segregação de redes",
+    "A.13.2.1": "Políticas de transferência de informação", "A.13.2.3": "Mensagens eletrônicas", "A.14.2.2": "Controle de mudanças em sistemas",
+    "A.14.2.5": "Princípios de engenharia de sistemas seguros", "A.16.1.2": "Notificação de eventos de segurança", "A.16.1.7": "Coleta de evidências",
+    "A.18.1.3": "Proteção de registros", "A.18.1.4": "Privacidade e proteção de dados pessoais",
+}
+
+# Nome da norma no alerta, quando não é o mesmo daqui.
+CHAVE_NO_ALERTA = {"iso_27001": "iso_27001-2013"}
+# Normas que só as checagens de configuração marcam: as regras não citam, então não há regra que cubra.
+SO_PELAS_CHECAGENS = {"iso_27001"}
+
 # A LGPD não vem marcada nas regras do Wazuh. Os controles saem do GDPR, artigo por artigo, pelo mesmo fundamento.
 DERIVADAS = {"lgpd": ("gdpr", {"II_5.1.f": "Art. 6, VII", "IV_30.1.g": "Art. 37", "IV_32.2": "Art. 46", "IV_35.7.d": "Art. 38"})}
 
@@ -168,7 +192,7 @@ GPG13 = {
     "10": "Situação da trilha de auditoria",
 }
 
-CATALOGO = {"lgpd": LGPD, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
+CATALOGO = {"lgpd": LGPD, "iso_27001": ISO_27001, "pci_dss": PCI_DSS, "gdpr": GDPR, "hipaa": HIPAA, "nist_800_53": NIST_800_53, "tsc": TSC, "gpg13": GPG13}
 
 
 def canonico(norma, controle):
@@ -204,7 +228,7 @@ def _acima(controle):
 
 def origem(norma):
     """A chave da norma no alerta e, para a norma derivada, a correspondência de cada controle."""
-    return DERIVADAS.get(norma, (norma, None))
+    return DERIVADAS.get(norma, (CHAVE_NO_ALERTA.get(norma, norma), None))
 
 
 def traduzir(norma, controles):

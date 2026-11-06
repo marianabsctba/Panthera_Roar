@@ -1798,7 +1798,7 @@ def normas(request: Request, sessao=Depends(exige(permissoes.VER)), norma: str =
     chave, mapa = catalogo_de_normas.origem(norma)
     # A gaveta procura as regras pela marcação que vem nelas: a da LGPD é a do GDPR.
     return {"norma": norma, "chave": chave, "normas": NORMAS_CONHECIDAS, "controles": controles, "regras_da_norma": regras_da_norma,
-            "derivada_de": NORMAS_CONHECIDAS[chave] if mapa else None}
+            "derivada_de": NORMAS_CONHECIDAS[chave] if mapa else None, "so_pelas_checagens": norma in catalogo_de_normas.SO_PELAS_CHECAGENS}
 
 
 @app.get("/api/normas/relatorio")

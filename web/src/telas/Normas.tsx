@@ -7,7 +7,7 @@ import { numero } from "../formato";
 import { GavetaDaRegra, severidadeDoNivel, type DetalheDaRegra } from "./Ataques";
 
 interface Controle { controle: string; nome: string | null; total: number; nivel: number; ultimo: string | null; ativos: number; origens: string[] }
-interface VisaoDaNorma { norma: string; chave: string; derivada_de: string | null; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
+interface VisaoDaNorma { norma: string; chave: string; derivada_de: string | null; so_pelas_checagens: boolean; normas: Record<string, string>; controles: Controle[]; regras_da_norma: number }
 
 const PAGINA_DE_REGRAS = 100;
 const LOTE = 8;
@@ -183,6 +183,9 @@ export function Normas() {
       {!dados ? <Carregando erro={erro} /> : (
         <Stack gap="md">
           <SegmentedControl size="xs" style={{ alignSelf: "flex-start" }} value={norma} onChange={trocar(setNorma)} data={Object.entries(dados.normas).map(([value, label]) => ({ value, label }))} aria-label="Norma" />
+          {dados.so_pelas_checagens && (
+            <Text size="xs" c="dimmed">As regras não marcam a {dados.normas[dados.norma]}: os controles vêm das checagens de configuração segura de cada ativo. Ainda não há regra que cubra esta norma.</Text>
+          )}
           {dados.derivada_de && (
             <Text size="xs" c="dimmed">As regras não marcam a {dados.normas[dados.norma]}. Os controles saem do {dados.derivada_de}, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) no Art. 6, VII; Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38.</Text>
           )}
