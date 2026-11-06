@@ -8,3 +8,9 @@ __pycache__/
 node_modules/
 dist/
 *.log
+
+# Trocas de dado real da demonstração: ficam só na máquina de quem grava.
+infra/demo/trocas.json
+
+# Site da demonstração gerado por "npm run demo": vai para o ramo gh-pages (infra/demo/publicar.sh), não para o main.
+/demo/
