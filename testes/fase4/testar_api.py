@@ -383,6 +383,52 @@ def testar_sso(http, a, b):
         modulo._descobertas.clear()
 
 
+def testar_listas(http, a, b):
+    print("\n== Listas de observação", flush=True)
+    from roar_api import listas
+    from roar_ingestao import listas as listas_no_gerenciador
+    n = listas.normalizar
+    registrar("rede /24 vira prefixo, como o gerenciador compara", (n("ip", "10.20.30.0/24"), n("ip", " 203.0.113.9 "), n("ip", "2001:db8::1")) == ("10.20.30.", "203.0.113.9", "2001:db8::1"))
+    for tipo, ruim in (("ip", "10.0.0.0/20"), ("ip", "x.y"), ("dominio", "não é domínio"), ("hash", "abc"), ("texto", 'com "aspas"')):
+        try:
+            n(tipo, ruim)
+            registrar(f"item ruim é recusado: {ruim}", False)
+        except listas.ItemInvalido:
+            registrar(f"item ruim é recusado: {ruim}", True)
+    registrar("domínio e hash ficam em minúsculas", (n("dominio", "Exemplo.COM.br."), n("hash", "A" * 64)) == ("exemplo.com.br", "a" * 64))
+    registrar("chave com dois pontos vai entre aspas no arquivo", listas_no_gerenciador.chave("2001:db8::1") == '"2001:db8::1"' and listas_no_gerenciador.chave("10.0.0.") == "10.0.0.")
+    from roar_ingestao import provisao
+    base = "<ossec_config>\n  <ruleset>\n    <rule_dir>ruleset/rules</rule_dir>\n  </ruleset>\n</ossec_config>\n"
+    conf = provisao.com_listas(base, listas_no_gerenciador.declaracoes({"bloqueados": "1.2.3.4:\n"}))
+    registrar("a lista entra no ruleset que já existe, sem abrir outro", conf.count("<ruleset>") == 1
+              and conf.index("<list>etc/lists/roar/bloqueados</list>") < conf.index("</ruleset>") and provisao.com_listas(base, "") == base, conf)
+    registrar("o resumo muda com o conteúdo", listas_no_gerenciador.resumo({"bloqueados": "1.2.3.4:\n"}) != listas_no_gerenciador.resumo({"bloqueados": "1.2.3.5:\n"})
+              and listas_no_gerenciador.resumo({}) == "")
+
+    entrar(http, a)
+    criada = http.post("/api/listas", json={"titulo": "IPs bloqueados", "nome": "ips-bloqueados", "tipo": "ip"})
+    registrar("cria a lista", criada.status_code == 201, criada.text[:200])
+    lista = criada.json()["id"]
+    registrar("nome repetido é recusado", http.post("/api/listas", json={"titulo": "Outra", "nome": "ips-bloqueados", "tipo": "ip"}).status_code == 409)
+    registrar("nome com caminho é recusado", http.post("/api/listas", json={"titulo": "x", "nome": "../etc", "tipo": "ip"}).status_code == 422)
+    ruim = http.post(f"/api/listas/{lista}/itens", json={"itens": [{"valor": "10.0.0.1"}, {"valor": "nao-e-ip"}]})
+    registrar("um item ruim recusa o pedido inteiro, com o motivo", ruim.status_code == 422 and "nao-e-ip" in ruim.json()["detail"], ruim.text[:200])
+    ok = http.post(f"/api/listas/{lista}/itens", json={"itens": [{"valor": "10.0.0.1", "nota": "scanner"}, {"valor": "192.168.5.0/24"}, {"valor": "10.0.0.1", "nota": "repetido"}]})
+    registrar("grava os itens, sem repetir", ok.status_code == 200 and ok.json()["gravados"] == 2, ok.text[:200])
+    vista = http.get(f"/api/listas/{lista}").json()
+    registrar("a lista mostra os itens e a regra pronta", [i["valor"] for i in vista["itens"]] == ["10.0.0.1", "192.168.5."]
+              and "etc/lists/roar/ips-bloqueados" in vista["regra"] and vista["regra"].startswith("<rule") and 'lookup="address_match_key"' in vista["regra"], str(vista)[:300])
+    registrar("a contagem aparece na lista de listas", [(x["nome"], x["itens"]) for x in http.get("/api/listas").json()["listas"]] == [("ips-bloqueados", 2)])
+    registrar("tira um item", http.post(f"/api/listas/{lista}/itens/remover", json={"valores": ["10.0.0.1"]}).json()["removidos"] == 1)
+
+    entrar(http, b)
+    registrar("outra organização não vê a lista", http.get("/api/listas").json()["listas"] == [] and http.get(f"/api/listas/{lista}").status_code == 404)
+    registrar("outra organização não mexe na lista", http.post(f"/api/listas/{lista}/itens", json={"itens": [{"valor": "1.1.1.1"}]}).status_code == 404
+              and http.delete(f"/api/listas/{lista}").status_code == 404)
+    entrar(http, a)
+    registrar("apaga a lista com os itens", http.delete(f"/api/listas/{lista}").status_code == 204 and http.get("/api/listas").json()["listas"] == [])
+
+
 def testar_chaves(http, a, b):
     print("\n== Chaves de API", flush=True)
     entrar(http, a)
@@ -969,6 +1015,8 @@ def main():
         testar_caca(http, a)
         falhas_de_login.clear()
         testar_chaves(http, a, b)
+        falhas_de_login.clear()
+        testar_listas(http, a, b)
         falhas_de_login.clear()
         testar_passkeys(http, a)
         falhas_de_login.clear()

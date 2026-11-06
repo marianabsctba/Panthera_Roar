@@ -14,7 +14,7 @@ O que editais públicos brasileiros de SIEM pedem do produto, comparado com o qu
 | Normalização | Padrão único | 4 | Feito: todo evento sai em OCSF 1.3.0 (autenticação, arquivo, conta, grupo, sessão, conformidade e achado de detecção), um a um ou exportado com os filtros da tela |
 | Correlação | Regras customizáveis | 4 | Feito: guiada, Sigma e XML, editar e desativar também as do catálogo |
 | | Regras prontas | 4 | Feito: catálogo do Wazuh na tela, mais a base Sigma |
-| | Listas de observação | 3 | Do Wazuh, sem tela |
+| | Listas de observação | 3 | Feito: tela para criar listas de IP, usuário, domínio e hash, que chegam ao servidor da organização e as regras em XML consultam |
 | | MITRE ATT&CK | 2 | Feito: matriz completa com regras e D3FEND |
 | Busca | Linguagem de consulta | 4 | Feito: em português e inglês |
 | | Hunting | 2 | Feito: busca em eventos e logs brutos, e caça por lista de indicadores colada, com formato desarmado |

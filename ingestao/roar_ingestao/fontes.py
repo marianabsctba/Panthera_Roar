@@ -235,7 +235,7 @@ def _abrir_segredos(banco, cliente, fontes):
 
 def aplicar_fontes(banco, gerenciador_id, cliente):
     """Só reinicia o gerenciador se a configuração mudou. Reprovou: volta ao anterior e avisa na tela."""
-    from . import provisao, yara_regras
+    from . import listas, provisao, yara_regras
 
     def com_cliente(sql, *args):
         banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
@@ -251,18 +251,25 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
     pasta = PASTA_GERENCIADORES / gerenciador_id
     marca = pasta / "fontes.aplicadas"
     _abrir_segredos(banco, cliente, em_uso)
+    conteudo_das_listas = listas.arquivos(banco, cliente)
     fragmento = fragmento_de_configuracao(em_uso) + yara_regras.fragmento_de_configuracao(banco, gerenciador_id, cliente)
     arquivos = arquivos_de_credenciais(em_uso)
     # Guardar o log bruto é o padrão e não entra no resumo: assim quem já tinha não reinicia à toa.
     base = (fragmento + json.dumps(arquivos, sort_keys=True) if arquivos else fragmento) + ("" if guardar_logs else "\nsem-logs-brutos") \
-        + f"\nconfiguracao-{provisao.VERSAO_DA_CONFIGURACAO}"
+        + f"\nconfiguracao-{provisao.VERSAO_DA_CONFIGURACAO}" + (f"\nlistas-{listas.resumo(conteudo_das_listas)}" if conteudo_das_listas else "")
     resumo = hashlib.sha256(base.encode()).hexdigest()
     anterior = marca.read_text() if marca.exists() else hashlib.sha256(b"").hexdigest()
     if resumo == anterior and not pendentes:
         return 0
-    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(gerenciador_id, fragmento, arquivos, guardar_logs)
+    if resumo != anterior and conteudo_das_listas:
+        # Antes da configuração: a validação confere que cada lista citada existe.
+        provisao.instalar_listas(gerenciador_id, conteudo_das_listas)
+    ok, detalhe = (True, {}) if resumo == anterior else provisao.aplicar_configuracao(
+        gerenciador_id, fragmento, arquivos, guardar_logs, listas.declaracoes(conteudo_das_listas))
     if ok:
         marca.write_text(resumo)
+        if resumo != anterior:
+            provisao.remover_listas(gerenciador_id, conteudo_das_listas)
     with banco.con.transaction():
         for fonte in pendentes:
             if ok:

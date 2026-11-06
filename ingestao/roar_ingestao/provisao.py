@@ -564,6 +564,39 @@ def aplicar_yara(gerenciador_id, regras, scripts, decodificadores, deteccoes, no
     return ok, detalhe
 
 
+PASTA_DAS_LISTAS = "/var/ossec/etc/lists/roar"
+
+
+def instalar_listas(gerenciador_id, arquivos):
+    """Grava as listas de observação. Só acrescenta e troca: a configuração em uso ainda pode citar uma lista
+    apagada, e lista citada que falta derruba o analisador ao reiniciar. O que sobrou sai com remover_listas."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "sh", "-c",
+             f"mkdir -p {PASTA_DAS_LISTAS} && chown wazuh:wazuh {PASTA_DAS_LISTAS} && chmod 770 {PASTA_DAS_LISTAS}")
+    copia = pasta / "lista.tmp"
+    for nome, conteudo in arquivos.items():
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", nome):
+            raise ValueError("nome de lista inválido")
+        copia.write_bytes(conteudo.encode("utf-8"))
+        caminho = f"{PASTA_DAS_LISTAS}/{nome}"
+        _compose(pasta, gerenciador_id, "cp", str(copia), f"gerenciador:{caminho}")
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chown", "wazuh:wazuh", caminho)
+        _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
+    copia.unlink(missing_ok=True)
+
+
+def remover_listas(gerenciador_id, manter):
+    """Depois que a configuração nova entrou: tira as listas que ela não cita mais, com o arquivo compilado junto."""
+    pasta = DESTINO / "gerenciadores" / gerenciador_id
+    existentes = subprocess.run(["docker", "compose", "--project-directory", str(pasta), "--project-name", f"roar-ger-{gerenciador_id}",
+                                 "exec", "-T", "gerenciador", "ls", "-1", PASTA_DAS_LISTAS], capture_output=True, text=True).stdout.split()
+    sobrando = {n.removesuffix(".cdb") for n in existentes} - set(manter)
+    for nome in sobrando:
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", nome):
+            _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "rm", "-f", f"{PASTA_DAS_LISTAS}/{nome}", f"{PASTA_DAS_LISTAS}/{nome}.cdb")
+    return len(sobrando)
+
+
 def enviar_eventos(gerenciador_id, eventos):
     """Entrega ao analisador do gerenciador, que aplica as mesmas regras de qualquer outro log."""
     return _api_do_gerenciador(gerenciador_id, "POST", "/events", json={"events": eventos})
@@ -603,7 +636,16 @@ def _instalar_credenciais(pasta, gerenciador_id, arquivos):
     temporario.unlink(missing_ok=True)
 
 
-def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=True):
+def com_listas(conf, declaracoes):
+    """As listas entram no <ruleset> que já existe: um segundo bloco faz o analisador não carregar lista nenhuma."""
+    if not declaracoes:
+        return conf
+    if conf.count("</ruleset>") != 1:
+        raise ValueError("a configuração base precisa ter um único <ruleset>")
+    return conf.replace("</ruleset>", declaracoes + "  </ruleset>")
+
+
+def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=True, listas=""):
     """Troca o trecho das fontes de dados. Se reprovar, volta ao arquivo anterior e não reinicia."""
     arquivos = arquivos or {}
     pasta = DESTINO / "gerenciadores" / gerenciador_id
@@ -621,7 +663,7 @@ def aplicar_configuracao(gerenciador_id, fragmento, arquivos=None, guardar_logs=
         _compose(pasta, gerenciador_id, "exec", "-T", "gerenciador", "chmod", "660", caminho)
 
     novo = pasta / "ossec.conf.novo"
-    novo.write_text(configuracao_do_gerenciador(CONF_BASE.read_text(), guardar_logs) + fragmento)
+    novo.write_text(com_listas(configuracao_do_gerenciador(CONF_BASE.read_text(), guardar_logs), listas) + fragmento)
     instalar(novo)
     _instalar_credenciais(pasta, gerenciador_id, arquivos)
     # O analisador sozinho aprova um syslog inválido, que só derrubaria o recebimento ao reiniciar.

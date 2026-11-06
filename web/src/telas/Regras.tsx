@@ -6,6 +6,7 @@ import { detalhe, enviar, ler, pedir, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDeEventos, GavetaDoBruto, Numero, Painel, Severidade, Tabela, type FiltroDeEventos } from "../componentes";
 import { numero, SINAIS } from "../formato";
 import { EditorDeRegra, type AberturaDoEditor, type RegraPropria } from "./RegrasEditor";
+import { Listas } from "./RegrasListas";
 
 async function baixar(rota: string, nome: string) {
   const r = await fetch(rota, { credentials: "same-origin" });
@@ -647,10 +648,12 @@ export function Regras() {
           <Tabs.Tab value="catalogo">Catálogo</Tabs.Tab>
           <Tabs.Tab value="proprias">Criadas aqui</Tabs.Tab>
           <Tabs.Tab value="comportamento">Comportamento</Tabs.Tab>
+          <Tabs.Tab value="listas">Listas</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="catalogo"><Catalogo versao={versao} aoAbrir={setRegra} /></Tabs.Panel>
         <Tabs.Panel value="proprias"><RegrasProprias versao={versao} aoEditar={(r) => setEditor({ tipo: "propria", regra: r })} /></Tabs.Panel>
         <Tabs.Panel value="comportamento"><Comportamento /></Tabs.Panel>
+        <Tabs.Panel value="listas"><Listas aoCriarRegra={(xml) => setEditor({ tipo: "base", xml })} /></Tabs.Panel>
       </Tabs>
 
       <GavetaDaRegra

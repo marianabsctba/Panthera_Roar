@@ -49,7 +49,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import correcao, entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
+from roar_api import correcao, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -3200,6 +3200,121 @@ def _converter(dados: RegraNova):
 def converter_regra(dados: RegraNova, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
     titulo, origem, xml, ramos = _converter(dados)
     return {"titulo": titulo, "sigma": origem, "xml": xml, "regras_geradas": ramos}
+
+
+class NovaLista(BaseModel):
+    nome: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
+    titulo: str = Field(min_length=1, max_length=120)
+    descricao: str = Field(default="", max_length=1000)
+    tipo: str = Field(pattern="^(ip|usuario|dominio|hash|texto)$")
+
+
+class MudancaDeLista(BaseModel):
+    titulo: str = Field(min_length=1, max_length=120)
+    descricao: str = Field(default="", max_length=1000)
+
+
+class ItemDeLista(BaseModel):
+    valor: str = Field(min_length=1, max_length=300)
+    nota: str = Field(default="", max_length=200)
+
+
+class ItensDeLista(BaseModel):
+    itens: list[ItemDeLista] = Field(min_length=1, max_length=listas_de_observacao.ITENS_POR_VEZ)
+
+
+class ValoresDeLista(BaseModel):
+    valores: list[str] = Field(min_length=1, max_length=listas_de_observacao.ITENS_POR_VEZ)
+
+
+def _lista(con, identificador):
+    _inteiro_valido(identificador)
+    lista = con.execute("SELECT id, nome, titulo, descricao, tipo, criada_em, alterada_em FROM listas WHERE id = %s", (identificador,)).fetchone()
+    if not lista:
+        raise HTTPException(status_code=404)
+    return lista
+
+
+@app.get("/api/listas")
+def listas_de_observacao_da_organizacao(request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        linhas = con.execute("""SELECT l.id, l.nome, l.titulo, l.descricao, l.tipo, l.criada_em, l.alterada_em, count(i.valor) AS itens
+                                FROM listas l LEFT JOIN listas_itens i ON i.lista_id = l.id GROUP BY l.id ORDER BY l.titulo""").fetchall()
+    return {"listas": linhas, "tipos": listas_de_observacao.TIPOS, "limite": listas_de_observacao.ITENS_POR_LISTA}
+
+
+@app.post("/api/listas", status_code=201)
+def criar_lista(dados: NovaLista, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    try:
+        with do_cliente(request, sessao) as con:
+            linha = con.execute("INSERT INTO listas (cliente_id, nome, titulo, descricao, tipo, criada_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                                (sessao["cliente_id"], dados.nome, dados.titulo.strip(), dados.descricao.strip(), dados.tipo, sessao["usuario_id"])).fetchone()
+            con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_lista', %s)", (sessao["cliente_id"], sessao["usuario_id"], dados.nome))
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="Já existe uma lista com esse nome.")
+    return {"id": linha["id"]}
+
+
+@app.get("/api/listas/{identificador}")
+def ver_lista(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER))):
+    with do_cliente(request, sessao) as con:
+        lista = _lista(con, identificador)
+        itens = con.execute("SELECT valor, nota, adicionado_em FROM listas_itens WHERE lista_id = %s ORDER BY valor LIMIT %s",
+                            (identificador, listas_de_observacao.ITENS_POR_LISTA)).fetchall()
+    return {**lista, "itens": itens, "regra": listas_de_observacao.exemplo_de_regra(lista["nome"], lista["tipo"], lista["titulo"]),
+            "campo": listas_de_observacao.CONSULTA[lista["tipo"]][0]}
+
+
+@app.put("/api/listas/{identificador}", status_code=204)
+def mudar_lista(identificador: int, dados: MudancaDeLista, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    with do_cliente(request, sessao) as con:
+        _lista(con, identificador)
+        con.execute("UPDATE listas SET titulo = %s, descricao = %s, alterada_em = now() WHERE id = %s", (dados.titulo.strip(), dados.descricao.strip(), identificador))
+
+
+@app.delete("/api/listas/{identificador}", status_code=204)
+def apagar_lista(identificador: int, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    with do_cliente(request, sessao) as con:
+        lista = _lista(con, identificador)
+        con.execute("DELETE FROM listas WHERE id = %s", (identificador,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'apagar_lista', %s)", (sessao["cliente_id"], sessao["usuario_id"], lista["nome"]))
+
+
+@app.post("/api/listas/{identificador}/itens")
+def acrescentar_itens(identificador: int, dados: ItensDeLista, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    """Confere tudo antes de gravar: um item ruim recusa o pedido inteiro, com o motivo de cada um."""
+    with do_cliente(request, sessao) as con:
+        lista = _lista(con, identificador)
+        bons, ruins = {}, []
+        for item in dados.itens:
+            try:
+                bons[listas_de_observacao.normalizar(lista["tipo"], item.valor)] = item.nota.strip().replace("\n", " ")
+            except listas_de_observacao.ItemInvalido as erro:
+                ruins.append(str(erro))
+        if ruins:
+            raise HTTPException(status_code=422, detail=" ".join(ruins[:5]) + (f" E mais {len(ruins) - 5}." if len(ruins) > 5 else ""))
+        outros = con.execute("SELECT count(*) AS n FROM listas_itens WHERE lista_id = %s AND NOT (valor = ANY(%s))", (identificador, list(bons))).fetchone()["n"]
+        if outros + len(bons) > listas_de_observacao.ITENS_POR_LISTA:
+            raise HTTPException(status_code=422, detail=f"Uma lista guarda até {listas_de_observacao.ITENS_POR_LISTA} itens.")
+        with con.cursor() as cursor:
+            cursor.executemany("""INSERT INTO listas_itens (cliente_id, lista_id, valor, nota, adicionado_por) VALUES (%s, %s, %s, %s, %s)
+                                  ON CONFLICT (lista_id, valor) DO UPDATE SET nota = EXCLUDED.nota""",
+                               [(sessao["cliente_id"], identificador, v, n, sessao["usuario_id"]) for v, n in bons.items()])
+        con.execute("UPDATE listas SET alterada_em = now() WHERE id = %s", (identificador,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'acrescentar_itens_na_lista', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{lista['nome']}: {len(bons)} itens"))
+    return {"gravados": len(bons)}
+
+
+@app.post("/api/listas/{identificador}/itens/remover")
+def remover_itens(identificador: int, dados: ValoresDeLista, request: Request, sessao=Depends(exige(permissoes.GERIR_REGRAS))):
+    with do_cliente(request, sessao) as con:
+        lista = _lista(con, identificador)
+        n = con.execute("DELETE FROM listas_itens WHERE lista_id = %s AND valor = ANY(%s)", (identificador, dados.valores)).rowcount
+        con.execute("UPDATE listas SET alterada_em = now() WHERE id = %s", (identificador,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'remover_itens_da_lista', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], f"{lista['nome']}: {n} itens"))
+    return {"removidos": n}
 
 
 @app.get("/api/regras/proprias")
