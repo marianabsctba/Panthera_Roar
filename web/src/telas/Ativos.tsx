@@ -1,4 +1,4 @@
-import { Button, Drawer, Group, SegmentedControl, SimpleGrid, Stack, Text, Title, Tooltip } from "@mantine/core";
+import { Badge, Button, Drawer, Group, SegmentedControl, SimpleGrid, Stack, Text, Title, Tooltip } from "@mantine/core";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { pedir, useDados, usePode } from "../api";
@@ -21,6 +21,51 @@ interface Ativo {
   sca_reprovados: number | null;
   alertas_7_dias: number;
   criticidade: string;
+  risco: Risco;
+}
+
+interface Risco {
+  nota: number;
+  faixa: string;
+  partes: Record<string, number>;
+  motivos: string[];
+}
+
+interface AtivoSemAgente extends Risco {
+  id: number;
+  host: string;
+  nome: string | null;
+  sistema: string | null;
+  criticidade: string;
+  abertas: number;
+}
+
+const FAIXAS: Record<string, { texto: string; cor: string }> = {
+  critico: { texto: "Crítico", cor: "red" }, alto: { texto: "Alto", cor: "orange" }, medio: { texto: "Médio", cor: "yellow" }, baixo: { texto: "Baixo", cor: "gray" },
+};
+const PARTES: Record<string, string> = { falhas: "Falhas abertas", comportamento: "Comportamento", ameacas: "Indicadores de ameaça", alertas: "Alertas graves", configuracao: "Configuração fraca" };
+
+function NotaDeRisco({ risco, curta = false }: { risco: Risco; curta?: boolean }) {
+  const f = FAIXAS[risco.faixa] ?? FAIXAS.baixo;
+  return (
+    <Tooltip label={`${f.texto}: ${risco.motivos.length ? risco.motivos.join("; ") : "nada pesando agora"}`} multiline maw={320}>
+      <Badge variant="light" size="sm" radius="sm" color={f.cor} tt="none" fw={500} className="numero">{curta ? risco.nota : `${risco.nota} ${f.texto}`}</Badge>
+    </Tooltip>
+  );
+}
+
+function DetalheDoRisco({ risco }: { risco: Risco }) {
+  return (
+    <Stack gap={8}>
+      <Group justify="space-between"><Title order={2}>Risco</Title><NotaDeRisco risco={risco} /></Group>
+      {risco.motivos.length ? risco.motivos.map((m) => <Text key={m} size="sm">• {m[0].toUpperCase() + m.slice(1)}</Text>)
+        : <Text size="sm" c="dimmed">Nada pesando agora.</Text>}
+      {Object.entries(PARTES).map(([parte, rotulo]) => (
+        <Fato key={parte} rotulo={rotulo}><BarraDeNota nota={risco.partes[parte] ?? 0} largura={120} /></Fato>
+      ))}
+      <Text size="xs" c="dimmed">De 0 a 100. Falha que já é explorada por atacantes pesa até quatro vezes mais, e a criticidade do ativo decide quanto do total vale.</Text>
+    </Stack>
+  );
 }
 
 const SITUACOES: Record<string, { texto: string; tipo: string; plural: string }> = {
@@ -102,6 +147,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos, aoMudarCriticidade }: {
             <Fato rotulo="Grupos">{ativo.grupos?.length ? ativo.grupos.join(", ") : "-"}</Fato>
             <Fato rotulo="Última conexão"><Data valor={ativo.ultima_conexao} /></Fato>
           </Stack>
+          <DetalheDoRisco risco={ativo.risco} />
           <Criticidade ativo={ativo} aoMudar={(c) => aoMudarCriticidade(ativo, c)} />
           {ativo.sca_nota !== null && (
             <Stack gap={8}>
@@ -120,7 +166,7 @@ function GavetaDoAtivo({ ativo, aoFechar, aoVerEventos, aoMudarCriticidade }: {
 }
 
 export function Ativos() {
-  const { dados, erro, recarregar } = useDados<{ ativos: Ativo[] }>("/api/ativos");
+  const { dados, erro, recarregar } = useDados<{ ativos: Ativo[]; sem_agente: AtivoSemAgente[] }>("/api/ativos");
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState<string | null>(null);
   const [aberto, setAberto] = useState<Ativo | null>(null);
@@ -130,8 +176,13 @@ export function Ativos() {
   const linhas = useMemo(() => {
     const termo = busca.trim().toLowerCase();
     return ativos.filter((a) => (!situacao || a.estado === situacao)
-      && (!termo || [a.nome, a.agente_id, a.ip, a.sistema, ...(a.grupos ?? [])].some((v) => v?.toLowerCase().includes(termo))));
+      && (!termo || [a.nome, a.agente_id, a.ip, a.sistema, ...(a.grupos ?? [])].some((v) => v?.toLowerCase().includes(termo))))
+      .sort((x, y) => y.risco.nota - x.risco.nota);
   }, [ativos, busca, situacao]);
+  const semAgente = useMemo(() => {
+    const termo = busca.trim().toLowerCase();
+    return (dados?.sem_agente ?? []).filter((a) => !termo || [a.host, a.nome, a.sistema].some((v) => v?.toLowerCase().includes(termo)));
+  }, [dados, busca]);
 
   const verEventos = (a: Ativo, soAlertas: boolean) => {
     if (!a.nome) return;
@@ -148,7 +199,7 @@ export function Ativos() {
 
   return (
     <>
-      <Cabecalho titulo="Ativos" ajuda="Os servidores e estações que mandam dados, se estão conectados e a nota de configuração segura de cada um." />
+      <Cabecalho titulo="Ativos" ajuda="Os servidores e estações, do mais arriscado para o menos, se estão conectados e a nota de configuração segura de cada um." />
       {!dados ? <Carregando erro={erro} /> : (
         <Stack gap="md">
           <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md">
@@ -165,6 +216,7 @@ export function Ativos() {
               aoClicarLinha={setAberto}
               colunas={[
                 { titulo: "Ativo", celula: (a) => <Text size="sm" fw={500}>{nomeDoAtivo(a)}</Text> },
+                { titulo: "Risco", largura: 90, celula: (a) => <NotaDeRisco risco={a.risco} curta /> },
                 { titulo: "Situação", largura: 130, celula: (a) => <Situacao estado={a.estado} /> },
                 { titulo: "Criticidade", largura: 110, celula: (a) => (a.criticidade === "normal" ? <Text size="sm" c="dimmed">Normal</Text>
                   : <Estado tipo={a.criticidade === "baixa" ? "outro" : "problema"}>{CRITICIDADES[a.criticidade]?.texto ?? a.criticidade}</Estado>) },
@@ -189,6 +241,23 @@ export function Ativos() {
               ]}
             />
           </Painel>
+          {!situacao && semAgente.length > 0 && (
+            <Painel titulo="Ativos sem agente" acao={<Text size="xs" c="dimmed">Vistos só pela varredura de vulnerabilidades</Text>}>
+              <Tabela
+                linhas={semAgente}
+                chave={(a) => a.id}
+                vazio="Nenhum ativo com esse filtro."
+                colunas={[
+                  { titulo: "Ativo", celula: (a) => <Text size="sm" fw={500}>{a.nome ?? a.host}</Text> },
+                  { titulo: "Risco", largura: 90, celula: (a) => <NotaDeRisco risco={a} curta /> },
+                  { titulo: "Criticidade", largura: 110, celula: (a) => <Text size="sm" c="dimmed">{CRITICIDADES[a.criticidade]?.texto ?? a.criticidade}</Text> },
+                  { titulo: "Sistema", celula: (a) => <Text size="sm" c="dimmed">{a.sistema ?? "-"}</Text> },
+                  { titulo: "Endereço", celula: (a) => <span className="mono">{a.host}</span> },
+                  { titulo: "Falhas abertas", alinhar: "right", largura: 120, celula: (a) => numero(a.abertas) },
+                ]}
+              />
+            </Painel>
+          )}
         </Stack>
       )}
       <GavetaDoAtivo ativo={aberto} aoFechar={() => setAberto(null)} aoVerEventos={verEventos} aoMudarCriticidade={mudarCriticidade} />

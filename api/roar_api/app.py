@@ -49,7 +49,7 @@ from requests.adapters import HTTPAdapter
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios  # noqa: E402
+from roar_api import entrada as outras_entradas, evidencia, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, permissoes, relatorios, risco_de_ativos  # noqa: E402
 from roar_ingestao import cofre, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -1706,7 +1706,9 @@ def ativos(request: Request, sessao=Depends(exige(permissoes.VER))):
                       (SELECT count(*) FROM eventos e WHERE e.gerenciador_id = a.gerenciador_id AND e.agente_id = a.agente_id
                         AND e.nivel >= %s AND e.ocorrido_em >= now() - interval '7 days') AS alertas_7_dias
                FROM ativos a WHERE a.agente_id <> '000' ORDER BY a.nome""", (NIVEL_MINIMO_NA_FILA,)).fetchall()
-    return {"ativos": linhas}
+        riscos, sem_agente = risco_de_ativos.calcular(con)
+    vazio = risco_de_ativos.nota()
+    return {"ativos": [{**a, "risco": riscos.get((a["gerenciador_id"], a["agente_id"]), vazio)} for a in linhas], "sem_agente": sem_agente}
 
 
 @app.put("/api/ativos/criticidade", status_code=204)

@@ -723,6 +723,33 @@ def main():
         registrar("eventos de um agente não misturam gerenciadores", http.get("/api/eventos", params={"agente": "001", "gerenciador": "gersegundo"}).json()["eventos"] == [])
         ADMIN.execute("DELETE FROM ativos WHERE gerenciador_id = 'gersegundo'")
         ADMIN.execute("DELETE FROM gerenciadores WHERE id = 'gersegundo'")
+        print("\n== Risco dos ativos", flush=True)
+        from roar_api import risco_de_ativos as rda
+        calmo = rda.nota()
+        registrar("ativo sem nada pesando tem nota zero", (calmo["nota"], calmo["faixa"], calmo["motivos"]) == (0, "baixo", []))
+        falhas = {"pontos": 40, "abertas": 4, "graves": 4, "exploradas": 1}
+        normal, critico = rda.nota(falhas), rda.nota(falhas, criticidade="critica")
+        registrar("a criticidade decide quanto do total vale", 0 < normal["nota"] < critico["nota"] <= 100, f"{normal['nota']} {critico['nota']}")
+        registrar("indicador de ameaça visto pesa mais que alerta", rda.nota(ameacas=1)["nota"] > rda.nota(alertas=1)["nota"])
+        registrar("mil falhas não passam de cem", rda.nota({"pontos": 100000, "abertas": 9999, "graves": 9999, "exploradas": 9999}, 100, 50, 500, "critica")["nota"] == 100)
+        registrar("configuração segura ruim pesa, e sem checagem não pesa", rda.nota(configuracao=20)["nota"] > rda.nota(configuracao=90)["nota"] > 0
+                  and rda.nota(configuracao=None)["nota"] == 0 and any("configuração" in m for m in rda.nota(configuracao=20)["motivos"]))
+        registrar("a nota diz os motivos", any("explorada" in m for m in normal["motivos"]) and any("crítica" in m for m in normal["motivos"]), str(normal["motivos"]))
+        cve_teste = "CVE-1999-0999999"
+        ADMIN.execute("INSERT INTO cves (cve, prioridade, kev_desde, kev_ransomware) VALUES (%s, 'agora', '2024-01-01', true) ON CONFLICT DO NOTHING", (cve_teste,))
+        for cliente, host in ((a, "servidor-a"), (a, "10.9.9.9"), (b, "servidor-b")):
+            alvo = ADMIN.execute("INSERT INTO vuln_ativos (cliente_id, host, peso) VALUES (%s, %s, 5) RETURNING id", (cliente["id"], host)).fetchone()[0]
+            ADMIN.execute("INSERT INTO vuln_achados (cliente_id, ativo_id, chave, fonte, titulo, cves, severidade) VALUES (%s, %s, 'teste|1', 'teste', 'Falha de teste', %s, 'critica')",
+                          (cliente["id"], alvo, [cve_teste]))
+        resposta = http.get("/api/ativos").json()
+        servidor = next(x for x in resposta["ativos"] if x["nome"] == "servidor-a")["risco"]
+        registrar("a falha explorada entra na nota do ativo com agente", servidor["nota"] > 0 and servidor["partes"]["falhas"] > 0
+                  and any("explorada" in m for m in servidor["motivos"]), str(servidor))
+        registrar("ativo só de varredura aparece à parte, com a criticidade do peso", [(x["host"], x["criticidade"]) for x in resposta["sem_agente"]] == [("10.9.9.9", "critica")]
+                  and resposta["sem_agente"][0]["nota"] > servidor["nota"], str(resposta["sem_agente"])[:200])
+        ADMIN.execute("DELETE FROM vuln_achados WHERE chave = 'teste|1' AND cliente_id = ANY(%s)", ([a["id"], b["id"]],))
+        ADMIN.execute("DELETE FROM vuln_ativos WHERE cliente_id = ANY(%s)", ([a["id"], b["id"]],))
+        ADMIN.execute("DELETE FROM cves WHERE cve = %s", (cve_teste,))
         ADMIN.execute("UPDATE regras SET mitre = '{T1110}' WHERE cliente_id = %s AND regra_id = '5712'", (a["id"],))
         ADMIN.execute("UPDATE eventos SET mitre = '{T1110.001}', regra_grupos = '{syscheck}', bruto = bruto || %s WHERE cliente_id = %s",
                       (Jsonb({"rule": {"mitre": {"id": ["T1110.001"], "technique": ["Password Guessing"], "tactic": ["Credential Access"]},
