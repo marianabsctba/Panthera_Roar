@@ -182,6 +182,8 @@ export const AJUDA = [
       "Organiza os alertas pelos controles de cada norma, para ajudar a preparar uma auditoria. Cada controle traz, em O que pede, um resumo em português. Clique num controle para ver as regras e os eventos por trás dele.",
       { h: "LGPD" },
       "As regras não marcam a LGPD. Os controles dela saem do GDPR, artigo por artigo, pelo mesmo fundamento: Art. 5(1)(f) no Art. 6, VII; Art. 30 no Art. 37; Art. 32 no Art. 46; Art. 35 no Art. 38. Artigos sem correspondência, como o Art. 48, não aparecem.",
+      { h: "ISO 27001" },
+      "Os controles da ISO 27001 vêm das checagens de configuração segura de cada ativo, que marcam o Anexo A da versão 2013. As regras não marcam a ISO, então não há controle coberto por regra.",
       { h: "Relatório da norma" },
       { passos: [
         "Escolha a norma e clique em Gerar relatório.",
@@ -295,6 +297,9 @@ export const AJUDA = [
         "Crie um alvo: endereços e redes, endereços web ou imagens de contêiner, conforme o modelo. Em rede, uma credencial de varredura encontra bem mais.",
         "Clique em Varrer agora, ou espere a agenda. O padrão é a cada 30 dias.",
       ] },
+      { h: "Detecção contínua nos ativos com agente" },
+      "Nos ativos com agente, as falhas aparecem sozinhas, sem varredura: o agente informa os pacotes instalados, e o Roar confere com a base de vulnerabilidades várias vezes por dia. Esses achados aparecem como Encontrado por: Agente, pelo inventário.",
+      "Quando o pacote é atualizado, o achado fecha sozinho. Se a versão vulnerável voltar, ele reabre. Agente desconectado não fecha nada: não ver não é o mesmo que estar corrigido.",
       { h: "Achados" },
       "Clique em um achado para ver a evidência, como corrigir e o histórico.",
       "Corrigiu? Use Informar correção e diga o que foi feito. O achado fica como Correção informada, e o risco continua contando até a varredura confirmar. Você pode varrer na hora, em Varrer agora para confirmar, ou esperar a próxima. Se a falha ainda aparecer, ele volta a aberto, e o histórico registra que a correção não funcionou.",
