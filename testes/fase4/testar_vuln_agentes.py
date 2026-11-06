@@ -130,10 +130,29 @@ def main():
         registrar("risco aceito por uma pessoa continua aceito", achado("curl")[1] == "aceito")
         admin.execute("UPDATE vuln_achados SET estado = 'correcao_informada' WHERE id = %s", (achado("openssl")[0],))
         registrar("correção informada que não aconteceu volta a aberto", rodar([openssl, curl]) == (0, 1, 0) and achado("openssl")[1] == "aberto")
+        print("\n== Aviso de falha explorada", flush=True)
+        explorada, futura = "CVE-1999-0999990", "CVE-1999-0999991"
+        admin.execute("INSERT INTO cves (cve, prioridade, kev_desde) VALUES (%s, 'agora', '2024-01-01'), (%s, 'baixa', NULL) ON CONFLICT DO NOTHING", (explorada, futura))
+
+        def avisos(tipo):
+            return admin.execute("SELECT alvo, contagem FROM notificacoes WHERE cliente_id = %s AND tipo = %s AND lida_em IS NULL ORDER BY alvo",
+                                 (cliente, tipo)).fetchall()
+        registrar("falha comum não avisa", avisos("falha_explorada_no_ativo") == [])
+        rodar([openssl, curl, documento("001", "sudo", "1.9", explorada), documento("001", "bash", "5.1", explorada), documento("002", "zlib", "1.2", futura)])
+        registrar("falha explorada nova avisa, um aviso por ativo somando", avisos("falha_explorada_no_ativo") == [("srv-001", 2)], str(avisos("falha_explorada_no_ativo")))
+        rodar([openssl, curl, documento("001", "sudo", "1.9", explorada), documento("001", "bash", "5.1", explorada), documento("002", "zlib", "1.2", futura)])
+        registrar("a mesma falha na volta seguinte não avisa de novo", avisos("falha_explorada_no_ativo") == [("srv-001", 2)])
+        with banco.con.transaction():
+            avisadas = banco.con.execute("SELECT roar_avisar_cves_exploradas(%s)", ([futura, "CVE-1999-0999992"],)).fetchone()[0]
+        registrar("CVE que passou a ser explorada avisa quem tem a falha aberta, com o número de ativos", avisadas == 1
+                  and avisos("cve_passou_a_ser_explorada") == [(futura, 1)], str(avisos("cve_passou_a_ser_explorada")))
+        admin.execute("DELETE FROM notificacoes WHERE cliente_id = %s", (cliente,))
+        admin.execute("DELETE FROM cves WHERE cve IN (%s, %s)", (explorada, futura))
         historia = [r[0] for r in admin.execute("SELECT motivo FROM vuln_historico WHERE achado_id = %s ORDER BY id", (achado("openssl")[0],)).fetchall()]
         registrar("a história conta cada passo", historia == ["O agente encontrou o pacote vulnerável.", "O agente deixou de encontrar: o pacote foi atualizado ou removido.",
                                                               "O agente voltou a encontrar.", "O agente ainda encontra o pacote vulnerável."], str(historia))
     finally:
+        admin.execute("DELETE FROM notificacoes WHERE cliente_id = %s", (cliente,))
         for tabela in TABELAS:
             admin.execute(f"DELETE FROM {tabela} WHERE cliente_id = %s", (cliente,))
         admin.execute("DELETE FROM clientes WHERE id = %s", (cliente,))

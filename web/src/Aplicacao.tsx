@@ -94,6 +94,7 @@ class ProtecaoDaTela extends Component<{ children: ReactNode; chave: string }, {
 
 interface Aviso { id: number; tipo: string; alvo: string | null; contagem: number; atualizada_em: string }
 const SEGUNDOS_ENTRE_AVISOS = 60;
+const TIPOS_DE_FALHA = ["falha_explorada_no_ativo", "cve_passou_a_ser_explorada"];
 
 /** O sino lista os avisos novos e leva a cada um. Abrir um aviso marca só ele como lido. */
 function SinoDeAvisos({ eu, aoIr }: { eu: Eu; aoIr: (tela: string) => void }) {
@@ -109,8 +110,10 @@ function SinoDeAvisos({ eu, aoIr }: { eu: Eu; aoIr: (tela: string) => void }) {
   const abrir = async (a: Aviso) => {
     await enviar(`/api/notificacoes/${a.id}/lida`);
     window.dispatchEvent(new Event(AVISOS_MUDARAM));
-    // Indicador de ameaça se investiga em Inteligência; o resto é de conta e acesso, que fica na auditoria.
-    aoIr(a.tipo === "indicador_encontrado" && eu.modulos.includes("siem") ? "inteligencia" : "auditoria");
+    // Indicador de ameaça se investiga em Inteligência, falha em Vulnerabilidades; o resto é de conta e acesso, que fica na auditoria.
+    if (a.tipo === "indicador_encontrado" && eu.modulos.includes("siem")) aoIr("inteligencia");
+    else if (TIPOS_DE_FALHA.includes(a.tipo) && eu.modulos.includes("vulnerabilidades")) aoIr("vulnerabilidades");
+    else aoIr("auditoria");
   };
   return (
     <Menu position="bottom-end" shadow="md" width={340} onOpen={ler_}>

@@ -238,9 +238,16 @@ def carregar(banco):
                 total += 1
         if total < MINIMO_CVES:
             raise FonteEstranha(f"base de CVEs veio pequena demais: {total}")
+        # As que entraram no catálogo de exploradas desde a carga anterior. Na primeira carga não há anterior para comparar.
+        exploradas = [l[0] for l in banco.con.execute(
+            """SELECT n.cve FROM cves_nova n LEFT JOIN cves c ON c.cve = n.cve
+               WHERE n.kev_desde IS NOT NULL AND c.kev_desde IS NULL AND EXISTS (SELECT 1 FROM cves)""").fetchall()]
         banco.con.execute("DELETE FROM cves")
         colunas = ", ".join(COLUNAS)
         banco.con.execute(f"INSERT INTO cves ({colunas}) SELECT {colunas} FROM cves_nova ON CONFLICT (cve) DO NOTHING")
+        if exploradas:
+            avisadas = banco.con.execute("SELECT roar_avisar_cves_exploradas(%s)", (exploradas,)).fetchone()[0]
+            log.info("%d CVEs entraram no catálogo de exploradas, %d avisos", len(exploradas), avisadas)
         banco.con.execute(
             """INSERT INTO cves_carga (id, total, versao, epss_data, carregada_em) VALUES (1, %s, %s, %s, now())
                ON CONFLICT (id) DO UPDATE SET total = EXCLUDED.total, versao = EXCLUDED.versao, epss_data = EXCLUDED.epss_data,
