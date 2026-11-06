@@ -1,0 +1,28 @@
+<!--
+  Decodificadores do Panthera Roar para equipamentos que o Wazuh não conhece (roar_ingestao.fabricantes).
+  Só para formatos que nenhum decodificador do Wazuh pega antes: um filho acrescentado a um decodificador dele não é usado.
+-->
+
+<!--
+  MikroTik RouterOS, com ou sem o cabeçalho de syslog (bsd-syslog):
+  firewall,info bloqueio input: in:ether1 out:(unknown 0), src-mac 00:1a:2b:3c:4d:5e, proto TCP (SYN), 198.51.100.7:51544->10.0.10.1:22, len 60
+  system,error,critical login failure for user admin from 198.51.100.7 via winbox
+  system,info,account user admin logged in from 198.51.100.7 via ssh
+-->
+<decoder name="roar-mikrotik">
+  <prematch type="pcre2">(?:^|\s)(?:firewall|system|account|interface|dhcp|wireless|ipsec|ppp|script|critical|info|warning|error)(?:,(?:info|warning|error|critical|debug|account))+ </prematch>
+</decoder>
+
+<decoder name="roar-mikrotik-firewall">
+  <parent>roar-mikrotik</parent>
+  <prematch type="pcre2">firewall,\S+ </prematch>
+  <regex type="pcre2">firewall,\S+ (?:([^\s:]+) )?(\w+): in:(\S+) out:(.+?), (?:src-mac \S+, )?proto (\w+)(?: \([^)]*\))?, ([\d.]+)(?::(\d+))?->([\d.]+)(?::(\d+))?</regex>
+  <order>prefixo, cadeia, interface_entrada, interface_saida, protocol, srcip, srcport, dstip, dstport</order>
+</decoder>
+
+<decoder name="roar-mikrotik-login">
+  <parent>roar-mikrotik</parent>
+  <prematch type="pcre2">login failure for user |user \S+ logged in from </prematch>
+  <regex type="pcre2">(?:login failure for user|user) (\S+) (?:logged in )?from ([\da-fA-F.:]+) via (\S+)</regex>
+  <order>dstuser, srcip, metodo</order>
+</decoder>
