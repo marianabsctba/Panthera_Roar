@@ -262,10 +262,13 @@ def _registrar_falha(banco, erro):
         banco.con.execute("UPDATE cves_carga SET falha = %s, falha_em = now()", (texto,))
 
 
-def rodar_para_sempre(banco, carga=carregar, dormir=time.sleep):
+def rodar_para_sempre(banco, carga=carregar, dormir=time.sleep, agentes=None):
     """Base velha é melhor que base nenhuma: uma falha mantém a anterior e tenta de novo mais tarde."""
     while True:
         espera = SEGUNDOS_ENTRE_CONFERENCIAS
+        if agentes:
+            # O que o próprio agente achou entra em Vulnerabilidades no mesmo ritmo da conferência das CVEs.
+            agentes()
         if _precisa_carregar(banco):
             try:
                 log.info("%d CVEs carregadas", carga(banco))
@@ -283,11 +286,12 @@ def main():
     args = argparse.ArgumentParser()
     args.add_argument("--uma-vez", action="store_true")
     a = args.parse_args()
-    _, banco, _ = conexoes()
+    indexer, banco, _ = conexoes()
     if a.uma_vez:
         log.info("%d CVEs carregadas", carregar(banco))
         return
-    rodar_para_sempre(banco)
+    from . import vuln_agentes
+    rodar_para_sempre(banco, agentes=lambda: vuln_agentes.ciclo(banco, indexer.sessao.post, indexer.url))
 
 
 if __name__ == "__main__":

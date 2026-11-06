@@ -102,6 +102,8 @@ unidade organizacoes root .env ingestao "$PY -u -m roar_ingestao.organizacoes"
 # Um por organização: a fila e as ações de um cliente não passam pelo processo de outro.
 unidade "worker@" root .env motor "$DESTINO/venv-motor/bin/python -u -m roar_motor.worker --cliente %i"
 unidade cves roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.cves"
+# Só os contêineres alcançam o gateway da rede deles. O certificado vem de provisao.preparar.
+unidade portao roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.portao" "Environment=ROAR_PORTAO_ENDERECO=$(docker network inspect panthera-roar-wazuh_default --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)"
 unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.biblioteca" "MemoryHigh=2G"
 unidade selo roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.selo" "ReadWritePaths=$DESTINO/selo"
 unidade ueba roar-svc servicos.env ueba "$PY -u -m roar_ueba.motor" "Environment=PYTHONPATH=$APP/ueba:$APP/ingestao"
@@ -136,9 +138,9 @@ cp -a "$RAIZ/infra/wazuh/gerenciador" "$APP/infra/wazuh/gerenciador"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves organizacoes"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca" ;;
-  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca organizacoes"; DESLIGAR="varredura" ;;
-  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca organizacoes"; DESLIGAR="" ;;
+  vulnerabilidades) SERVICOS="api varredura cves organizacoes"; DESLIGAR="ingestao fontes selo ueba disparo inteligencia biblioteca portao" ;;
+  siem) SERVICOS="api ingestao fontes cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="varredura" ;;
+  *) SERVICOS="api ingestao fontes varredura cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="" ;;
 esac
 systemctl daemon-reload
 for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done

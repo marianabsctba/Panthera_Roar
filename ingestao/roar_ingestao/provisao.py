@@ -30,7 +30,7 @@ WAZUH_VERSAO = "4.14.9"
 # O mesmo da instalação (infra/.env.exemplo): seis meses, o que o Marco Civil pede a provedor de aplicação.
 RETENCAO_PADRAO = "180"
 # Muda quando a configuração base do gerenciador muda: faz cada gerenciador já existente receber a nova uma vez.
-VERSAO_DA_CONFIGURACAO = "2"
+VERSAO_DA_CONFIGURACAO = "3"
 ARQUIVO, PASTA_DO_ARQUIVO, ARQUIVO_PADRAO = "roar-arquivo", "/mnt/roar-arquivo", "365"
 IMAGEM = f"wazuh/wazuh-manager:{WAZUH_VERSAO}"
 CERTIFICADOS = DESTINO / "wazuh/single-node/config/wazuh_indexer_ssl_certs"
@@ -40,6 +40,10 @@ PREFIXO = "wazuh-alerts-4.x-"
 PREFIXO_BRUTO = "wazuh-archives-4.x-"
 PORTA_INICIAL = 21000
 LEITOR = "roar_leitor"
+# O portão (roar_ingestao.portao) fica no gateway da rede dos contêineres: os gerenciadores chegam nele sem nome novo.
+PORTAO_PASTA = DESTINO / "portao"
+PORTAO_PORTA = 9201
+DIAS_DO_CERTIFICADO = 730
 
 
 def gerar(tamanho=32):
@@ -109,6 +113,68 @@ def _pedir(indexer, metodo, rota, corpo=None):
     return r
 
 
+def ip_do_portao():
+    """O gateway da rede dos contêineres: só eles alcançam, e nada fora do servidor."""
+    r = subprocess.run(["docker", "network", "inspect", REDE, "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+                       check=True, capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def _certificado_do_portao(ip):
+    """Emitido pela autoridade que os gerenciadores já confiam. Renova perto de vencer ou se o IP mudar."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    certificado, chave = PORTAO_PASTA / "portao.pem", PORTAO_PASTA / "portao-key.pem"
+    agora = datetime.datetime.now(datetime.timezone.utc)
+    if certificado.exists():
+        atual = x509.load_pem_x509_certificate(certificado.read_bytes())
+        nomes = atual.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        if atual.not_valid_after_utc - agora > datetime.timedelta(days=30) and ipaddress.ip_address(ip) in nomes.get_values_for_type(x509.IPAddress):
+            return False
+    autoridade = x509.load_pem_x509_certificate((CERTIFICADOS / "root-ca-manager.pem").read_bytes())
+    chave_da_autoridade = serialization.load_pem_private_key((CERTIFICADOS / "root-ca-manager.key").read_bytes(), password=None)
+    privada = ec.generate_private_key(ec.SECP256R1())
+    nome = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "roar-portao")])
+    novo = (x509.CertificateBuilder().subject_name(nome).issuer_name(autoridade.subject).public_key(privada.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(agora - datetime.timedelta(minutes=5))
+            .not_valid_after(agora + datetime.timedelta(days=DIAS_DO_CERTIFICADO))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("roar-portao"), x509.IPAddress(ipaddress.ip_address(ip))]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(chave_da_autoridade, hashes.SHA256()))
+    PORTAO_PASTA.mkdir(mode=0o700, exist_ok=True)
+    descritor = os.open(chave, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descritor, "wb") as f:
+        f.write(privada.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    certificado.write_bytes(novo.public_bytes(serialization.Encoding.PEM))
+    # O portão roda como roar-svc: a chave é dele, e de mais ninguém.
+    try:
+        import pwd
+        dono = pwd.getpwnam("roar-svc")
+        for caminho in (PORTAO_PASTA, chave, certificado):
+            os.chown(caminho, dono.pw_uid, dono.pw_gid)
+    except KeyError:
+        pass
+    return True
+
+
+def _modelos_de_estado(indexer):
+    """Os modelos que o conector do Wazuh tentaria criar. Criados aqui, com a credencial de administração."""
+    criados = 0
+    for arquivo in _na_imagem("ls", "/var/ossec/templates").split():
+        modelo = json.loads(_na_imagem("cat", f"/var/ossec/templates/{arquivo}")) if arquivo.endswith(".json") else {}
+        # A pasta também traz atualizações de mapeamento, que não são modelo: só entra o que diz a quais índices vale.
+        if "index_patterns" in modelo:
+            _pedir(indexer, "PUT", f"_index_template/roar-{arquivo.removesuffix('.json')}", modelo)
+            criados += 1
+    return criados
+
+
 def _esperar(indexer):
     for _ in range(90):
         try:
@@ -152,10 +218,17 @@ def preparar():
 
     preparar_arquivo(indexer, int(env.get("ROAR_ARQUIVO_DIAS", ARQUIVO_PADRAO)))
 
+    _modelos_de_estado(indexer)
+    _certificado_do_portao(ip_do_portao())
+    # Gerenciador de antes do portão ganha os próprios índices de estado; a configuração nova chega pelo serviço de fontes.
+    with banco_admin(env) as banco:
+        for (gerenciador_id,) in banco.execute("SELECT id FROM gerenciadores").fetchall():
+            _papel_do_gerenciador(indexer, gerenciador_id)
+
     _pedir(indexer, "PUT", f"_plugins/_security/api/roles/{LEITOR}", {
         # Ler a lista de cópias frias deixa a tela mostrar quando foi a última.
         "cluster_permissions": ["cluster_monitor", "cluster:admin/snapshot/get", "cluster:admin/repository/get"],
-        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*"], "allowed_actions": ["read", "indices:monitor/stats"]}],
+        "index_permissions": [{"index_patterns": [f"{PREFIXO}*", f"{PREFIXO_BRUTO}*", "wazuh-states-vulnerabilities-*"], "allowed_actions": ["read", "indices:monitor/stats"]}],
     })
     _pedir(indexer, "PUT", f"_plugins/_security/api/internalusers/{LEITOR}",
            {"password": env["ROAR_LEITOR_SENHA"], "opendistro_security_roles": [LEITOR]})
@@ -224,16 +297,34 @@ def apagar_retencao(indexer, gerenciador_id):
         indexer.sessao.delete(f"{indexer.url}/_plugins/_ism/policies/roar-retencao-{tipo}-{gerenciador_id}", timeout=60)
 
 
-def _permissoes_do_indexer(indexer, gerenciador_id, senha):
+def indices_de_estado_do(gerenciador_id):
+    """Vulnerabilidades e inventário que o próprio gerenciador mantém. O nome leva o host dele."""
+    return f"wazuh-states-*-gerenciador-{gerenciador_id}*"
+
+
+def _papel_do_gerenciador(indexer, gerenciador_id):
     usuario = f"roar_ger_{gerenciador_id}"
     _pedir(indexer, "PUT", f"_plugins/_security/api/roles/{usuario}", {
-        "cluster_permissions": ["cluster_monitor", "cluster:admin/ingest/pipeline/get", "indices:data/write/bulk"],
+        # Continuar e fechar uma busca paginada são permissões do cluster, mas só valem com o identificador da busca,
+        # que é aberta dentro dos índices permitidos abaixo.
+        "cluster_permissions": ["cluster_monitor", "cluster:admin/ingest/pipeline/get", "indices:data/write/bulk",
+                                "indices:data/read/scroll", "indices:data/read/scroll/clear"],
         "index_permissions": [{
             "index_patterns": [f"{indice_do(gerenciador_id)}*", f"{indice_bruto_do(gerenciador_id)}*"],
             "allowed_actions": ["indices:admin/create", "indices:admin/mapping/put",
                                 "indices:data/write/index", "indices:data/write/bulk*"],
+        }, {
+            # O detector apaga o que foi corrigido e lê para comparar: só nos índices de estado dele.
+            "index_patterns": [indices_de_estado_do(gerenciador_id)],
+            "allowed_actions": ["indices:admin/create", "indices:admin/get", "indices:admin/mapping/put", "indices:admin/mappings/get",
+                                "indices:admin/refresh*", "indices:data/write/*", "indices:data/read/*", "indices:monitor/*"],
         }],
     })
+    return usuario
+
+
+def _permissoes_do_indexer(indexer, gerenciador_id, senha):
+    usuario = _papel_do_gerenciador(indexer, gerenciador_id)
     _pedir(indexer, "PUT", f"_plugins/_security/api/internalusers/{usuario}",
            {"password": senha, "opendistro_security_roles": [usuario]})
     return usuario
@@ -246,7 +337,7 @@ def _compose(pasta, gerenciador_id, *comando):
 
 
 def configuracao_do_gerenciador(conf, guardar_logs=True):
-    """Exige senha na inscrição e desliga o que usaria índices compartilhados entre clientes."""
+    """Exige senha na inscrição, e liga o detector de vulnerabilidades gravando só nos índices deste gerenciador."""
     conf = conf.replace("<use_password>no</use_password>", "<use_password>yes</use_password>")
     # Guarda também o que não virou alerta: é o log bruto que investigação e auditoria pedem.
     # A organização pode abrir mão para economizar disco, e aí só os alertas ficam selados.
@@ -254,17 +345,18 @@ def configuracao_do_gerenciador(conf, guardar_logs=True):
         conf = conf.replace("<logall_json>no</logall_json>", "<logall_json>yes</logall_json>")
     else:
         conf = conf.replace("<logall_json>yes</logall_json>", "<logall_json>no</logall_json>")
+    # O detector de vulnerabilidades e o inventário gravam nos índices de estado deste gerenciador, pelo portão.
     for bloco in ("vulnerability-detection", "indexer"):
-        conf = re.sub(rf"(<{bloco}>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
+        conf = re.sub(rf"(<{bloco}>\s*<enabled>)no(</enabled>)", lambda m: f"{m[1]}yes{m[2]}", conf)
     # O gerenciador vigiava o próprio contêiner: medição de disco a cada seis minutos, varreduras e inventário dele.
     # Eram quase metade dos logs brutos, sem nada a investigar. Os agentes têm configuração própria e não mudam.
     conf = re.sub(r"(<sca>\s*<enabled>)yes(</enabled>)", lambda m: f"{m[1]}no{m[2]}", conf)
     conf = re.sub(r"(<rootcheck>\s*<disabled>)no(</disabled>)", lambda m: f"{m[1]}yes{m[2]}", conf)
     conf = re.sub(r'(<wodle name="syscollector">\s*<disabled>)no(</disabled>)', lambda m: f"{m[1]}yes{m[2]}", conf)
     conf = re.sub(r"\s*<localfile>\s*<log_format>(?:full_)?command</log_format>.*?</localfile>", "", conf, flags=re.S)
-    # O inventário do Wazuh liga mesmo com o bloco desligado e pediria, sem parar, para criar modelos de índice.
-    # Essa permissão afetaria todos os clientes: sem endereço válido, ele desiste em silêncio.
-    conf = re.sub(r"(<indexer>.*?<host>)[^<]*(</host>)", r"\g<1>https://127.0.0.1:1\g<2>", conf, count=1, flags=re.S)
+    # O conector pede, sem parar, para criar modelos de índice, e essa permissão afetaria todos os clientes.
+    # O portão responde esses pedidos; o resto vai ao indexador com a credencial deste gerenciador.
+    conf = re.sub(r"(<indexer>.*?<host>)[^<]*(</host>)", rf"\g<1>https://{ip_do_portao()}:{PORTAO_PORTA}\g<2>", conf, count=1, flags=re.S)
     return conf + _RESPOSTAS_COM_PRAZO
 
 

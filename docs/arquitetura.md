@@ -100,7 +100,7 @@ Custo medido, em teste com um agente: cerca de 390 MiB por gerenciador, mais o i
 Limites:
 
 - **Indexer compartilhado:** permissões separam os dados, mas disco e memória são comuns, e o administrador do indexer vê tudo. Cliente que exija mais isolamento pode ter um indexer próprio.
-- **Detecção de vulnerabilidades desligada:** ela usa um índice de estado compartilhado. Volta quando esse índice também for separado por cliente.
+- **Detecção de vulnerabilidades pelo agente:** cada gerenciador grava os achados e o inventário em índices de estado com o nome dele (`wazuh-states-*-gerenciador-<id>`), e só neles tem permissão. O conector do Wazuh tenta criar os modelos de índice toda vez que liga, e essa permissão vale para o cluster inteiro: o portão (`ingestao/roar_ingestao/portao.py`), no gateway da rede dos contêineres, responde esses pedidos sem repassar e encaminha o resto com a credencial do próprio gerenciador. Os modelos de verdade são criados por `provisao.preparar`, com a credencial de administração. O portão não guarda credencial nem acrescenta permissão. `roar_ingestao.vuln_agentes` leva os achados para Vulnerabilidades no ritmo da conferência das CVEs, e agente desconectado não fecha nada.
 - **Certificado:** os gerenciadores usam o mesmo certificado de cliente para falar com o indexer. O que autoriza é o usuário de cada um, mas o certificado também deveria ser individual.
 - **RLS:** protege contra consulta sem filtro, não contra SQL injection, porque quem executa SQL arbitrário pode definir outro cliente.
 - **Dado em repouso:** ainda não está cifrado.
