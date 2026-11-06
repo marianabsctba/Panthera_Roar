@@ -310,6 +310,8 @@ export const AJUDA = [
       { h: "Detecção contínua nos ativos com agente" },
       "Nos ativos com agente, as falhas aparecem sozinhas, sem varredura: o agente informa os pacotes instalados, e o Roar confere com a base de vulnerabilidades várias vezes por dia. Esses achados aparecem como Encontrado por: Agente, pelo inventário.",
       "Quando o pacote é atualizado, o achado fecha sozinho. Se a versão vulnerável voltar, ele reabre. Agente desconectado não fecha nada: não ver não é o mesmo que estar corrigido.",
+      { h: "Avisos de falha explorada" },
+      "O sino avisa quando aparece num ativo uma falha que já é explorada por atacantes, com um aviso por ativo somando as falhas. Também avisa quando uma falha que já estava aberta entra no catálogo das exploradas, com quantos ativos têm ela. Clique no aviso para vir para esta tela.",
       { h: "Achados" },
       "Clique em um achado para ver a evidência, como corrigir e o histórico.",
       "Corrigiu? Use Informar correção e diga o que foi feito. O achado fica como Correção informada, e o risco continua contando até a varredura confirmar. Você pode varrer na hora, em Varrer agora para confirmar, ou esperar a próxima. Se a falha ainda aparecer, ele volta a aberto, e o histórico registra que a correção não funcionou.",
