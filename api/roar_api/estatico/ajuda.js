@@ -215,8 +215,18 @@ export const AJUDA = [
     ] },
     { id: "ativos", vista: "ativos", titulo: "Ativos", blocos: [
       "Os ativos com agente desta organização e a situação de cada um. Um ativo novo aparece aqui alguns minutos depois de instalar o agente.",
+      { h: "Risco" },
+      "Cada ativo tem uma nota de risco de 0 a 100, e a lista começa pelo mais arriscado. Passe o mouse na nota para ver os motivos, ou abra o ativo para ver cada parte.",
+      { lista: [
+        "Indicadores de ameaça vistos no ativo nos últimos 7 dias: o sinal mais forte.",
+        "Comportamento fora do normal, o mesmo risco da tela Comportamento.",
+        "Falhas abertas em Vulnerabilidades. As que já são exploradas por atacantes pesam até quatro vezes mais, e as com alta chance de exploração pesam o dobro.",
+        "Alertas graves nos últimos 7 dias.",
+        "O que falta na configuração segura: nota 70% na checagem conta 30 aqui. Pesa menos, porque configuração fraca abre a porta, mas sozinha não é ataque.",
+      ] },
+      "A criticidade decide quanto do total vale: no ativo crítico vale tudo, no de baixa criticidade, pouco mais da metade. Endereços vistos só pela varredura de vulnerabilidades aparecem em Ativos sem agente, com a criticidade que você deu a eles lá.",
       { h: "Criticidade" },
-      "Abra um ativo e escolha a criticidade: baixa, normal, alta ou crítica. Todo sinal de comportamento que acontece nele pesa metade, o normal, 1,5 vez ou o dobro, para a pessoa e para o ativo. Use crítica para o que mais dói perder, como a folha de pagamento ou o controlador de domínio.",
+      "Abra um ativo e escolha a criticidade: baixa, normal, alta ou crítica. Todo sinal de comportamento que acontece nele pesa metade, o normal, 1,5 vez ou o dobro, para a pessoa e para o ativo, e ela também pesa na nota de risco. Use crítica para o que mais dói perder, como a folha de pagamento ou o controlador de domínio.",
       { artigo: "fontes", texto: "Como instalar o agente" },
     ] },
     { id: "arquivos", vista: "arquivos", titulo: "Integridade", blocos: [
