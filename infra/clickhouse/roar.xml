@@ -1,0 +1,52 @@
+<!-- Servidor do armazém de eventos (docs/clickhouse.md). Só escuta dentro do contêiner; a porta HTTP sai em 127.0.0.1 e na rede dos gerenciadores. -->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+    <!-- Sem a porta nativa nem a do MySQL e do PostgreSQL: o Roar fala só por HTTP. -->
+    <tcp_port remove="1"/>
+    <mysql_port remove="1"/>
+    <postgresql_port remove="1"/>
+    <interserver_http_port remove="1"/>
+
+    <!-- Divide a máquina com o Wazuh, o Postgres e o resto: não toma toda a memória. -->
+    <max_server_memory_usage_to_ram_ratio>0.4</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>536870912</mark_cache_size>
+
+    <!-- Disco quente (o padrão) e disco frio, em uma pasta própria que pode ser um disco mais barato. -->
+    <storage_configuration>
+        <disks>
+            <frio>
+                <path>/var/lib/clickhouse-frio/</path>
+            </frio>
+            <!-- A cópia fria: um backup por dia de cada organização (roar_ingestao.copia_do_armazem). -->
+            <copias>
+                <path>/var/lib/clickhouse-copias/</path>
+            </copias>
+        </disks>
+        <policies>
+            <roar>
+                <volumes>
+                    <quente>
+                        <disk>default</disk>
+                    </quente>
+                    <frio>
+                        <disk>frio</disk>
+                    </frio>
+                </volumes>
+            </roar>
+        </policies>
+    </storage_configuration>
+
+    <backups>
+        <allowed_disk>copias</allowed_disk>
+    </backups>
+
+    <!-- As tabelas de registro do próprio ClickHouse não crescem sem limite. -->
+    <query_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_log>
+    <part_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></part_log>
+    <metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></metric_log>
+    <asynchronous_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></asynchronous_metric_log>
+    <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
+    <text_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <latency_log remove="1"/>
+</clickhouse>

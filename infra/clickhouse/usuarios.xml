@@ -1,0 +1,14 @@
+<!-- O usuário padrão, sem senha, sai. Fica só o administrador do Roar, que cria os bancos e os outros usuários. -->
+<clickhouse>
+    <users>
+        <default remove="1"/>
+        <roar_admin>
+            <password from_env="ARMAZEM_SENHA"/>
+            <networks><ip>127.0.0.1</ip><ip>::1</ip><ip>172.16.0.0/12</ip></networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+            <named_collection_control>1</named_collection_control>
+        </roar_admin>
+    </users>
+</clickhouse>

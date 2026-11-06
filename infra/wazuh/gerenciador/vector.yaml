@@ -1,0 +1,165 @@
+# Coletor de um gerenciador (docs/clickhouse.md): lê os logs e os alertas que o Wazuh grava em JSON e manda para o
+# banco da organização no armazém. Modelo: a provisão troca os {{...}} pelo banco, usuário e senha do gerenciador e grava
+# a cópia só para o root. O destino nunca sai do conteúdo do log.
+# Sem perda: a posição no arquivo só avança depois que o armazém confirma a gravação, então o próprio arquivo do Wazuh é o
+# que guarda o que falta enviar, com o armazém fora do ar ou com o coletor reiniciado. O buffer é em memória de propósito:
+# o buffer em disco do Vector (0.60) às vezes não avisa o envio quando chega um evento depois de um tempo parado, e o
+# evento fica preso até chegar o próximo (github.com/vectordotdev/vector/issues/10806, correção ainda não publicada).
+data_dir: /var/lib/vector
+
+# As mesmas bases de localização do indexador (GeoLite2), copiadas dele pela provisão.
+enrichment_tables:
+  cidades:
+    type: geoip
+    path: /etc/vector/geoip/GeoLite2-City.mmdb
+  operadoras:
+    type: geoip
+    path: /etc/vector/geoip/GeoLite2-ASN.mmdb
+
+sources:
+  logs:
+    type: file
+    include: [/var/ossec/logs/archives/archives.json]
+    read_from: beginning
+    max_line_bytes: 4194304
+  alertas:
+    type: file
+    include: [/var/ossec/logs/alerts/alerts.json]
+    read_from: beginning
+    max_line_bytes: 4194304
+
+transforms:
+  linhas:
+    type: remap
+    inputs: [logs, alertas]
+    source: |
+      bruto = string!(.message)
+      arquivo = string(.file) ?? ""
+      tamanho = strlen(bruto)
+      evento, erro = parse_json(bruto)
+      if erro != null || !is_object(evento) {
+        evento = {"full_log": truncate(bruto, 4096)}
+      }
+      regra = object(evento.rule) ?? {}
+      agente = object(evento.agent) ?? {}
+      dados = object(evento.data) ?? {}
+      win = object(get(dados, ["win", "eventdata"]) ?? {}) ?? {}
+      quando = parse_timestamp(string(evento.timestamp) ?? "", "%Y-%m-%dT%H:%M:%S%.f%z") ?? now()
+      # Os mesmos campos e a mesma ordem de ingestao/roar_ingestao/normalizar.py: os firewalls não usam todos o mesmo nome.
+      usuario = string(dados.srcuser) ?? string(dados.dstuser) ?? string(win.targetUserName) ?? string(win.subjectUserName) ??
+        string(dados.user_name) ?? string(dados.source_user) ?? string(dados.username) ?? string(dados.user) ?? ""
+      ip_de_origem = string(dados.srcip) ?? string(dados.src_ip) ?? string(dados.source_address) ?? ""
+      ip_de_destino = string(dados.dstip) ?? string(dados.dst_ip) ?? string(dados.destination_address) ?? ""
+      # O mesmo log reenviado gera o mesmo id: o armazém descarta o lote repetido, e quem lê reconhece a repetição.
+      resumo = sha2(join([get_env_var!("GERENCIADOR_ID"), bruto], "|"), variant: "SHA-256")
+      id = join([slice!(resumo, 0, 8), slice!(resumo, 8, 12), slice!(resumo, 12, 16), slice!(resumo, 16, 20), slice!(resumo, 20, 32)], "-")
+      grande = tamanho > 262144
+      # Log gigante não entra inteiro: fica o começo e o resumo do original, como na ingestão antiga.
+      texto = string(evento.full_log) ?? ""
+      dados_guardados = bruto
+      resumo_do_original = ""
+      if grande {
+        texto = truncate(texto, 4096)
+        dados_guardados = ""
+        resumo_do_original = sha2(bruto, variant: "SHA-256")
+      }
+      # O endereço que o pipeline do Wazuh localiza, nos mesmos campos e na mesma ordem.
+      aws = object(dados.aws) ?? {}
+      ip_local = string(dados.srcip) ?? string(dados.src_ip) ?? string(dados.source_address) ?? string(win.ipAddress) ?? string(aws.sourceIPAddress) ?? string(aws.client_ip) ??
+        string(get(aws, ["service", "action", "networkConnectionAction", "remoteIpDetails", "ipAddressV4"]) ?? null) ??
+        string(get(aws, ["httpRequest", "clientIp"]) ?? null) ?? string(get(dados, ["ms-graph", "ipAddress"]) ?? null) ??
+        string(get(dados, ["ms-graph", "actor", "ipAddress"]) ?? null) ?? string(get(dados, ["gcp", "jsonPayload", "sourceIP"]) ?? null) ??
+        string(get(dados, ["office365", "ClientIP"]) ?? null) ?? ""
+      pais = ""
+      cidade = ""
+      regiao = ""
+      operadora = ""
+      asn = ""
+      if ip_local != "" {
+        lugar, erro_lugar = get_enrichment_table_record("cidades", {"ip": ip_local})
+        if erro_lugar == null {
+          pais = string(lugar.country_name) ?? ""
+          cidade = string(lugar.city_name) ?? ""
+          regiao = string(lugar.region_name) ?? ""
+        }
+        rede, erro_rede = get_enrichment_table_record("operadoras", {"ip": ip_local})
+        if erro_rede == null {
+          operadora = string(rede.autonomous_system_organization) ?? ""
+          asn = to_string(rede.autonomous_system_number) ?? ""
+        }
+      }
+      tabela = "logs"
+      if ends_with(arquivo, "alerts.json") { tabela = "alertas" }
+      . = {
+        "id": id,
+        "ocorrido_em": format_timestamp!(quando, "%Y-%m-%d %H:%M:%S%.3f", timezone: "UTC"),
+        "gerenciador": get_env_var!("GERENCIADOR_ID"),
+        "origem_id": string(evento.id) ?? "",
+        "agente_id": string(agente.id) ?? "",
+        "agente_nome": string(agente.name) ?? "",
+        "agente_ip": string(agente.ip) ?? "",
+        "local": string(evento.location) ?? "",
+        "decoder": string(get(evento, ["decoder", "name"]) ?? "") ?? "",
+        "regra_id": string(regra.id) ?? "",
+        "nivel": to_int(regra.level) ?? 0,
+        "regra_descricao": string(regra.description) ?? "",
+        "regra_grupos": array(regra.groups) ?? [],
+        "mitre": array(get(regra, ["mitre", "id"]) ?? []) ?? [],
+        "mitre_tecnicas": array(get(regra, ["mitre", "technique"]) ?? []) ?? [],
+        "mitre_taticas": array(get(regra, ["mitre", "tactic"]) ?? []) ?? [],
+        "pais": pais,
+        "cidade": cidade,
+        "regiao": regiao,
+        "operadora": operadora,
+        "asn": asn,
+        "ip_origem": ip_de_origem,
+        "ip_destino": ip_de_destino,
+        "usuario": usuario,
+        "usuario_destino": string(dados.dstuser) ?? "",
+        "full_log": texto,
+        "dados": dados_guardados,
+        "tamanho_original": tamanho,
+        "resumo_do_original": resumo_do_original,
+        "tabela": tabela
+      }
+
+  para_logs:
+    type: filter
+    inputs: [linhas]
+    condition: .tabela == "logs"
+  para_alertas:
+    type: filter
+    inputs: [linhas]
+    condition: .tabela == "alertas"
+
+sinks:
+  armazem_logs:
+    type: clickhouse
+    inputs: [para_logs]
+    endpoint: http://roar-armazem:8123
+    database: "{{ARMAZEM_BANCO}}"
+    table: logs
+    auth: {strategy: basic, user: "{{ARMAZEM_USUARIO}}", password: "{{ARMAZEM_SENHA}}"}
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    batch: {max_events: 10000, timeout_secs: 1}
+    buffer: {type: memory, max_events: 50000, when_full: block}
+    acknowledgements: {enabled: true}
+    # O usuário do coletor só insere: o teste de saúde do Vector (um SELECT) seria recusado.
+    healthcheck: {enabled: false}
+  armazem_alertas:
+    type: clickhouse
+    inputs: [para_alertas]
+    endpoint: http://roar-armazem:8123
+    database: "{{ARMAZEM_BANCO}}"
+    table: alertas
+    auth: {strategy: basic, user: "{{ARMAZEM_USUARIO}}", password: "{{ARMAZEM_SENHA}}"}
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    batch: {max_events: 10000, timeout_secs: 1}
+    buffer: {type: memory, max_events: 50000, when_full: block}
+    acknowledgements: {enabled: true}
+    # O usuário do coletor só insere: o teste de saúde do Vector (um SELECT) seria recusado.
+    healthcheck: {enabled: false}
