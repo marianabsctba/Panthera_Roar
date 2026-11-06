@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Painel {{ painel }} - {{ cliente }}</title>
+<style>
+{% include "estilo.css" %}
+  .linha-do-painel { display: grid; gap: 3mm; margin-bottom: 3mm; break-inside: avoid; }
+  .bloco-do-painel { padding: 3mm; border: .3mm solid #e2e2e2; border-radius: 2mm; break-inside: avoid; }
+  .bloco-do-painel h3 { display: flex; justify-content: space-between; gap: 3mm; margin: 0 0 2mm; font-size: 9pt; }
+  .bloco-do-painel h3 small { color: #777; font-size: 7.4pt; font-weight: 400; white-space: nowrap; }
+  .indicador b { display: block; font-size: 18pt; line-height: 1.15; }
+  .indicador i { color: #8e1466; font-size: 7.4pt; font-style: normal; }
+  .rosca { display: block; width: 30mm; height: 30mm; margin: 0 auto 2mm; }
+  .legenda { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 7.6pt; }
+  .legenda td { padding: .4mm 0; border: 0; background: none; }
+  .legenda td.nome { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .legenda em { display: inline-block; width: 2.4mm; height: 2.4mm; margin-right: 1.5mm; border-radius: .5mm; vertical-align: -.3mm; }
+  .bloco-do-painel table.dados { width: 100%; table-layout: fixed; font-size: 7.2pt; }
+  .bloco-do-painel table.dados td, .bloco-do-painel table.dados th { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+{% with capa_tipo="Painel", capa_titulo=painel,
+        capa_aviso="Cada bloco é uma busca nos logs, no período que aparece ao lado do título. Os números são os do momento em que este arquivo foi gerado." %}
+{% include "capa.html" %}
+{% endwith %}
+
+<h1 class="capitulo">{{ painel }}</h1>
+{% for linha in linhas %}
+<div class="linha-do-painel" style="grid-template-columns: {% for b in linha %}{{ b.largura }}fr {% endfor %}">
+  {% for b in linha %}
+  <div class="bloco-do-painel">
+    <h3><span>{{ b.titulo }}</span><small>{{ b.janela }}</small></h3>
+    {% if b.erro %}<p class="vazio">{{ b.erro }}</p>
+    {% elif b.tipo == "numero" %}<div class="indicador"><b>{{ b.total|n }}</b><i>{{ b.variacao }}</i></div>
+    {% elif b.tipo == "serie" %}{% if b.svg %}{{ b.svg|safe }}{% else %}<p class="vazio">Nada no período.</p>{% endif %}
+    {% elif b.tipo == "rosca" %}{% if b.svg %}{{ b.svg|safe }}<table class="legenda"><colgroup><col><col style="width:14mm"></colgroup>{% for f in b.legenda %}<tr><td class="nome"><em style="background:{{ f.cor }}"></em>{{ f.rotulo }}</td><td class="num">{{ f.total|n }}</td></tr>{% endfor %}</table>{% else %}<p class="vazio">Nada no período.</p>{% endif %}
+    {% elif b.barras is defined %}{% for x in b.barras %}<div class="barra"><div><span>{{ x.rotulo }}</span><span>{{ x.total|n }}</span></div><u><s style="width:{{ x.largura }}%;background:{{ x.cor }}"></s></u></div>{% else %}<p class="vazio">Nada no período.</p>{% endfor %}
+    {% else %}{% if b.linhas %}<table class="dados"><thead><tr>{% for c in b.colunas %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>
+      {% for l in b.linhas %}<tr>{% for v in l %}<td class="mono">{{ v|data if b.colunas[loop.index0] == "quando" else v }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody></table>{% else %}<p class="vazio">Nada no período.</p>{% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+</body>
+</html>
