@@ -1,1 +1,2 @@
 Icones do projeto Simple Icons, licenca CC0 1.0. As marcas pertencem aos seus titulares.
+Exceto sophos.svg, redesenhado em uma cor a partir do logotipo oficial da Sophos, que nao esta no Simple Icons.
