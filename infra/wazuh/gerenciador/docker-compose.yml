@@ -50,6 +50,8 @@ services:
       - ./ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
       - ./authd.pass:/wazuh-config-mount/etc/authd.pass:ro
       - ./1-roar-filebeat:/etc/cont-init.d/1-roar-filebeat:ro
+      # Syslog cifrado desta organização, gravado pelo receptor da instalação (roar_ingestao.syslog_cifrado).
+      - ${SYSLOG_CIFRADO}:/var/ossec/roar-cifrado:ro
     networks:
       rede:
         aliases:

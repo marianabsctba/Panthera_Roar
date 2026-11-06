@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape
 
 import requests
 
-from . import rede_externa
+from . import rede_externa, syslog_cifrado
 
 log = logging.getLogger("roar.fontes")
 EVENTOS_POR_LOTE = 100
@@ -32,7 +32,8 @@ NOME_DE_CABECALHO = re.compile(r"[A-Za-z0-9-]{1,64}")
 # Quem controla o Host ou a conexão poderia desviar a chamada do endereço conferido.
 CABECALHOS_PROIBIDOS = ("host", "connection", "transfer-encoding", "content-length", "upgrade", "proxy-authorization")
 PASTA_GERENCIADORES = Path("/opt/panthera-roar/gerenciadores")
-PROTOCOLOS = ("tcp", "udp")
+# tls: o syslog cifrado chega pelo receptor da instalação (syslog_cifrado.py), não por uma porta do gerenciador.
+PROTOCOLOS = ("tcp", "udp", "tls")
 TIPOS_DE_AVISO = ("slack", "pagerduty", "virustotal", "maltiverse")
 TIPOS_DE_NUVEM = ("github", "office365", "msgraph", "aws", "azure", "gcp", *TIPOS_DE_AVISO)
 NIVEL_PADRAO_DO_AVISO = 10
@@ -60,7 +61,7 @@ class FonteInvalida(Exception):
 def validar_syslog(protocolo, origens):
     """Devolve as redes normalizadas: só isso chega ao XML, nunca o texto que a pessoa digitou."""
     if protocolo not in PROTOCOLOS:
-        raise FonteInvalida("O protocolo precisa ser TCP ou UDP.")
+        raise FonteInvalida("O protocolo precisa ser TCP, UDP ou TLS.")
     if not isinstance(origens, list) or not 1 <= len(origens) <= ORIGENS_MAXIMAS:
         raise FonteInvalida(f"Informe de 1 a {ORIGENS_MAXIMAS} endereços ou redes de origem.")
     redes = []
@@ -207,9 +208,13 @@ def fragmento_de_configuracao(fontes):
             continue
         config = fonte["config"]
         por_protocolo.setdefault(config["protocolo"], set()).update(validar_syslog(config["protocolo"], config["origens"]))
+    cifrado = por_protocolo.pop("tls", None)
     for protocolo in sorted(por_protocolo):
         permitidos = "".join(f"    <allowed-ips>{rede}</allowed-ips>\n" for rede in sorted(por_protocolo[protocolo]))
         blocos.append(f"  <remote>\n    <connection>syslog</connection>\n    <port>514</port>\n    <protocol>{protocolo}</protocol>\n{permitidos}  </remote>\n")
+    if cifrado:
+        # O receptor já filtrou os endereços: aqui o gerenciador só lê os arquivos que ele gravou para esta organização.
+        blocos.append(f"  <localfile>\n    <log_format>syslog</log_format>\n    <location>{syslog_cifrado.ARQUIVOS_NO_GERENCIADOR}</location>\n  </localfile>\n")
     blocos += [_bloco_de_nuvem(f) for f in sorted(fontes, key=lambda f: f.get("id", 0)) if f["tipo"] in TIPOS_DE_NUVEM]
     if not blocos:
         return ""
@@ -419,7 +424,44 @@ def ciclo(banco):
             aplicar_regras_proprias(banco, gerenciador_id, cliente)
         except Exception:  # Um gerenciador com problema não pode travar a configuração dos outros.
             log.exception("fontes do gerenciador %s falharam", gerenciador_id)
+    try:
+        aplicar_recepcao(banco)
+    except Exception:
+        log.exception("receptor de syslog cifrado")
     aplicar_armazenamento(banco)
+
+
+_proxima_limpeza_do_cifrado = 0.0
+
+
+def aplicar_recepcao(banco, raiz=None):
+    """Rotas do receptor de syslog cifrado: os endereços das fontes cifradas de todas as organizações, cada um para o
+    gerenciador dono. Endereço já tomado por outra organização: a fonte mais nova é recusada, com o motivo."""
+    global _proxima_limpeza_do_cifrado
+    raiz = raiz or syslog_cifrado.PASTA
+    if not (raiz / "configuracao").is_dir():
+        return False  # Instalação sem o receptor preparado (infra/servicos.sh).
+    fontes = []
+    for gerenciador_id, cliente in banco.gerenciadores():
+        with banco.con.transaction():
+            banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+            linhas = banco.con.execute(
+                """SELECT id, config, criada_em FROM fontes WHERE gerenciador_id = %s AND tipo = 'syslog' AND estado IN ('pendente', 'ativa')
+                   AND config->>'protocolo' = 'tls'""", (gerenciador_id,)).fetchall()
+        fontes += [{"id": i, "cliente": cliente, "gerenciador": gerenciador_id, "origens": c["origens"], "criada_em": em} for i, c, em in linhas]
+    rotas, recusadas = syslog_cifrado.distribuir(fontes)
+    for fonte in fontes:
+        if fonte["id"] in recusadas:
+            with banco.con.transaction():
+                banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(fonte["cliente"]),))
+                banco.con.execute("UPDATE fontes SET estado = 'recusada', mensagem = %s WHERE id = %s", (recusadas[fonte["id"]], fonte["id"]))
+    for gerenciador_id in {g for _, g in rotas}:
+        syslog_cifrado.pasta_do_gerenciador(gerenciador_id, raiz).mkdir(parents=True, exist_ok=True)
+    mudou = syslog_cifrado.gravar_configuracao(syslog_cifrado.configuracao(rotas), raiz)
+    if time.monotonic() >= _proxima_limpeza_do_cifrado:
+        syslog_cifrado.vencer(raiz)
+        _proxima_limpeza_do_cifrado = time.monotonic() + 3600
+    return mudou
 
 
 def aplicar_armazenamento(banco):

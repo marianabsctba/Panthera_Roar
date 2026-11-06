@@ -37,11 +37,16 @@ escrever_env() {
   install -m 640 -o root -g "$grupo" "$temporario" "$arquivo"
   rm -f "$temporario"
 }
-escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA
+escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA SYSLOG_CIFRADO_PORTA
 escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA ROAR_SELOS_DO_ARMAZEM
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
 [ -f "$DESTINO/cofre/privada" ] || PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.cofre gerar
+
+# Syslog cifrado: a autoridade e o certificado do receptor saem do domínio. O receptor relê as rotas sozinho; o serviço de
+# fontes as escreve. Sobe depois dos certificados, que ele monta.
+PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.syslog_cifrado --dominio "$DOMINIO"
+docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d recepcao >/dev/null
 chmod 755 "$DESTINO/cofre"; chmod 600 "$DESTINO/cofre/privada"; chmod 644 "$DESTINO/cofre/publica"
 if [ "$PERFIL" != vulnerabilidades ]; then
   install -m 644 "$DESTINO/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem" "$DESTINO/ca-indexer.pem"

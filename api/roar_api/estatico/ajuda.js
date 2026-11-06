@@ -265,6 +265,15 @@ export const AJUDA = [
       ] },
       "O MikroTik não é lido pelo servidor de fábrica: o Roar traz um parser próprio, com alertas de login recusado e de muitas tentativas seguidas vindas do mesmo endereço. Para outro fabricante, use o cartão Syslog e, se a parte entendida ficar baixa, crie um parser na aba Parsers.",
       { aviso: "Os cartões de firewall foram testados com linhas de exemplo de cada fabricante, ainda não com o equipamento ligado. Se a linha do seu equipamento não sair como esperado no teste, avise." },
+      { h: "Syslog cifrado, pela internet" },
+      "O syslog comum não é cifrado: serve para a rede de confiança. Para um equipamento que manda log pela internet, como o firewall de uma filial, use o syslog cifrado (TLS). A porta é uma só para a instalação, a 6514, e aparece no cartão Syslog e nos cartões de firewall.",
+      { lista: [
+        "No cartão, clique em Baixar o certificado da autoridade e importe o arquivo no equipamento como autoridade confiável (CA). É o que faz o equipamento confiar no Roar.",
+        "Em Conectar, escolha o protocolo TLS e cadastre o endereço público com que o equipamento chega aqui.",
+        "No equipamento, aponte o envio para o endereço e a porta do cartão, em TCP com TLS (no Cisco ASA, a opção secure; nos outros, TLS ou SSL).",
+      ] },
+      "O receptor só aceita os endereços cadastrados. Um mesmo endereço não pode mandar para duas organizações da instalação: a fonte mais nova é recusada, com o motivo. A saúde da fonte mostra cada equipamento do mesmo jeito que no syslog comum.",
+      { aviso: "Aceita TLS 1.2. Equipamento que só fala TLS 1.0 ou 1.1 não conecta, de propósito: essas versões são inseguras." },
       { h: "Saúde de cada fonte" },
       "Em Fontes configuradas, a coluna Últimas 24 h mostra quantos eventos cada fonte mandou, com um gráfico por hora. Clique na fonte para ver o resto:",
       { lista: [

@@ -1,0 +1,52 @@
+# Receptor de syslog cifrado (roar_ingestao.syslog_cifrado). Gerado: a lista de rotas entra no lugar de __ROTAS__.
+# Aceita TLS (a versão mínima é a padrão do OpenSSL do Vector, conferida em testar_syslog_cifrado.py), com enquadramento por contagem de bytes (RFC 5425) ou por linha. Endereço fora das rotas é
+# descartado sem resposta. A linha vai sem a prioridade do começo, como o Wazuh guarda o syslog que recebe direto.
+data_dir: /var/lib/vector
+
+sources:
+  cifrado:
+    type: socket
+    mode: tcp
+    address: 0.0.0.0:6514
+    host_key: origem
+    port_key: porta_de_origem
+    max_connection_duration_secs: 86400
+    framing:
+      method: octet_counting
+      octet_counting:
+        max_length: 262144
+    decoding:
+      codec: bytes
+    tls:
+      enabled: true
+      crt_file: /etc/recepcao/certificados/servidor.pem
+      key_file: /etc/recepcao/certificados/servidor-chave.pem
+
+transforms:
+  destino:
+    type: remap
+    inputs: [cifrado]
+    drop_on_abort: true
+    source: |
+      ip = string(.origem) ?? ""
+      # Lida como JSON: o tipo de cada rota não depende de a lista estar vazia.
+      rotas = array(parse_json(s'__ROTAS__') ?? []) ?? []
+      achadas = filter(rotas) -> |_indice, rota| { ip_cidr_contains(string(rota.rede) ?? "", ip) ?? false }
+      if length(achadas) == 0 { abort }
+      linha = replace(string(.message) ?? "", r'^<\d{1,3}>', "")
+      linha = strip_whitespace(linha)
+      if linha == "" { abort }
+      . = {"message": linha, "gerenciador": achadas[0].gerenciador, "ip": ip, "timestamp": now()}
+
+sinks:
+  arquivos:
+    type: file
+    inputs: [destino]
+    # A data no nome, não numa pasta: o Wazuh não expande curinga e data juntos no mesmo caminho.
+    path: "/var/roar-cifrado/{{ gerenciador }}/{{ ip }}-%Y-%m-%d.log"
+    encoding:
+      codec: text
+    buffer:
+      type: memory
+      max_events: 50000
+      when_full: block

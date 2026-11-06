@@ -1,6 +1,6 @@
 import { Sparkline } from "@mantine/charts";
 import { Alert, Badge, Box, Button, Card, Drawer, Group, Modal, NumberInput, PasswordInput, SegmentedControl, Select, SimpleGrid, Stack, Switch, Tabs, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
-import { IconAlertTriangle, IconLock, IconPlugConnected, IconServer2 } from "@tabler/icons-react";
+import { IconAlertTriangle, IconDownload, IconLock, IconPlugConnected, IconServer2 } from "@tabler/icons-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { detalhe, enviar, useDados, usePode } from "../api";
@@ -43,7 +43,7 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
       cuidado: "O comando traz a senha de inscrição da sua organização: não o publique. Para bloquear endereços, o ativo precisa ter firewall.", permissao: "instalar_agente" },
     { id: "syslog", rotulo: "Syslog", sigla: "SYS", resumo: "Firewall, switch e outros equipamentos que não aceitam agente.", prova: "Testado com envio real",
       passos: ["Em Conectar, cadastre os endereços dos equipamentos: o que estiver fora da lista é ignorado.", "Espere a fonte ficar ativa.", "No equipamento, aponte o envio de syslog para o endereço e a porta mostrados aqui."],
-      cuidado: "O syslog não é cifrado: use apenas em rede de confiança.", tipos: ["syslog"] },
+      cuidado: "Em TCP ou UDP, o syslog vai sem cifra: use na rede de confiança. Pela internet, use o syslog cifrado: o protocolo TLS, ao conectar.", tipos: ["syslog"] },
   ] },
   { grupo: "Firewalls e rede", itens: [
     { id: "fortigate", rotulo: "FortiGate", logo: "fortinet", resumo: "Tráfego, bloqueios, VPN e acessos de administrador dos firewalls Fortinet.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
@@ -161,6 +161,8 @@ interface VisaoDeFontes {
   agentes: { total: number; conectados: number };
   endereco: string | null;
   porta_syslog: number | null;
+  /** Receptor de syslog cifrado da instalação; null quando ele não foi preparado. */
+  porta_syslog_cifrado: number | null;
 }
 
 const SAUDE_DA_FONTE: Record<string, string> = { recebendo: "● Recebendo", parada: "▲ Parada", nunca_recebeu: "○ Nada recebido ainda", desconhecida: "? Não foi possível conferir" };
@@ -326,9 +328,9 @@ function Erro({ texto }: { texto: string | null }) {
   return texto ? <Alert color="red" variant="light" p="xs" fz="sm">{texto}</Alert> : null;
 }
 
-interface PropsDoFormulario { item: Conector; aoFechar: () => void; aoCriar: () => void }
+interface PropsDoFormulario { item: Conector; aoFechar: () => void; aoCriar: () => void; portaCifrada?: number | null }
 
-function FormularioDeSyslog({ item, aoFechar, aoCriar }: PropsDoFormulario) {
+function FormularioDeSyslog({ item, aoFechar, aoCriar, portaCifrada }: PropsDoFormulario) {
   const [nome, setNome] = useState(item.id === "syslog" ? "" : item.rotulo);
   const [protocolo, setProtocolo] = useState<string>(item.protocolo ?? "tcp");
   const [origens, setOrigens] = useState("");
@@ -350,8 +352,12 @@ function FormularioDeSyslog({ item, aoFechar, aoCriar }: PropsDoFormulario) {
       <Stack gap="sm">
         <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
           <TextInput label="Nome" placeholder="Firewall da matriz" maxLength={120} value={nome} onChange={(e) => setNome(e.currentTarget.value)} data-autofocus />
-          <Select label="Protocolo" allowDeselect={false} value={protocolo} onChange={(v) => setProtocolo(v ?? "tcp")} data={item.protocolo === "udp" ? [{ value: "udp", label: "UDP (o que o equipamento usa)" }, { value: "tcp", label: "TCP" }] : [{ value: "tcp", label: "TCP (recomendado)" }, { value: "udp", label: "UDP" }]} />
+          <Select label="Protocolo" allowDeselect={false} value={protocolo} onChange={(v) => setProtocolo(v ?? "tcp")} data={[
+            ...(item.protocolo === "udp" ? [{ value: "udp", label: "UDP (o que o equipamento usa)" }, { value: "tcp", label: "TCP" }] : [{ value: "tcp", label: "TCP (recomendado)" }, { value: "udp", label: "UDP" }]),
+            ...(portaCifrada ? [{ value: "tls", label: `TLS, cifrado (porta ${portaCifrada})` }] : []),
+          ]} />
         </SimpleGrid>
+        {protocolo === "tls" && <Text size="xs" c="dimmed">Cifrado: o equipamento manda para a porta {portaCifrada}, em TCP com TLS, e precisa confiar no certificado da autoridade, que se baixa no cartão, atrás desta janela. Cadastre o endereço público com que o equipamento chega aqui.</Text>}
         <Textarea label="Endereços que podem enviar, um por linha" placeholder={"192.168.10.1\n10.20.0.0/24"} rows={3} spellCheck={false} value={origens} onChange={(e) => setOrigens(e.currentTarget.value)} />
         <Erro texto={erro} />
         <Rodape aoFechar={aoFechar} rotulo="Salvar" ocupado={ocupado} />
@@ -554,6 +560,19 @@ function TesteDeLinha({ amostra }: { amostra: string }) {
   );
 }
 
+function SyslogCifrado({ porta, endereco }: { porta: number; endereco: string | null }) {
+  return (
+    <Stack gap="xs">
+      <Title order={2}>Pela internet: syslog cifrado</Title>
+      <Text size="sm">
+        Para equipamento fora da sua rede, use o envio cifrado: porta <span className="mono">{porta}</span> de <span className="mono">{endereco}</span>, em TCP com TLS.
+        Em Conectar, escolha o protocolo TLS e cadastre o endereço público do equipamento. No equipamento, importe o certificado abaixo como autoridade confiável.
+      </Text>
+      <Group><Button component="a" href="/api/fontes/certificado-syslog" download leftSection={<IconDownload size={14} />}>Baixar o certificado da autoridade</Button></Group>
+    </Stack>
+  );
+}
+
 // ------------------------------------------------------------------ gavetas
 
 function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { item: Conector | null; visao: VisaoDeFontes; aoFechar: () => void; aoMudar: () => void; aoAbrirFonte: (f: Fonte) => void }) {
@@ -592,6 +611,7 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
             <Text size="sm">Aponte {item.id === "syslog" ? "os equipamentos" : "o equipamento"} para <span className="mono">{visao.endereco}</span>, porta <span className="mono">{visao.porta_syslog}</span>{item.protocolo === "udp" ? ", em UDP" : ""}.</Text>
           )}
           {item.comando && visao.porta_syslog && visao.endereco && <BlocoDeComando texto={item.comando(visao.endereco, visao.porta_syslog)} />}
+          {tipos.includes("syslog") && visao.porta_syslog_cifrado && <SyslogCifrado porta={visao.porta_syslog_cifrado} endereco={visao.endereco} />}
           {item.amostra && pode("gerir_fontes") && <TesteDeLinha key={item.id} amostra={item.amostra} />}
 
           {!podeConectar && <Text size="sm" c="dimmed">Seu perfil não permite conectar. Peça a quem administra.</Text>}
@@ -619,7 +639,7 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
           {podeConectar && item.id !== "agente" && (
             // Fechar a janela desmonta o formulário, e a credencial digitada vai junto.
             <Modal opened={conectando} onClose={() => setConectando(false)} title={`Conectar ${item.rotulo}`} size="lg" closeOnClickOutside={false}>
-              <Formulario key={item.id} item={item} aoFechar={() => setConectando(false)} aoCriar={aoMudar} />
+              <Formulario key={item.id} item={item} aoFechar={() => setConectando(false)} aoCriar={aoMudar} portaCifrada={visao.porta_syslog_cifrado} />
             </Modal>
           )}
         </Stack>

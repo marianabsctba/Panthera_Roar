@@ -272,6 +272,16 @@ def _bases_de_localizacao():
     return GEOIP
 
 
+def _pasta_do_syslog_cifrado(gerenciador_id):
+    """A pasta que o receptor de syslog cifrado grava para este gerenciador; existe antes de o contêiner montar."""
+    from . import syslog_cifrado
+
+    pasta = syslog_cifrado.pasta_do_gerenciador(gerenciador_id)
+    pasta.mkdir(parents=True, exist_ok=True)
+    pasta.chmod(0o755)
+    return pasta
+
+
 def ligar_coletor(gerenciador_id):
     """Banco da organização, usuário do coletor e o coletor do gerenciador no ar. Pode rodar de novo sem estrago:
     é assim que os gerenciadores criados antes do armazém ganham o seu."""
@@ -286,6 +296,7 @@ def ligar_coletor(gerenciador_id):
     senha = variaveis.get("ARMAZEM_SENHA") or senha_forte()
     usuario = armazem.criar_gravador(adm, gerenciador_id, cliente, senha)
     variaveis.update({"ARMAZEM_USUARIO": usuario, "ARMAZEM_SENHA": senha, "ARMAZEM_BANCO": nome_do_banco, "GEOIP": str(_bases_de_localizacao()),
+                      "SYSLOG_CIFRADO": str(_pasta_do_syslog_cifrado(gerenciador_id)),
                       # Só o armazém recebe logs e alertas: o Filebeat do gerenciador não sobe (teste do caminho antigo liga de volta pelo ambiente).
                       "ROAR_SO_ARMAZEM": os.environ.get("ROAR_SO_ARMAZEM", env.get("ROAR_SO_ARMAZEM", "0"))})
     (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
@@ -303,7 +314,8 @@ def ligar_coletor(gerenciador_id):
     destino.touch(mode=0o600)
     destino.chmod(0o600)
     destino.write_text(texto)
-    _compose(pasta, gerenciador_id, "up", "-d", "coletor")
+    # Os dois: o gerenciador antigo também ganha a pasta do syslog cifrado (o compose só recria o que mudou).
+    _compose(pasta, gerenciador_id, "up", "-d")
 
 
 def preparar_arquivo(indexer, dias):
@@ -513,6 +525,8 @@ def criar(nome, endereco_portas="127.0.0.1"):
         "INDICE_BRUTO": indice_bruto_do(gerenciador_id), "CERTIFICADOS": CERTIFICADOS,
         # O compose declara também o coletor: sem a pasta das bases de localização, nem o gerenciador sobe.
         "GEOIP": _bases_de_localizacao(),
+        # O mesmo vale para a pasta do syslog cifrado, que o gerenciador monta.
+        "SYSLOG_CIFRADO": _pasta_do_syslog_cifrado(gerenciador_id),
     }
     (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
     (pasta / ".env").chmod(0o600)

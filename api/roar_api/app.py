@@ -58,6 +58,7 @@ from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao.normalizar import CAMPOS_DE_IP_DE_DESTINO, CAMPOS_DE_IP_DE_ORIGEM  # noqa: E402
+from roar_ingestao.syslog_cifrado import PORTA as PORTA_DO_SYSLOG_CIFRADO, PASTA as PASTA_DO_SYSLOG_CIFRADO, endereco_da_origem  # noqa: E402
 from roar_ingestao import superficie as superficie_externa_  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import contexto, inteligencia as inteligencia_de_ameacas, sigma, xml_proprio, yara_regras  # noqa: E402
@@ -83,6 +84,8 @@ TAMANHO_MAXIMO_DO_EVENTO = 60_000
 TAMANHO_MAXIMO_DO_ENVIO = 1_000_000
 LIMITE_DA_FILA_DO_WEBHOOK = 10_000
 MINUTOS_ATE_PARADA = 15
+# A porta que o equipamento usa; dentro do receptor é sempre PORTA_DO_SYSLOG_CIFRADO (infra/docker-compose.yml).
+PORTA_SYSLOG_CIFRADO = int(os.getenv("SYSLOG_CIFRADO_PORTA") or str(PORTA_DO_SYSLOG_CIFRADO))
 # As fontes cujos eventos têm origem própria nos logs; webhook e API chegam todos pela mesma origem.
 TIPOS_COM_VOLUME = ("syslog", "github", "office365", "msgraph", "aws", "azure", "gcp")
 DESLOCAMENTO_SYSLOG = 3
@@ -4565,7 +4568,7 @@ def _saude_da_fonte(fonte, origens):
         redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
         for local, ultimo in origens:
             try:
-                if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
+                if ultimo and any(ipaddress.ip_address(endereco_da_origem(local)) in rede for rede in redes):
                     ultimos.append(ultimo)
             except ValueError:
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
@@ -4605,7 +4608,20 @@ def listar_fontes(request: Request, sessao=Depends(exige(permissoes.VER))):
         if resumo is not None and fonte["estado"] == "ativa" and fonte["tipo"] in TIPOS_COM_VOLUME:
             fonte["volume"] = saude_das_fontes.da_fonte(fonte, resumo)
     return {"fontes": fontes, "agentes": agentes, "endereco": ENDERECO_PUBLICO,
-            "porta_syslog": gerenciador["porta_base"] + DESLOCAMENTO_SYSLOG if gerenciador else None}
+            "porta_syslog": gerenciador["porta_base"] + DESLOCAMENTO_SYSLOG if gerenciador else None,
+            # Só com o receptor preparado (infra/servicos.sh): sem ele, a tela não oferece o syslog cifrado.
+            "porta_syslog_cifrado": PORTA_SYSLOG_CIFRADO if (PASTA_DO_SYSLOG_CIFRADO / "certificados" / "autoridade.pem").is_file() else None}
+
+
+@app.get("/api/fontes/certificado-syslog")
+def certificado_do_syslog_cifrado(sessao=Depends(exige(permissoes.VER))):
+    """A autoridade que assina o certificado do receptor de syslog cifrado: o equipamento importa este arquivo para
+    confiar no receptor. É público; a chave da autoridade fica no servidor."""
+    arquivo = PASTA_DO_SYSLOG_CIFRADO / "certificados" / "autoridade.pem"
+    if not arquivo.is_file():
+        raise HTTPException(status_code=404, detail="O syslog cifrado ainda não foi preparado nesta instalação.")
+    return Response(arquivo.read_bytes(), media_type="application/x-pem-file",
+                    headers={"Content-Disposition": 'attachment; filename="panthera-roar-syslog-cifrado.pem"'})
 
 
 @app.post("/api/fontes", status_code=201)
