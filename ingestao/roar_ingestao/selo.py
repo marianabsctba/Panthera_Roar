@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
 from . import armazem as armazem_de_eventos
-from . import rede_externa
+from . import rede_externa, selo_em_blocos
 
 log = logging.getLogger("roar.selo")
 
@@ -114,13 +114,17 @@ def raiz_pelo_caminho(folha, indice, total, caminho):
 
 def cabecalho_do_selo(selo):
     cabecalho = {
-        "versao": VERSAO, "gerenciador": selo["gerenciador"], "cliente": str(selo["cliente"]), "n": selo["n"], "fonte": selo["fonte"],
+        "versao": selo.get("versao") or VERSAO, "gerenciador": selo["gerenciador"], "cliente": str(selo["cliente"]), "n": selo["n"], "fonte": selo["fonte"],
         "inicio": selo["inicio"], "fim": selo["fim"], "total": selo["total"], "tardio": selo["tardio"],
         "raiz": selo["raiz"], "anterior": selo["anterior"], "chave": selo["chave"], "selado_em": selo["selado_em"],
     }
     # Só o selo feito sobre o armazém leva a origem: os do indexador continuam com o mesmo hash de sempre.
     if selo.get("origem", "indexador") != "indexador":
         cabecalho["origem"] = selo["origem"]
+    # O selo em blocos (selo_em_blocos.py) diz como a árvore foi montada e que chegadas ele cobre.
+    if cabecalho["versao"] == selo_em_blocos.VERSAO:
+        for campo in ("blocos", "folhas_superiores", "recebido_de", "recebido_ate"):
+            cabecalho[campo] = selo.get(campo)
     return cabecalho
 
 
@@ -231,10 +235,15 @@ class FonteDoArmazem:
     TABELAS = {"alertas": "alertas", "logs": "logs"}
 
     def __init__(self, leitor, cliente):
-        self.leitor, self.banco = leitor, armazem_de_eventos.banco_do(cliente)
+        self.leitor, self.cliente, self.banco = leitor, cliente, armazem_de_eventos.banco_do(cliente)
 
     def _onde(self, fonte):
         return f"{self.banco}.{self.TABELAS[fonte]} WHERE gerenciador = {{g:String}}"
+
+    def contar(self, fonte, gerenciador, inicio, fim):
+        return int(self.leitor.linhas(f"""SELECT count() AS n FROM {self._onde(fonte)}
+                                          AND ocorrido_em >= parseDateTime64BestEffort({{a:String}}, 3) AND ocorrido_em < parseDateTime64BestEffort({{b:String}}, 3)""",
+                                      {"g": gerenciador, "a": _iso(inicio), "b": _iso(fim)})[0]["n"])
 
     def documentos(self, fonte, gerenciador, inicio, fim):
         linhas = self.leitor.linhas(f"""SELECT toString(id) AS i, dados, full_log, resumo_do_original FROM {self._onde(fonte)}
@@ -301,23 +310,40 @@ def _ponta_da_cadeia(banco, gerenciador):
 def gravar_selo(banco, chave, publica, gerenciador, cliente, fonte, inicio, fim, documentos, tardio=False, origem="indexador"):
     segredo = secrets.token_bytes(32)
     pares = folhas_em_ordem(segredo, documentos)
+    selo = {"gerenciador": gerenciador, "cliente": str(cliente), "fonte": fonte, "inicio": _iso(inicio), "fim": _iso(fim), "total": len(pares), "tardio": tardio,
+            "raiz": raiz_de_merkle([h for _, h in pares]).hex(), "origem": origem, "versao": VERSAO}
+    return _assinar_e_gravar(banco, chave, publica, selo, segredo, empacotar_folhas(pares))
+
+
+def gravar_selo_em_blocos(banco, chave, publica, eventos, gerenciador, cliente, fonte, inicio, fim, tardio=False, recebido_de=None, agora=None):
+    """Janela grande do armazém: as folhas e os resumos dos blocos saem do próprio armazém (selo_em_blocos.py)."""
+    segredo = secrets.token_bytes(32)
+    selo = {"gerenciador": gerenciador, "cliente": str(cliente), "fonte": fonte, "inicio": _iso(inicio), "fim": _iso(fim), "tardio": tardio, "origem": "armazem",
+            "versao": selo_em_blocos.VERSAO, "recebido_de": recebido_de, "recebido_ate": selo_em_blocos.corte(agora)}
+    total = selo_em_blocos.contar(eventos.leitor, eventos.banco, fonte, selo)
+    selo["blocos"] = selo_em_blocos.quantos_blocos(total)
+    blocos = selo_em_blocos.calcular_blocos(eventos.leitor, eventos.banco, fonte, selo, segredo)
+    selo.update(total=sum(t for _, t, _ in blocos), folhas_superiores=len(blocos),
+                raiz=raiz_de_merkle(selo_em_blocos.folhas_superiores(blocos)).hex())
+    return _assinar_e_gravar(banco, chave, publica, selo, segredo, selo_em_blocos.empacotar_blocos(blocos))
+
+
+def _assinar_e_gravar(banco, chave, publica, selo, segredo, folhas):
+    """Põe o selo na ponta da cadeia, assina e grava, com o segredo e as folhas (ou os blocos) à parte."""
     with banco.con.transaction():
-        _com_cliente(banco, cliente)
-        n, anterior = _ponta_da_cadeia(banco, gerenciador)
-        selo = {
-            "gerenciador": gerenciador, "cliente": str(cliente), "n": n + 1, "fonte": fonte, "inicio": _iso(inicio), "fim": _iso(fim), "total": len(pares), "tardio": tardio,
-            "raiz": raiz_de_merkle([h for _, h in pares]).hex(), "anterior": anterior, "chave": impressao_da_chave(publica), "selado_em": _iso(datetime.now(timezone.utc)),
-            "origem": origem,
-        }
+        _com_cliente(banco, selo["cliente"])
+        n, anterior = _ponta_da_cadeia(banco, selo["gerenciador"])
+        selo.update(n=n + 1, anterior=anterior, chave=impressao_da_chave(publica), selado_em=_iso(datetime.now(timezone.utc)))
         selo["hash"] = hash_do_selo(selo)
         selo["assinatura"] = chave.sign(bytes.fromhex(selo["hash"])).hex()
         banco.con.execute(
-            "INSERT INTO selos (gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (gerenciador, selo["n"], cliente, fonte, selo["inicio"], selo["fim"], selo["total"], tardio, selo["raiz"], anterior, selo["hash"], selo["assinatura"], selo["chave"],
-             selo["selado_em"], origem))
+            "INSERT INTO selos (gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem, "
+            "versao, blocos, folhas_superiores, recebido_de, recebido_ate) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (selo["gerenciador"], selo["n"], selo["cliente"], selo["fonte"], selo["inicio"], selo["fim"], selo["total"], selo["tardio"], selo["raiz"], anterior,
+             selo["hash"], selo["assinatura"], selo["chave"], selo["selado_em"], selo["origem"], selo["versao"], selo.get("blocos"), selo.get("folhas_superiores"),
+             selo.get("recebido_de"), selo.get("recebido_ate")))
         banco.con.execute("INSERT INTO selo_folhas (gerenciador_id, n, cliente_id, segredo, folhas) VALUES (%s, %s, %s, %s, %s)",
-                          (gerenciador, selo["n"], cliente, segredo, empacotar_folhas(pares)))
+                          (selo["gerenciador"], selo["n"], selo["cliente"], segredo, folhas))
     return selo
 
 
@@ -335,8 +361,14 @@ def selar_novas_janelas(indexer, banco, chave, publica, gerenciador, cliente, fo
             return 0
         inicio = _piso(primeiro)
     selados = 0
+    eventos = _fonte(indexer)
     while inicio < teto and selados < limite:
         fim = inicio + JANELA
+        if eventos.origem == "armazem" and eventos.contar(fonte, gerenciador, inicio, fim) > selo_em_blocos.LIMITE_POR_EVENTO:
+            gravar_selo_em_blocos(banco, chave, publica, eventos, gerenciador, cliente, fonte, inicio, fim, agora=agora)
+            selados += 1
+            inicio = fim
+            continue
         documentos = documentos_da_janela(indexer, fonte, gerenciador, inicio, fim)
         if not documentos:
             # Um trecho longo sem nada vira um selo só, para a cadeia não crescer à toa.
@@ -367,6 +399,17 @@ def selar_tardios(indexer, banco, chave, publica, gerenciador, cliente, fonte, a
             selos = _selos_das_janelas(banco, gerenciador, fonte, inicio, fim)
         if not selos:
             continue
+        with banco.con.transaction():
+            _com_cliente(banco, cliente)
+            em_blocos = banco.con.execute("SELECT max(recebido_ate) FROM selos WHERE gerenciador_id = %s AND fonte = %s AND fim > %s AND inicio < %s AND versao = %s",
+                                          (gerenciador, fonte, inicio, fim, selo_em_blocos.VERSAO)).fetchone()[0]
+        if em_blocos is not None:
+            # O que chegou depois do último corte desta janela: um selo tardio em blocos, com a faixa de chegada.
+            novos = {"gerenciador": gerenciador, "inicio": _iso(inicio), "fim": _iso(fim), "recebido_de": _iso(em_blocos), "recebido_ate": selo_em_blocos.corte(agora)}
+            if selo_em_blocos.contar(eventos.leitor, eventos.banco, fonte, novos):
+                gravar_selo_em_blocos(banco, chave, publica, eventos, gerenciador, cliente, fonte, inicio, fim, tardio=True, recebido_de=_iso(em_blocos), agora=agora)
+                selados += 1
+            continue
         conhecidos = {i for s in selos for i, _ in desempacotar_folhas(s[4])}
         if quantos <= len(conhecidos):
             continue
@@ -384,10 +427,14 @@ def _selo_da_linha(linha):
         "gerenciador": linha[0], "n": linha[1], "cliente": str(linha[2]), "fonte": linha[3], "inicio": _iso(linha[4]), "fim": _iso(linha[5]), "total": linha[6], "tardio": linha[7],
         "raiz": linha[8], "anterior": linha[9], "hash": linha[10], "assinatura": linha[11], "chave": linha[12], "selado_em": _iso(linha[13]),
         "origem": linha[14] if len(linha) > 14 else "indexador",
+        "versao": linha[15] if len(linha) > 15 else VERSAO,
+        "blocos": linha[16] if len(linha) > 16 else None, "folhas_superiores": linha[17] if len(linha) > 17 else None,
+        "recebido_de": _iso(linha[18]) if len(linha) > 18 and linha[18] else None, "recebido_ate": _iso(linha[19]) if len(linha) > 19 and linha[19] else None,
     }
 
 
-COLUNAS = "gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem"
+COLUNAS = ("gerenciador_id, n, cliente_id, fonte, inicio, fim, total, tardio, raiz, anterior, hash, assinatura, chave, selado_em, origem, "
+           "versao, blocos, folhas_superiores, recebido_de, recebido_ate")
 
 
 def conferir_cadeia(selos, publica):
@@ -466,8 +513,33 @@ def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None,
         # Um grupo por vez: guardar as folhas de três meses juntas não cabe na memória.
         with banco.con.transaction():
             _com_cliente(banco, cliente)
-            guardados = {l[0]: (bytes(l[1]), desempacotar_folhas(l[2])) for l in banco.con.execute(
+            guardados = {l[0]: (bytes(l[1]), l[2]) for l in banco.con.execute(
                 "SELECT n, segredo, folhas FROM selo_folhas WHERE gerenciador_id = %s AND n = ANY(%s)", (gerenciador, [s["n"] for s in grupo])).fetchall()}
+        em_blocos = [s for s in grupo if s.get("versao") == selo_em_blocos.VERSAO]
+        if em_blocos:
+            if armazem is None:
+                achados.append({"tipo": "armazem_indisponivel", "n": em_blocos[0]["n"]})
+                continue
+            for selo in em_blocos:
+                if selo["n"] not in guardados:
+                    achados.append({"tipo": "folhas_faltando", "n": selo["n"]})
+                    continue
+                segredo, folhas = guardados[selo["n"]]
+                novos, quantos = selo_em_blocos.conferir(armazem, cliente, selo, segredo, selo_em_blocos.desempacotar_blocos(folhas))
+                achados.extend(novos)
+                eventos += quantos
+            # O que chegou depois do último corte já devia ter virado tardio: passado o prazo deles, é evento sem selo.
+            ultimo = max(datetime.fromisoformat(s["recebido_ate"]) for s in em_blocos)
+            if ultimo < agora - HORIZONTE_DOS_TARDIOS:
+                depois = {"gerenciador": gerenciador, "inicio": min(s["inicio"] for s in em_blocos), "fim": max(s["fim"] for s in em_blocos),
+                          "recebido_de": _iso(ultimo), "recebido_ate": _iso(agora)}
+                sem_selo = selo_em_blocos.contar(armazem, armazem_de_eventos.banco_do(cliente), em_blocos[0]["fonte"], depois)
+                if sem_selo:
+                    achados.append({"tipo": "eventos_sem_selo", "n": em_blocos[0]["n"], "quantos": sem_selo})
+            grupo = [s for s in grupo if s.get("versao") != selo_em_blocos.VERSAO]
+            if not grupo:
+                continue
+            guardados = {n: v for n, v in guardados.items() if n in {s["n"] for s in grupo}}
         # Cada selo confere no lugar de onde veio: o do armazém, no armazém; o antigo, no indexador.
         if grupo[0].get("origem", "indexador") == "armazem":
             if armazem is None:
@@ -476,7 +548,7 @@ def verificar(indexer, banco, publica, gerenciador, cliente, retencao_dias=None,
             onde = FonteDoArmazem(armazem, cliente)
         else:
             onde = indexer
-        novos, quantos = conferir_grupo(onde, gerenciador, grupo, guardados)
+        novos, quantos = conferir_grupo(onde, gerenciador, grupo, {n: (seg, desempacotar_folhas(f)) for n, (seg, f) in guardados.items()})
         achados.extend(novos)
         eventos += quantos
     estado = "violada" if achados else "integra"

@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from roar_ingestao import armazem as armazem_de_eventos
 from roar_ingestao import selo as selagem
+from roar_ingestao import selo_em_blocos
 from roar_ingestao import verificador_de_evidencia as verificador
 
 MODELOS = Path(__file__).parent / "modelos"
@@ -25,6 +26,9 @@ LIMITE_DO_PERIODO = 10000
 # Até aqui o laudo traz cada evento por extenso; acima, só a lista, e o conteúdo fica no arquivo de dados.
 EVENTOS_POR_EXTENSO = 200
 LOTE_DE_BUSCA = 1000
+# Em janela de volume alto (selo em blocos), cada evento leva as folhas do bloco dele, umas mil: acima disso, o pacote passa
+# de dezenas de megabytes, e o pedido tem de ser refinado.
+LIMITE_EM_BLOCOS = 500
 # Id de evento do armazém de eventos (docs/clickhouse.md); o do indexador tem outro formato.
 ID_DO_ARMAZEM = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -44,11 +48,21 @@ class _Janelas:
 
     def __init__(self, con, gerenciador, fonte, de, ate):
         self.con = con
-        linhas = con.execute("SELECT n, inicio, fim FROM selos WHERE gerenciador_id = %s AND fonte = %s AND inicio <= %s AND fim > %s ORDER BY fim, n",
+        linhas = con.execute(f"SELECT {selagem.COLUNAS} FROM selos WHERE gerenciador_id = %s AND fonte = %s AND inicio <= %s AND fim > %s ORDER BY fim, n",
                              (gerenciador, fonte, ate, de)).fetchall()
+        self.selos = {l["n"]: selagem._selo_da_linha(tuple(l[c.strip()] for c in selagem.COLUNAS.split(","))) for l in linhas}
         self.gerenciador, self.janelas = gerenciador, [(l["fim"], l["inicio"], l["n"]) for l in linhas]
         self.fins = [j[0] for j in self.janelas]
         self.folhas = {}
+
+    def em_blocos(self, n):
+        return self.selos[n].get("versao") == selo_em_blocos.VERSAO
+
+    def blocos(self, n):
+        if n not in self.folhas:
+            linha = self.con.execute("SELECT segredo, folhas FROM selo_folhas WHERE gerenciador_id = %s AND n = %s", (self.gerenciador, n)).fetchone()
+            self.folhas[n] = (bytes(linha["segredo"]), selo_em_blocos.desempacotar_blocos(linha["folhas"]))
+        return self.folhas[n]
 
     def que_cobrem(self, momento):
         # Janelas tardias podem se sobrepor às normais: todas as que cobrem o momento são candidatas.
@@ -115,7 +129,7 @@ def montar_pacotes(con, indexer, url, gerenciadores, fonte, ids, publica, armaze
     por_gerenciador = {}
     for identificador in ids:
         por_gerenciador.setdefault(achados[identificador][0], []).append(identificador)
-    return [_montar_um(con, gerenciador, fonte, lista, achados, publica) for gerenciador, lista in por_gerenciador.items()]
+    return [_montar_um(con, gerenciador, fonte, lista, achados, publica, armazem, banco) for gerenciador, lista in por_gerenciador.items()]
 
 
 def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica, armazem=None, banco=None):
@@ -125,16 +139,29 @@ def montar_pacote(con, indexer, url, gerenciadores, fonte, ids, publica, armazem
     return pacotes[0][1], pacotes[0][2]
 
 
-def _montar_um(con, gerenciador, fonte, ids, achados, publica):
+def _montar_um(con, gerenciador, fonte, ids, achados, publica, armazem=None, banco=None):
     momentos = {i: achados[i][2] for i in ids}
     janelas = _Janelas(con, gerenciador, fonte, min(momentos.values()), max(momentos.values()))
-    eventos = []
+    eventos, em_blocos = [], 0
     for identificador in ids:
         documento = achados[identificador][1]
         prova = None
         for n in janelas.que_cobrem(momentos[identificador]):
-            segredo, pares, posicoes = janelas.da_janela(n)
-            prova = montar_prova(identificador, documento, n, segredo, pares, posicoes)
+            if janelas.em_blocos(n):
+                # Selo em blocos: a prova sai do armazém, com as folhas do bloco do evento.
+                if armazem is None or not ID_DO_ARMAZEM.fullmatch(identificador):
+                    continue
+                em_blocos += 1
+                if em_blocos > LIMITE_EM_BLOCOS:
+                    raise EvidenciaRecusada(f"Período com volume alto: o pacote leva até {LIMITE_EM_BLOCOS} eventos dessa época. Refine a busca ou o período.")
+                segredo, blocos = janelas.blocos(n)
+                try:
+                    prova = selo_em_blocos.provar(armazem, banco, janelas.selos[n], segredo, blocos, identificador)
+                except ValueError as erro:
+                    raise EvidenciaRecusada(f"{erro} Veja a verificação em Integridade.")
+            else:
+                segredo, pares, posicoes = janelas.da_janela(n)
+                prova = montar_prova(identificador, documento, n, segredo, pares, posicoes)
             if prova:
                 break
         if not prova:

@@ -28,6 +28,19 @@ def hash_da_folha(sal, identificador, documento):
     return hashlib.sha256(b"\x00" + sal + identificador.encode() + b"\n" + canonico(documento)).digest()
 
 
+def folha_em_blocos(sal, identificador, bruto):
+    """Selo em blocos (versão 2): a folha é o log exatamente como foi gravado, em bytes."""
+    return hashlib.sha256(b"\x02" + sal + identificador.encode() + b"\n" + bruto.encode()).digest()
+
+
+def resumo_do_bloco(folhas):
+    return hashlib.sha256(b"\x03" + b"".join(sorted(folhas))).digest()
+
+
+def folha_superior(bloco, total, resumo):
+    return hashlib.sha256(b"\x04" + bloco.to_bytes(8, "big") + total.to_bytes(8, "big") + resumo).digest()
+
+
 def raiz_pelo_caminho(folha, indice, total, caminho):
     """RFC 9162, seção 2.1.3.2."""
     if not 0 <= indice < total:
@@ -58,6 +71,10 @@ def hash_do_selo(selo):
     # Selo feito sobre o armazém de eventos diz isso no cabeçalho; os outros não têm o campo.
     if selo.get("origem", "indexador") != "indexador":
         cabecalho["origem"] = selo["origem"]
+    # O selo em blocos diz como a árvore foi montada e que chegadas ele cobre.
+    if selo["versao"] == 2:
+        for campo in ("blocos", "folhas_superiores", "recebido_de", "recebido_ate"):
+            cabecalho[campo] = selo.get(campo)
     return hashlib.sha256(canonico(cabecalho)).hexdigest()
 
 
@@ -70,6 +87,26 @@ def _assinatura_confere(publica, selo):
         return True
     except (InvalidSignature, ValueError):
         return False
+
+
+def _confere_em_blocos(evento, selo):
+    """O evento está entre as folhas do bloco dele, o bloco dá o resumo, e o resumo sobe pelo caminho até a raiz do selo."""
+    if selo.get("versao") != 2:
+        return False
+    folhas = [bytes.fromhex(f) for f in evento["folhas_do_bloco"]]
+    folha = folha_em_blocos(bytes.fromhex(evento["sal"]), evento["id"], evento["bruto"])
+    if folha not in folhas:
+        return False
+    # O que o laudo mostra tem de ser o mesmo log que a prova cobre.
+    try:
+        lido = json.loads(evento["bruto"])
+    except ValueError:
+        lido = None
+    if isinstance(lido, dict) and evento.get("documento") not in (None, lido):
+        return False
+    superior = folha_superior(evento["bloco"], len(folhas), resumo_do_bloco(folhas))
+    raiz = raiz_pelo_caminho(superior, evento["indice"], selo["folhas_superiores"], evento["caminho"])
+    return raiz is not None and raiz.hex() == selo["raiz"]
 
 
 def conferir(pacote):
@@ -107,6 +144,10 @@ def conferir(pacote):
             selo = selos.get(evento["selo"])
             if selo is None:
                 problemas.append(f"O selo do evento {identificador} não está no pacote.")
+                continue
+            if evento.get("versao") == 2:
+                if not _confere_em_blocos(evento, selo):
+                    problemas.append(f"O evento {identificador} não confere com o selo {selo['n']}.")
                 continue
             folha = hash_da_folha(bytes.fromhex(evento["sal"]), identificador, evento["documento"])
             raiz = raiz_pelo_caminho(folha, evento["indice"], selo["total"], evento["caminho"])

@@ -182,7 +182,7 @@ Limites:
 
 Limites:
 
-- **Selo em volume muito alto:** a folha de cada evento ainda é calculada em Python, e as folhas de cada janela de 15 minutos ficam guardadas no Postgres. Em 50 mil eventos por segundo, são 45 milhões de folhas por janela. Antes da carga de verdade, o cálculo do resumo de cada evento precisa ir para o ClickHouse e as folhas para o próprio armazém, com o Postgres guardando só a raiz de cada minuto. Medir no teste de carga.
+- **Selo em volume alto (feito, versão 2 dos selos):** a janela do armazém com mais de 100 mil eventos é selada em blocos (`roar_ingestao.selo_em_blocos`, migração 077). A folha de cada evento é calculada no próprio ClickHouse, sobre o log exatamente como foi gravado (os bytes, sem reescrever o JSON), com sal por evento derivado de um segredo da janela; os eventos se espalham em blocos de umas mil folhas pelos primeiros bytes do sal; o ClickHouse resume cada bloco (as folhas em ordem, num hash) e a árvore de Merkle é feita só sobre os blocos. O Postgres guarda o selo e o resumo de cada bloco (até uns 2 MB por janela em 50 mil eventos por segundo), em vez de 45 milhões de folhas. Cada selo cobre uma faixa de chegada ao armazém (`recebido_de` e `recebido_ate`, no cabeçalho assinado): o que chega depois do corte vira selo tardio, e incluir um evento com chegada antiga muda o bloco dele. A conferência aponta o bloco que mudou (eventos selados e de hoje), não o evento; a prova de um evento no pacote leva as folhas do bloco e o caminho do bloco até a raiz, e o `verificar.py` confere sozinho (o laudo só pode mostrar o mesmo log que a prova cobre). Até 100 mil eventos por janela, continua a versão 1, que aponta evento por evento; os selos antigos não mudam de hash. Medido no servidor de teste: uma janela de um milhão de eventos de uns 600 bytes foi selada em 0,6 s e conferida em 0,7 s. Teste: `testes/fase4/testar_selo_em_blocos.py` (18 checagens). Limites: o pacote de perícia aceita até 500 eventos de janelas em blocos (cada um leva umas mil folhas); a medida de 45 milhões por janela fica para o teste de carga.
 - **Trazer de volta da cópia fria do armazém:** a cópia é feita e vence; a recuperação pela tela ainda é a do indexador.
 
 ### Etapa 5: armazém ligado, caminho antigo desligado (pronta)
@@ -199,6 +199,6 @@ Para voltar ao caminho antigo: `ROAR_SO_ARMAZEM=0` e `ROAR_ALERTAS_DO_ARMAZEM=0`
 
 ### Próximas etapas
 
-6. Selo em volume alto (acima) e recuperação da cópia fria do armazém.
+6. Recuperação da cópia fria do armazém.
    Medir no teste de carga o buffer em memória (50 mil eventos por envio) e a confirmação de ponta a ponta.
 7. Teste de carga fora da VPS.

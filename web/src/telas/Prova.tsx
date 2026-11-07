@@ -12,10 +12,19 @@ const ACHADOS: Record<string, string> = {
   evento_alterado: "Evento alterado depois da selagem", evento_apagado: "Evento apagado depois da selagem", evento_sem_selo: "Evento que entrou sem selo",
   selo_faltando: "Selo faltando na sequência", selo_alterado: "Selo alterado", cadeia_quebrada: "Sequência de selos quebrada", assinatura_invalida: "Assinatura inválida",
   chave_desconhecida: "Selo feito com outra chave", folhas_alteradas: "Dados do selo alterados", folhas_faltando: "Dados do selo faltando",
+  bloco_alterado: "Bloco de eventos alterado depois da selagem", eventos_sem_selo: "Eventos que entraram sem selo",
 };
 const FONTES: Record<string, string> = { alertas: "Alertas", logs: "Logs" };
 
-interface Achado { tipo: string; n?: number | null; evento?: string | null }
+/** Em volume alto o selo é em blocos: o achado diz o bloco e quantos eventos ele tinha e tem, em vez do evento. */
+interface Achado { tipo: string; n?: number | null; evento?: string | null; bloco?: number; eventos_selados?: number; eventos_hoje?: number; quantos?: number }
+
+function oQueMudou(a: Achado) {
+  if (a.evento) return <span className="mono">{a.evento}</span>;
+  if (a.bloco !== undefined) return `Bloco ${numero(a.bloco)}: ${numero(a.eventos_selados ?? 0)} eventos selados, ${numero(a.eventos_hoje ?? 0)} hoje`;
+  if (a.quantos !== undefined) return `${numero(a.quantos)} eventos`;
+  return "-";
+}
 interface Situacao {
   selos: { selos: number; eventos: number; tardios: number; ultimo: string | null; coberto_ate: string | null };
   verificacao: { quando: string; completa: boolean; selos_conferidos: number; eventos_conferidos: number; estado: string; achados: Achado[] | null } | null;
@@ -85,7 +94,7 @@ function GavetaDoAchado({ achado, aoFechar }: { achado: Achado | null; aoFechar:
       {achado && (
         <Fatos itens={[
           ["Selo", achado.n === null || achado.n === undefined ? "-" : numero(achado.n)],
-          ["Evento", achado.evento ? <Copiavel texto={achado.evento} /> : "-"],
+          ["Evento", achado.evento ? <Copiavel texto={achado.evento} /> : oQueMudou(achado)],
         ]} />
       )}
     </Drawer>
@@ -175,7 +184,7 @@ export function Prova() {
                 colunas={[
                   { titulo: "O que foi achado", celula: (a) => ACHADOS[a.tipo] ?? a.tipo },
                   { titulo: "Selo", alinhar: "right", largura: 90, celula: (a) => (a.n === null || a.n === undefined ? "-" : numero(a.n)) },
-                  { titulo: "Evento", celula: (a) => <span className="mono">{a.evento ?? "-"}</span> },
+                  { titulo: "Evento", celula: oQueMudou },
                 ]}
               />
             </Painel>
