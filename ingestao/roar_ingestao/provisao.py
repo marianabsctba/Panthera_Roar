@@ -272,14 +272,12 @@ def _bases_de_localizacao():
     return GEOIP
 
 
-def _pasta_do_syslog_cifrado(gerenciador_id):
-    """A pasta que o receptor de syslog cifrado grava para este gerenciador; existe antes de o contêiner montar."""
-    from . import syslog_cifrado
+def _syslog_do_coletor(pasta, fontes, desvio=False):
+    """A parte do coletor que recebe o syslog: sem ela, a pasta que o compose monta fica vazia e o syslog não tem destino."""
+    from . import coletor_syslog, syslog_cifrado
+    from .fontes import redes_de_syslog
 
-    pasta = syslog_cifrado.pasta_do_gerenciador(gerenciador_id)
-    pasta.mkdir(parents=True, exist_ok=True)
-    pasta.chmod(0o755)
-    return pasta
+    coletor_syslog.gravar(pasta, coletor_syslog.configuracao(redes_de_syslog(fontes), desvio, syslog_cifrado.chave_do_repasse()))
 
 
 def ligar_coletor(gerenciador_id):
@@ -290,13 +288,16 @@ def ligar_coletor(gerenciador_id):
     with banco_admin(env) as banco:
         cliente = banco.execute("SELECT cliente_id FROM gerenciadores WHERE id = %s", (gerenciador_id,)).fetchone()[0]
         dias_alertas, dias_logs = _dias_do_cliente(banco, cliente)
+        desvio = banco.execute("SELECT desvio_de_volume FROM clientes WHERE id = %s", (cliente,)).fetchone()[0]
+        fontes_de_syslog = [{"tipo": "syslog", "config": c} for (c,) in banco.execute(
+            "SELECT config FROM fontes WHERE gerenciador_id = %s AND tipo = 'syslog' AND estado IN ('pendente', 'ativa')", (gerenciador_id,)).fetchall()]
     adm = armazem.admin(env)
     nome_do_banco = armazem.criar_organizacao(adm, cliente, dias_alertas, dias_logs, int(env.get("ARMAZEM_DIAS_QUENTES", armazem.DIAS_QUENTES_PADRAO)))
     variaveis = ler_env(pasta / ".env")
     senha = variaveis.get("ARMAZEM_SENHA") or senha_forte()
     usuario = armazem.criar_gravador(adm, gerenciador_id, cliente, senha)
     variaveis.update({"ARMAZEM_USUARIO": usuario, "ARMAZEM_SENHA": senha, "ARMAZEM_BANCO": nome_do_banco, "GEOIP": str(_bases_de_localizacao()),
-                      "SYSLOG_CIFRADO": str(_pasta_do_syslog_cifrado(gerenciador_id)),
+
                       # Só o armazém recebe logs e alertas: o Filebeat do gerenciador não sobe (teste do caminho antigo liga de volta pelo ambiente).
                       "ROAR_SO_ARMAZEM": os.environ.get("ROAR_SO_ARMAZEM", env.get("ROAR_SO_ARMAZEM", "0"))})
     (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
@@ -314,7 +315,8 @@ def ligar_coletor(gerenciador_id):
     destino.touch(mode=0o600)
     destino.chmod(0o600)
     destino.write_text(texto)
-    # Os dois: o gerenciador antigo também ganha a pasta do syslog cifrado (o compose só recria o que mudou).
+    _syslog_do_coletor(pasta, fontes_de_syslog, desvio)
+    # Os dois: no gerenciador antigo, a porta de syslog passa para o coletor (o compose só recria o que mudou).
     _compose(pasta, gerenciador_id, "up", "-d")
 
 
@@ -525,11 +527,11 @@ def criar(nome, endereco_portas="127.0.0.1"):
         "INDICE_BRUTO": indice_bruto_do(gerenciador_id), "CERTIFICADOS": CERTIFICADOS,
         # O compose declara também o coletor: sem a pasta das bases de localização, nem o gerenciador sobe.
         "GEOIP": _bases_de_localizacao(),
-        # O mesmo vale para a pasta do syslog cifrado, que o gerenciador monta.
-        "SYSLOG_CIFRADO": _pasta_do_syslog_cifrado(gerenciador_id),
     }
     (pasta / ".env").write_text("".join(f"{k}={v}\n" for k, v in variaveis.items()))
     (pasta / ".env").chmod(0o600)
+
+    _syslog_do_coletor(pasta, [])
 
     _compose(pasta, gerenciador_id, "up", "-d", "gerenciador")
     ligar_coletor(gerenciador_id)

@@ -10,8 +10,6 @@ cada equipamento da lista, que é o que diz qual deles parou. A tela (GET /api/f
 import ipaddress
 from datetime import datetime, timedelta, timezone
 
-from roar_ingestao.syslog_cifrado import endereco_da_origem
-
 from .consulta_sql import Tradutor
 
 HORAS = 24
@@ -82,25 +80,15 @@ def somar(origens, agora=None):
     }
 
 
-def _juntar(a, b):
-    horas = dict(a["horas"])
-    for h, (e, d) in b["horas"].items():
-        e0, d0 = horas.get(h, (0, 0))
-        horas[h] = (e0 + e, d0 + d)
-    return {"ultimo": max(a["ultimo"], b["ultimo"]), "horas": horas, "primeira": min(a["primeira"], b["primeira"])}
-
-
 def origens_da_fonte(fonte, origens):
     """{local: origem} que pertencem à fonte: no syslog, os endereços da lista; na nuvem, o nome do módulo."""
     if fonte["tipo"] == "syslog":
         redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
         achadas = {}
         for local, o in origens.items():
-            # No syslog cifrado a origem é o arquivo do dia, com o endereço no nome: os dias se juntam no endereço.
-            endereco = endereco_da_origem(local)
             try:
-                if any(ipaddress.ip_address(endereco) in rede for rede in redes):
-                    achadas[endereco] = _juntar(achadas[endereco], o) if endereco in achadas else o
+                if any(ipaddress.ip_address(local) in rede for rede in redes):
+                    achadas[local] = o
             except ValueError:
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
         return achadas

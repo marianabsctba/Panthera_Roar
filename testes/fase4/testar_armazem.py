@@ -135,11 +135,16 @@ def testar_leituras_da_parte_2(indexer, leitor, gerenciador_id, banco, marca):
     registrar("a caça conta igual nos dois, com o indicador inteiro (203.0.113.1 não conta dentro de 203.0.113.15)", do_armazem == do_indexador
               and do_armazem[("dominio", f"{marca}-a")] >= 50 and do_armazem[("hash", "nao-existe-" + marca)] == 0, f"{do_armazem} | {do_indexador}")
     inicio = int(leitor.linhas(f"SELECT toUnixTimestamp64Milli(min(ocorrido_em)) AS m FROM {banco}.logs WHERE gerenciador = {{g:String}}", {"g": gerenciador_id})[0]["m"])
-    de_ca = {local: ultimo for local, ultimo in leitor_armazem.origens(leitor, banco, gerenciador_id, 7)}
     corpo = {"size": 0, "query": {"range": {"timestamp": {"gte": "now-7d"}}},
              "aggs": {"origens": {"terms": {"field": "location", "size": 500}, "aggs": {"ultimo": {"max": {"field": "timestamp"}}}}}}
-    baldes = indexer.sessao.post(f"{indexer.url}/{provisao.indice_bruto_do(gerenciador_id)}*/_search", json=corpo, timeout=60).json()["aggregations"]["origens"]["buckets"]
-    de_la = {b["key"]: b["ultimo"]["value"] for b in baldes if b["ultimo"]["value"] >= inicio}
+    # O gerenciador continua gravando enquanto o teste roda, e cada lado recebe em seu tempo: espera os dois baterem.
+    for _ in range(7):
+        de_ca = {local: ultimo for local, ultimo in leitor_armazem.origens(leitor, banco, gerenciador_id, 7)}
+        baldes = indexer.sessao.post(f"{indexer.url}/{provisao.indice_bruto_do(gerenciador_id)}*/_search", json=corpo, timeout=60).json()["aggregations"]["origens"]["buckets"]
+        de_la = {b["key"]: b["ultimo"]["value"] for b in baldes if b["ultimo"]["value"] >= inicio}
+        if {k: v for k, v in de_ca.items() if v >= inicio} == de_la:
+            break
+        time.sleep(5)
     registrar("a saúde das fontes vê as mesmas origens, com a mesma última hora", de_ca and {k: v for k, v in de_ca.items() if v >= inicio} == de_la, f"{de_ca} | {de_la}")
     v = leitor_armazem.volume(leitor, banco, "logs", 1)
     registrar("o volume soma certo", v["total"] > 0 and sum(d["eventos"] for d in v["por_dia"]) == v["total"]

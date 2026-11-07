@@ -150,8 +150,9 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # Syslog cifrado (roar_ingestao.syslog_cifrado): recebe com TLS e grava na pasta de cada gerenciador, que lê como arquivo.
-  # Relê a configuração sozinho quando as fontes mudam. A porta escuta só onde SYSLOG_CIFRADO_ENDERECO mandar.
+  # Syslog cifrado (roar_ingestao.syslog_cifrado): recebe com TLS e repassa ao coletor do gerenciador dono do endereço, na
+  # rede dos gerenciadores. Relê a configuração sozinho quando as fontes mudam. A porta escuta só onde
+  # SYSLOG_CIFRADO_ENDERECO mandar.
   recepcao:
     image: timberio/vector:0.60.0-debian@sha256:3ccb4bbd36e38734394e158db1411e91a69d076ed25013f8de385046a382d36a
     container_name: roar-recepcao
@@ -163,10 +164,9 @@ services:
     volumes:
       - ./syslog-cifrado/configuracao:/etc/recepcao/configuracao:ro
       - ./syslog-cifrado/certificados:/etc/recepcao/certificados:ro
-      - ./syslog-cifrado/dados:/var/roar-cifrado
       - roar-recepcao:/var/lib/vector
     networks:
-      - roar
+      - gerenciadores
     restart: unless-stopped
 
 volumes:

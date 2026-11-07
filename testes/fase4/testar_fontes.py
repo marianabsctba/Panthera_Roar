@@ -98,9 +98,12 @@ def main():
             registrar("fontes exigem sessão", http.get("/api/fontes").status_code == 401)
             http.post("/api/entrar", json=ua)
 
+            # Quem recebe o syslog é o coletor do gerenciador (roar_ingestao.coletor_syslog), não o Wazuh.
+            coletor_a = f"roar-ger-{a['id']}-coletor-1"
             print("\n== Syslog desligado", flush=True)
             marca0 = f"marca{uuid.uuid4().hex}"
-            registrar("sem fonte, a porta não recebe", "enviado" not in enviar(fw, a["host"], marca0), "conexão recusada")
+            enviar(fw, coletor_a, marca0)
+            registrar("sem fonte, nada do equipamento chega", chegou(amb, a, marca0, limite=25) == 0)
 
             print("\n== Syslog ligado pela tela", flush=True)
             r = http.post("/api/fontes", json={"nome": "Firewall", "protocolo": "tcp", "origens": [ip_fw]})
@@ -119,19 +122,24 @@ def main():
             registrar("sem mudança não reinicia", sh("docker", "inspect", "-f", "{{.State.StartedAt}}", f"roar-ger-{a['id']}-gerenciador-1") == reinicios)
 
             marca = f"marca{uuid.uuid4().hex}"
-            registrar("equipamento permitido envia", "enviado" in enviar(fw, a["host"], marca), a["host"])
+            registrar("equipamento permitido envia", "enviado" in enviar(fw, coletor_a, marca), coletor_a)
             registrar("log chega ao índice do cliente", chegou(amb, a, marca) >= 1)
             registrar("log não chega ao índice do outro cliente", amb.indexer.sessao.post(
                 f"{URL}/{provisao.indice_bruto_do(b['id'])}*/_count",
                 json={"query": {"simple_query_string": {"query": marca, "fields": ["full_log"]}}}, timeout=30).json().get("count", 0) == 0)
-            achados = http.get("/api/logs", params={"busca": marca}).json()["logs"]
+            # A tela lê do armazém, que recebe pelo coletor alguns segundos depois do índice.
+            for _ in range(12):
+                achados = http.get("/api/logs", params={"busca": marca}).json()["logs"]
+                if achados:
+                    break
+                time.sleep(5)
             registrar("log aparece nos logs brutos da tela", achados and marca in achados[0]["bruto"]["full_log"])
             registrar("a origem é o endereço do equipamento", achados and achados[0]["bruto"].get("location") == ip_fw, str(achados[0]["bruto"].get("location") if achados else None))
             saude = http.get("/api/fontes").json()["fontes"][0]
             registrar("tela mostra que está recebendo", saude["saude"] == "recebendo" and saude["ultimo_dado"], str((saude["saude"], saude["ultimo_dado"])))
 
             marca2 = f"marca{uuid.uuid4().hex}"
-            enviar(intruso, a["host"], marca2)
+            enviar(intruso, coletor_a, marca2)
             registrar("endereço fora da lista é ignorado", chegou(amb, a, marca2, limite=25) == 0)
 
             print("\n== Porta publicada", flush=True)
@@ -160,7 +168,7 @@ def main():
             registrar("configuração anterior volta", sh("docker", "exec", f"roar-ger-{a['id']}-gerenciador-1", "md5sum", "/var/ossec/etc/ossec.conf") == antes)
             registrar("a API do gerenciador continua no ar", esperar_gerenciador(a, 60))
             marca3 = f"marca{uuid.uuid4().hex}"
-            enviar(fw, a["host"], marca3)
+            enviar(fw, coletor_a, marca3)
             registrar("a coleta continua depois da recusa", chegou(amb, a, marca3) >= 1)
 
             print("\n== Isolamento", flush=True)
@@ -212,8 +220,13 @@ def testar_validacao():
         {"tipo": "syslog", "config": {"protocolo": "tcp", "origens": ["10.0.0.5"]}},
         {"tipo": "syslog", "config": {"protocolo": "udp", "origens": ["192.168.1.1"]}},
     ])
-    registrar("uma entrada por protocolo", xml.count("<remote>") == 2)
-    registrar("origem repetida entra uma vez", xml.count("10.0.0.5/32") == 1)
+    registrar("o gerenciador não abre porta de syslog: quem recebe é o coletor", "<remote>" not in xml and xml == "")
+    redes = fontes.redes_de_syslog([
+        {"tipo": "syslog", "config": {"protocolo": "tcp", "origens": ["10.0.0.5", "10.0.1.0/24"]}},
+        {"tipo": "syslog", "config": {"protocolo": "tcp", "origens": ["10.0.0.5"]}},
+        {"tipo": "syslog", "config": {"protocolo": "udp", "origens": ["192.168.1.1"]}},
+    ])
+    registrar("o coletor aceita cada origem uma vez", redes == ["10.0.0.5/32", "10.0.1.0/24", "192.168.1.1/32"], str(redes))
     registrar("sem fonte não muda nada", fontes.fragmento_de_configuracao([]) == "")
 
 

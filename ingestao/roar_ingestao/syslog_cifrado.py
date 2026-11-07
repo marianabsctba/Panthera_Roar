@@ -2,10 +2,10 @@
 
 O Wazuh não recebe syslog com TLS. Quem recebe é um Vector (serviço recepcao, infra/docker-compose.yml) com o certificado
 de uma autoridade própria da instalação, que o cliente importa no equipamento. O receptor só aceita os endereços
-cadastrados em fontes de syslog cifrado e grava cada linha, sem o cabeçalho de prioridade, num arquivo por dia e por
-endereço (<endereço>-AAAA-MM-DD.log), na pasta do gerenciador dono daquele endereço. O gerenciador lê a pasta dele como lê qualquer arquivo de log:
-mesmas regras, mesmos decodificadores, o coletor leva ao armazém, e o endereço do equipamento continua no nome do arquivo,
-que é o que a saúde da fonte usa (api/roar_api/saude_das_fontes.py).
+cadastrados em fontes de syslog cifrado e repassa cada linha, sem a prioridade do começo, ao coletor do gerenciador dono
+daquele endereço, pela porta de repasse na rede dos gerenciadores (coletor_syslog.PORTA_DO_REPASSE), com a chave da
+instalação e o endereço do equipamento na frente. Dali em diante é igual ao syslog comum: o coletor entrega ao analisador
+do gerenciador com o endereço do equipamento como origem.
 
 Um mesmo endereço não pode ir para duas organizações: a fonte mais antiga fica com ele, e a outra é recusada com o motivo.
 """
@@ -14,7 +14,7 @@ import ipaddress
 import json
 import logging
 import re
-import shutil
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,26 +22,18 @@ log = logging.getLogger("roar.syslog_cifrado")
 PASTA = Path("/opt/panthera-roar/syslog-cifrado")
 MODELO = Path(__file__).resolve().parent / "syslog_cifrado.yaml"
 PORTA = 6514
-# Onde o gerenciador vê a pasta dele, e o que a configuração do Wazuh lê dela.
-PASTA_NO_GERENCIADOR = "/var/ossec/roar-cifrado"
-# Só curinga: o Wazuh não expande curinga e data juntos no mesmo caminho, e um caminho assim nunca é lido.
-ARQUIVOS_NO_GERENCIADOR = f"{PASTA_NO_GERENCIADOR}/*.log"
-# A origem de um evento cifrado: o caminho do arquivo, com o endereço do equipamento no nome.
-ORIGEM_CIFRADA = re.compile(re.escape(PASTA_NO_GERENCIADOR) + r"/(\d{1,3}(?:\.\d{1,3}){3})-\d{4}-\d{2}-\d{2}\.log")
-DIAS_GUARDADOS = 2
 NOME_DE_GERENCIADOR = re.compile(r"[a-z0-9]{6,32}")
 
 
-def endereco_da_origem(local):
-    """O endereço do equipamento de uma origem de syslog: o próprio local no syslog comum, o nome do arquivo no cifrado."""
-    achado = ORIGEM_CIFRADA.fullmatch(local or "")
-    return achado.group(1) if achado else local
-
-
-def pasta_do_gerenciador(gerenciador_id, raiz=PASTA):
-    if not NOME_DE_GERENCIADOR.fullmatch(gerenciador_id):
-        raise ValueError("gerenciador inválido")
-    return raiz / "dados" / gerenciador_id
+def chave_do_repasse(raiz=PASTA):
+    """A chave que o receptor põe na frente de cada linha repassada, e que o coletor confere. Criada na primeira vez."""
+    arquivo = raiz / "autoridade" / "repasse"
+    if not arquivo.exists():
+        arquivo.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        arquivo.touch(mode=0o600)
+        arquivo.chmod(0o600)
+        arquivo.write_text(secrets.token_hex(32))
+    return arquivo.read_text().strip()
 
 
 def preparar(dominio, raiz=PASTA):
@@ -54,7 +46,7 @@ def preparar(dominio, raiz=PASTA):
 
     # A chave da autoridade fica fora do que o receptor monta: ele só precisa do certificado do servidor.
     certificados, autoridade = raiz / "certificados", raiz / "autoridade"
-    for pasta, modo in ((raiz, 0o755), (certificados, 0o755), (autoridade, 0o700), (raiz / "dados", 0o755), (raiz / "configuracao", 0o755)):
+    for pasta, modo in ((raiz, 0o755), (certificados, 0o755), (autoridade, 0o700), (raiz / "configuracao", 0o700)):
         pasta.mkdir(parents=True, exist_ok=True)
         pasta.chmod(modo)
     agora = datetime.now(timezone.utc)
@@ -120,39 +112,56 @@ def distribuir(fontes):
     return [(str(r), g) for r, g in rotas], recusadas
 
 
-def configuracao(rotas):
-    """A configuração do receptor, com as rotas dentro. Sem rota nenhuma, o receptor recusa tudo."""
-    lista = json.dumps([{"rede": r, "gerenciador": g} for r, g in rotas])
-    return MODELO.read_text(encoding="utf-8").replace("__ROTAS__", lista)
+def configuracao(rotas, chave):
+    """A configuração do receptor: as rotas e uma saída por gerenciador, para o coletor dele. Sem rota, recusa tudo."""
+    from .coletor_syslog import PORTA_DO_REPASSE
+
+    gerenciadores = sorted({g for _, g in rotas})
+    for g in gerenciadores:
+        if not NOME_DE_GERENCIADOR.fullmatch(g):
+            raise ValueError("gerenciador inválido")
+    texto = (MODELO.read_text(encoding="utf-8")
+             .replace("__ROTAS__", json.dumps([{"rede": r, "gerenciador": g} for r, g in rotas]))
+             .replace("__CHAVE__", chave))
+    if not gerenciadores:
+        # O Vector exige uma saída; sem rota nenhuma, nada chega até ela.
+        return texto.replace("__SAIDAS__", "sinks:\n  nenhum:\n    type: blackhole\n    inputs: [rotear]\n    print_interval_secs: 0")
+    destinos = "".join(f"      g{g}: .gerenciador == \"{g}\"\n" for g in gerenciadores)
+    saidas = "".join(f"""  coletor_{g}:
+    type: socket
+    inputs: [destino.g{g}]
+    mode: tcp
+    address: roar-ger-{g}-coletor-1:{PORTA_DO_REPASSE}
+    framing:
+      method: newline_delimited
+    encoding:
+      codec: text
+    buffer:
+      type: memory
+      max_events: 50000
+      when_full: block
+""" for g in gerenciadores)
+    roteador = f"""  destino:
+    type: route
+    inputs: [rotear]
+    route:
+{destinos}"""
+    # O roteador é uma transformação: entra no fim da lista de transformações do modelo.
+    return texto.replace("\n__SAIDAS__", roteador + "\nsinks:\n" + saidas.rstrip("\n"))
 
 
 def gravar_configuracao(texto, raiz=PASTA):
-    """Troca o arquivo de uma vez só: o receptor relê a pasta sozinho quando ela muda. Devolve True se mudou."""
+    """Troca o arquivo de uma vez só: o receptor relê a pasta sozinho quando ela muda. Só o root lê: tem a chave do
+    repasse. Devolve True se mudou."""
     destino = raiz / "configuracao" / "recepcao.yaml"
     if destino.exists() and destino.read_text(encoding="utf-8") == texto:
         return False
     provisorio = destino.with_suffix(".novo")
+    provisorio.touch(mode=0o600)
+    provisorio.chmod(0o600)
     provisorio.write_text(texto, encoding="utf-8")
-    provisorio.chmod(0o644)
     provisorio.replace(destino)
     return True
-
-
-def vencer(raiz=PASTA, hoje=None):
-    """Apaga os dias já lidos: o gerenciador lê o arquivo enquanto ele é escrito, e o coletor leva ao armazém."""
-    hoje = hoje or datetime.now(timezone.utc).date()
-    apagados = 0
-    for arquivo in (raiz / "dados").glob("*/*"):
-        achado = re.fullmatch(r".+-(\d{4}-\d{2}-\d{2})\.log", arquivo.name)
-        if not achado:
-            # Pasta de dia do desenho anterior, que o Wazuh não lia.
-            if arquivo.is_dir():
-                shutil.rmtree(arquivo, ignore_errors=True)
-            continue
-        if (hoje - datetime.strptime(achado.group(1), "%Y-%m-%d").date()).days > DIAS_GUARDADOS:
-            arquivo.unlink(missing_ok=True)
-            apagados += 1
-    return apagados
 
 
 def main():
@@ -163,7 +172,8 @@ def main():
     args.add_argument("--dominio", required=True)
     a = args.parse_args()
     print("certificado do servidor refeito" if preparar(a.dominio) else "certificados em dia")
-    gravar_configuracao(configuracao([]), PASTA) if not (PASTA / "configuracao" / "recepcao.yaml").exists() else None
+    if not (PASTA / "configuracao" / "recepcao.yaml").exists():
+        gravar_configuracao(configuracao([], chave_do_repasse()), PASTA)
 
 
 if __name__ == "__main__":

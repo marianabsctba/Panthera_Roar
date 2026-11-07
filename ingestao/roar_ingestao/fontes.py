@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape
 
 import requests
 
-from . import rede_externa, syslog_cifrado
+from . import coletor_syslog, rede_externa, syslog_cifrado
 
 log = logging.getLogger("roar.fontes")
 EVENTOS_POR_LOTE = 100
@@ -200,21 +200,23 @@ def arquivos_de_credenciais(fontes):
     return arquivos
 
 
-def fragmento_de_configuracao(fontes):
-    """Uma entrada de syslog por protocolo, porque a porta interna é a mesma para todas as fontes do cliente."""
-    por_protocolo, blocos = {}, []
+def redes_de_syslog(fontes):
+    """Os endereços que o coletor aceita: os de TCP e UDP, na porta de syslog do gerenciador, e os cifrados, que chegam
+    repassados pelo receptor da instalação."""
+    redes = set()
     for fonte in fontes:
-        if fonte["tipo"] != "syslog":
-            continue
-        config = fonte["config"]
-        por_protocolo.setdefault(config["protocolo"], set()).update(validar_syslog(config["protocolo"], config["origens"]))
-    cifrado = por_protocolo.pop("tls", None)
-    for protocolo in sorted(por_protocolo):
-        permitidos = "".join(f"    <allowed-ips>{rede}</allowed-ips>\n" for rede in sorted(por_protocolo[protocolo]))
-        blocos.append(f"  <remote>\n    <connection>syslog</connection>\n    <port>514</port>\n    <protocol>{protocolo}</protocol>\n{permitidos}  </remote>\n")
-    if cifrado:
-        # O receptor já filtrou os endereços: aqui o gerenciador só lê os arquivos que ele gravou para esta organização.
-        blocos.append(f"  <localfile>\n    <log_format>syslog</log_format>\n    <location>{syslog_cifrado.ARQUIVOS_NO_GERENCIADOR}</location>\n  </localfile>\n")
+        if fonte["tipo"] == "syslog":
+            redes.update(validar_syslog(fonte["config"]["protocolo"], fonte["config"]["origens"]))
+    return sorted(redes)
+
+
+def fragmento_de_configuracao(fontes):
+    """Só os módulos de nuvem: o syslog não passa pela configuração do gerenciador. Quem recebe é o coletor
+    (coletor_syslog.py), que já confere os endereços e entrega ao analisador com o endereço do equipamento como origem."""
+    for fonte in fontes:
+        if fonte["tipo"] == "syslog":
+            validar_syslog(fonte["config"]["protocolo"], fonte["config"]["origens"])
+    blocos = []
     blocos += [_bloco_de_nuvem(f) for f in sorted(fontes, key=lambda f: f.get("id", 0)) if f["tipo"] in TIPOS_DE_NUVEM]
     if not blocos:
         return ""
@@ -250,10 +252,12 @@ def aplicar_fontes(banco, gerenciador_id, cliente):
         linhas = com_cliente(
             "SELECT id, tipo, config, estado FROM fontes WHERE gerenciador_id = %s AND estado IN ('pendente', 'ativa', 'desativada')",
             gerenciador_id).fetchall()
-        guardar_logs = com_cliente("SELECT guardar_logs FROM clientes WHERE id = %s", cliente).fetchone()[0]
+        guardar_logs, desvio = com_cliente("SELECT guardar_logs, desvio_de_volume FROM clientes WHERE id = %s", cliente).fetchone()
     pendentes = [l[0] for l in linhas if l[3] == "pendente"]
     em_uso = [{"id": l[0], "tipo": l[1], "config": l[2]} for l in linhas if l[3] != "desativada"]
     pasta = PASTA_GERENCIADORES / gerenciador_id
+    # O coletor relê sozinho: endereços e desvio valem em segundos, sem reiniciar nada.
+    coletor_syslog.gravar(pasta, coletor_syslog.configuracao(redes_de_syslog(em_uso), desvio, syslog_cifrado.chave_do_repasse()))
     marca = pasta / "fontes.aplicadas"
     _abrir_segredos(banco, cliente, em_uso)
     conteudo_das_listas = listas.arquivos(banco, cliente)
@@ -431,13 +435,9 @@ def ciclo(banco):
     aplicar_armazenamento(banco)
 
 
-_proxima_limpeza_do_cifrado = 0.0
-
-
 def aplicar_recepcao(banco, raiz=None):
     """Rotas do receptor de syslog cifrado: os endereços das fontes cifradas de todas as organizações, cada um para o
     gerenciador dono. Endereço já tomado por outra organização: a fonte mais nova é recusada, com o motivo."""
-    global _proxima_limpeza_do_cifrado
     raiz = raiz or syslog_cifrado.PASTA
     if not (raiz / "configuracao").is_dir():
         return False  # Instalação sem o receptor preparado (infra/servicos.sh).
@@ -455,13 +455,7 @@ def aplicar_recepcao(banco, raiz=None):
             with banco.con.transaction():
                 banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(fonte["cliente"]),))
                 banco.con.execute("UPDATE fontes SET estado = 'recusada', mensagem = %s WHERE id = %s", (recusadas[fonte["id"]], fonte["id"]))
-    for gerenciador_id in {g for _, g in rotas}:
-        syslog_cifrado.pasta_do_gerenciador(gerenciador_id, raiz).mkdir(parents=True, exist_ok=True)
-    mudou = syslog_cifrado.gravar_configuracao(syslog_cifrado.configuracao(rotas), raiz)
-    if time.monotonic() >= _proxima_limpeza_do_cifrado:
-        syslog_cifrado.vencer(raiz)
-        _proxima_limpeza_do_cifrado = time.monotonic() + 3600
-    return mudou
+    return syslog_cifrado.gravar_configuracao(syslog_cifrado.configuracao(rotas, syslog_cifrado.chave_do_repasse(raiz)), raiz)
 
 
 def aplicar_armazenamento(banco):

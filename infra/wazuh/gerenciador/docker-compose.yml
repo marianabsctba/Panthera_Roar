@@ -16,9 +16,6 @@ services:
       - "${PORTAS_ENDERECO}:${PORTA_EVENTOS}:1514"
       - "${PORTAS_ENDERECO}:${PORTA_INSCRICAO}:1515"
       - "127.0.0.1:${PORTA_API}:55000"
-      # Só recebe quando o cliente cadastra um equipamento; sem isso, nada escuta nesta porta.
-      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/tcp"
-      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/udp"
     environment:
       - INDEXER_URL="https://wazuh.indexer:9200"
       - INDEXER_USERNAME=${INDEXER_USUARIO}
@@ -50,18 +47,19 @@ services:
       - ./ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
       - ./authd.pass:/wazuh-config-mount/etc/authd.pass:ro
       - ./1-roar-filebeat:/etc/cont-init.d/1-roar-filebeat:ro
-      # Syslog cifrado desta organização, gravado pelo receptor da instalação (roar_ingestao.syslog_cifrado).
-      - ${SYSLOG_CIFRADO}:/var/ossec/roar-cifrado:ro
     networks:
       rede:
         aliases:
           - gerenciador-${GERENCIADOR_ID}
 
-  # Leva os logs e os alertas ao armazém de eventos (docs/clickhouse.md). Só lê a pasta de logs do gerenciador.
+  # Leva os logs e os alertas ao armazém de eventos (docs/clickhouse.md), lendo a pasta de logs do gerenciador. Também
+  # recebe o syslog dos equipamentos e o cifrado repassado pelo receptor da instalação (roar_ingestao.coletor_syslog) e
+  # entrega ao analisador pelo socket da fila do gerenciador. A parte que muda com as fontes fica em coletor.d, que ele
+  # relê sozinho.
   coletor:
     image: timberio/vector:0.60.0-debian@sha256:3ccb4bbd36e38734394e158db1411e91a69d076ed25013f8de385046a382d36a
     restart: unless-stopped
-    command: ["--config", "/etc/vector/roar.yaml"]
+    command: ["--config", "/etc/vector/roar.yaml", "--config-dir", "/etc/vector/roar.d", "--watch-config"]
     environment:
       - GERENCIADOR_ID=${GERENCIADOR_ID}
       - VECTOR_LOG=warn
@@ -69,7 +67,13 @@ services:
       - logs:/var/ossec/logs:ro
       - coletor:/var/lib/vector
       - ./vector.yaml:/etc/vector/roar.yaml:ro
+      - ./coletor.d:/etc/vector/roar.d:ro
+      - queue:/var/ossec/queue
       - ${GEOIP}:/etc/vector/geoip:ro
+    ports:
+      # Só aceita os endereços cadastrados em fontes de syslog desta organização.
+      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/tcp"
+      - "${PORTAS_ENDERECO}:${PORTA_SYSLOG}:514/udp"
     networks:
       - rede
 

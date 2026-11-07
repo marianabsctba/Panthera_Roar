@@ -31,7 +31,8 @@ sources:
 transforms:
   linhas:
     type: remap
-    inputs: [logs, alertas]
+    # syslog_direto: o tráfego desviado do gerenciador (coletor.d/syslog.yaml), já no formato que o gerenciador grava.
+    inputs: [logs, alertas, syslog_direto]
     source: |
       bruto = string!(.message)
       arquivo = string(.file) ?? ""

@@ -1,0 +1,157 @@
+# Syslog do gerenciador, recebido pelo coletor (roar_ingestao.coletor_syslog). Gerado pelo serviço de fontes: os endereços
+# aceitos, o desvio de volume e a chave do repasse entram nos marcadores (que não podem aparecer em comentário). O coletor
+# relê este arquivo sozinho.
+#
+# Recebe dos equipamentos (porta de syslog do gerenciador) e do receptor de syslog cifrado da instalação, que repassa pela
+# porta 5140, só na rede dos gerenciadores, com a chave da instalação na frente. Cada linha de endereço cadastrado vai ao
+# analisador do gerenciador pelo mesmo socket que o leitor de arquivos do Wazuh usa, com o endereço do equipamento como
+# origem: mesmas regras e decodificadores, como se o Wazuh tivesse recebido o syslog. Com o desvio ligado, o tráfego
+# permitido dos firewalls conhecidos não passa pelo gerenciador: vai direto ao armazém, com os campos tirados aqui.
+
+sources:
+  syslog_udp:
+    type: socket
+    mode: udp
+    address: 0.0.0.0:514
+    host_key: origem
+    port_key: porta_de_origem
+    max_length: 65000
+    decoding:
+      codec: bytes
+  syslog_tcp:
+    type: socket
+    mode: tcp
+    address: 0.0.0.0:514
+    host_key: origem
+    port_key: porta_de_origem
+    framing:
+      method: octet_counting
+      octet_counting:
+        max_length: 65000
+    decoding:
+      codec: bytes
+  syslog_repassado:
+    type: socket
+    mode: tcp
+    address: 0.0.0.0:5140
+    framing:
+      method: newline_delimited
+      newline_delimited:
+        max_length: 65200
+    decoding:
+      codec: bytes
+
+transforms:
+  # O receptor cifrado manda "ROAR <chave> <endereço do equipamento> <linha>". Sem a chave certa, a linha é descartada.
+  syslog_repassado_ler:
+    type: remap
+    inputs: [syslog_repassado]
+    drop_on_abort: true
+    source: |
+      partes = parse_regex(string(.message) ?? "", r'^ROAR (?P<chave>\S+) (?P<ip>\d{1,3}(?:\.\d{1,3}){3}) (?P<linha>.*)$') ?? {}
+      if partes.chave != "__CHAVE__" { abort }
+      .origem = partes.ip
+      .message = partes.linha
+
+  syslog_rotear:
+    type: remap
+    inputs: [syslog_udp, syslog_tcp, syslog_repassado_ler]
+    drop_on_abort: true
+    source: |
+      ip = string(.origem) ?? ""
+      # Lidas como JSON: o tipo de cada rede não depende de a lista estar vazia.
+      redes = array(parse_json(s'__REDES__') ?? []) ?? []
+      if length(filter(redes) -> |_i, rede| { ip_cidr_contains(string(rede) ?? "", ip) ?? false }) == 0 { abort }
+      linha = strip_whitespace(replace(string(.message) ?? "", r'^<\d{1,3}>', ""))
+      if linha == "" { abort }
+      decoder = ""
+      dados = {}
+      if __DESVIO__ {
+        if match(linha, r'\btype="?traffic"?') && match(linha, r'\baction="?(accept|close|timeout|server-rst|client-rst)"?') {
+          # FortiGate: chave=valor.
+          kv = parse_key_value(linha, key_value_delimiter: "=", field_delimiter: " ") ?? {}
+          decoder = "roar-direto-fortigate"
+          dados = {"srcip": kv.srcip, "dstip": kv.dstip, "srcport": kv.srcport, "dstport": kv.dstport, "action": kv.action, "protocol": kv.proto, "user": kv.user}
+        } else if match(linha, r'\blog_type="Firewall"') && match(linha, r'\bstatus="Allow"') {
+          # Sophos Firewall: chave=valor.
+          kv = parse_key_value(linha, key_value_delimiter: "=", field_delimiter: " ") ?? {}
+          decoder = "roar-direto-sophos"
+          dados = {"src_ip": kv.src_ip, "dst_ip": kv.dst_ip, "srcport": kv.src_port, "dstport": kv.dst_port, "action": "allow", "protocol": kv.protocol, "user_name": kv.user_name}
+        } else if match(linha, r'filterlog(\[\d+\])?: ') {
+          # pfSense e OPNsense: CSV depois do programa; o tráfego liberado tem "pass" na ação.
+          c = split(replace(linha, r'^.*?filterlog(\[\d+\])?: ', ""), ",")
+          if length(c) > 21 && c[6] == "pass" && c[8] == "4" {
+            decoder = "roar-direto-pf"
+            dados = {"action": "pass", "protocol": c[16], "srcip": c[18], "dstip": c[19], "srcport": c[20], "dstport": c[21]}
+          }
+        } else if match(linha, r',TRAFFIC,') {
+          # Palo Alto: CSV; o cabeçalho do syslog fica grudado no primeiro campo, então os índices são os do PAN-OS. A ação
+          # é o campo 30.
+          c = split(linha, ",")
+          if length(c) > 30 && c[3] == "TRAFFIC" && c[30] == "allow" {
+            decoder = "roar-direto-paloalto"
+            dados = {"source_address": c[7], "destination_address": c[8], "srcport": c[24], "dstport": c[25], "protocol": c[29], "action": "allow"}
+          }
+        } else if match(linha, r'%ASA-6-(30201[3-6]|305011|305012):') {
+          # Cisco ASA: conexão e tradução montadas e desfeitas.
+          decoder = "roar-direto-asa"
+          m = parse_regex(linha, r'(?:(?P<sentido>inbound|outbound) )?(?P<proto>TCP|UDP|ICMP|GRE)?\s?(?:connection|translation)[^:]*:(?P<a>[\d.]+)/?(?P<ap>\d*)[^:]*:(?P<b>[\d.]+)/?(?P<bp>\d*)') ?? {}
+          if m.sentido == "outbound" {
+            dados = {"srcip": m.b, "srcport": m.bp, "dstip": m.a, "dstport": m.ap, "protocol": m.proto, "action": "allow"}
+          } else {
+            dados = {"srcip": m.a, "srcport": m.ap, "dstip": m.b, "dstport": m.bp, "protocol": m.proto, "action": "allow"}
+          }
+        }
+      }
+      .ip = ip
+      .linha = linha
+      .direto = decoder != ""
+      .decoder = decoder
+      .dados = compact(dados)
+
+  # O que não vai ao armazém sai pelo ramo padrão (_unmatched) e segue para o gerenciador.
+  syslog_destino:
+    type: route
+    inputs: [syslog_rotear]
+    route:
+      armazem: .direto == true
+
+  # Para o armazém, no mesmo formato que o gerenciador grava: a mesma transformação (linhas) monta a linha do armazém,
+  # com a localização do endereço e o id.
+  syslog_direto:
+    type: remap
+    inputs: [syslog_destino.armazem]
+    source: |
+      evento = {
+        "timestamp": format_timestamp!(now(), "%Y-%m-%dT%H:%M:%S%.3f+0000", timezone: "UTC"),
+        "agent": {"id": "000", "name": "gerenciador-" + get_env_var!("GERENCIADOR_ID")},
+        "id": uuid_v4(),
+        "full_log": .linha,
+        "decoder": {"name": .decoder},
+        "location": .ip,
+        "data": .dados
+      }
+      . = {"message": encode_json(evento)}
+
+  # A mensagem do socket do analisador: fila 2 (syslog), a origem e a linha, como o Wazuh monta quando recebe syslog.
+  syslog_para_o_gerenciador:
+    type: remap
+    inputs: [syslog_destino._unmatched]
+    source: |
+      . = {"message": "2:" + string!(.ip) + ":" + truncate(string!(.linha), 65000)}
+
+sinks:
+  syslog_gerenciador:
+    type: socket
+    inputs: [syslog_para_o_gerenciador]
+    mode: unix_datagram
+    path: /var/ossec/queue/sockets/queue
+    # O socket some enquanto o gerenciador reinicia: o envio espera ele voltar, e o teste de saúde do começo só atrapalharia.
+    healthcheck:
+      enabled: false
+    encoding:
+      codec: text
+    buffer:
+      type: memory
+      max_events: 50000
+      when_full: block

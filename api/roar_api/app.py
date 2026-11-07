@@ -58,7 +58,7 @@ from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao.normalizar import CAMPOS_DE_IP_DE_DESTINO, CAMPOS_DE_IP_DE_ORIGEM  # noqa: E402
-from roar_ingestao.syslog_cifrado import PORTA as PORTA_DO_SYSLOG_CIFRADO, PASTA as PASTA_DO_SYSLOG_CIFRADO, endereco_da_origem  # noqa: E402
+from roar_ingestao.syslog_cifrado import PORTA as PORTA_DO_SYSLOG_CIFRADO, PASTA as PASTA_DO_SYSLOG_CIFRADO  # noqa: E402
 from roar_ingestao import superficie as superficie_externa_  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
 from roar_ingestao import contexto, inteligencia as inteligencia_de_ameacas, sigma, xml_proprio, yara_regras  # noqa: E402
@@ -3068,7 +3068,7 @@ class Armazenamento(BaseModel):
 def ver_armazenamento(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     with do_cliente(request, sessao) as con:
         dados = con.execute("""SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs, armazenamento_estado AS estado,
-                                      armazenamento_mensagem AS mensagem, ler_do_armazem FROM clientes""").fetchone()
+                                      armazenamento_mensagem AS mensagem, ler_do_armazem, desvio_de_volume FROM clientes""").fetchone()
     return {**dados, "arquivo": _ultima_copia_fria(request.app.state.indexer), "armazem_disponivel": _armazem_disponivel(request, sessao)}
 
 
@@ -3086,6 +3086,22 @@ def _armazem_disponivel(request, sessao):
 
 class LeituraDoArmazem(BaseModel):
     ler: bool
+
+
+class DesvioDeVolume(BaseModel):
+    desviar: bool
+
+
+@app.put("/api/organizacao/armazenamento/desvio", status_code=204)
+def definir_desvio_de_volume(dados: DesvioDeVolume, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """O tráfego permitido dos firewalls conhecidos vai do coletor direto ao armazém, sem passar pelo gerenciador
+    (roar_ingestao.coletor_syslog). Só com o armazém: sem ele, esse tráfego não ficaria guardado em lugar nenhum."""
+    if dados.desviar and not _armazem_disponivel(request, sessao):
+        raise HTTPException(status_code=409, detail="Esta organização ainda não tem o armazém novo.")
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_desvio_de_volume(%s)", (dados.desviar,))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_desvio_de_volume', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], "ligado" if dados.desviar else "desligado"))
 
 
 @app.put("/api/organizacao/armazenamento/leitura", status_code=204)
@@ -4568,7 +4584,7 @@ def _saude_da_fonte(fonte, origens):
         redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
         for local, ultimo in origens:
             try:
-                if ultimo and any(ipaddress.ip_address(endereco_da_origem(local)) in rede for rede in redes):
+                if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
                     ultimos.append(ultimo)
             except ValueError:
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
