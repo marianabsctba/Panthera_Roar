@@ -850,6 +850,9 @@ def remover(gerenciador_id, apagar_dados=True):
         apagar_retencao(indexer, gerenciador_id)
         indexer.sessao.delete(f"{indexer.url}/{indice_do(gerenciador_id)}*", timeout=60)
         indexer.sessao.delete(f"{indexer.url}/{indice_bruto_do(gerenciador_id)}*", timeout=60)
+        # O inventário e as vulnerabilidades que o próprio Wazuh grava. Esquecidos, se acumulam a cada gerenciador removido
+        # até o indexador bater no limite de fragmentos e recusar índice novo de qualquer organização.
+        indexer.sessao.delete(f"{indexer.url}/{indices_de_estado_do(gerenciador_id)}", timeout=60)
         with banco_admin(env) as banco:
             cliente = banco.execute("SELECT cliente_id FROM gerenciadores WHERE id = %s",
                                     (gerenciador_id,)).fetchone()

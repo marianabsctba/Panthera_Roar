@@ -59,7 +59,11 @@ if [ -n "$(valor IA_MODELO)" ]; then
   docker compose --project-directory "$DESTINO" --project-name panthera-roar "${arquivos[@]}" --profile ia up -d ia >/dev/null
   # O servidor do Ollama leva uns segundos para atender depois que o contêiner sobe.
   for _ in $(seq 60); do docker exec roar-ia ollama list >/dev/null 2>&1 && break; sleep 1; done
-  docker exec roar-ia ollama pull "$(valor IA_MODELO)" >/dev/null
+  # Só baixa o que falta: com o modelo já no servidor, a instalação não depende da internet. Sem internet, avisa e segue;
+  # o resto dos serviços não pode ficar parado por causa da IA.
+  if ! docker exec roar-ia ollama list | awk 'NR > 1 {print $1}' | grep -qx "$(valor IA_MODELO)"; then
+    docker exec roar-ia ollama pull "$(valor IA_MODELO)" >/dev/null || echo "Aviso: não foi possível baixar o modelo $(valor IA_MODELO) da IA local." >&2
+  fi
 fi
 chmod 755 "$DESTINO/cofre"; chmod 600 "$DESTINO/cofre/privada"; chmod 644 "$DESTINO/cofre/publica"
 if [ "$PERFIL" != vulnerabilidades ]; then
