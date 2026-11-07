@@ -4,7 +4,7 @@ import { useState } from "react";
 import { detalhe, enviar, pedir, useDados, useEu, usePode } from "../api";
 import { AcoesDaLinha, Cabecalho, Carregando, Data, Estado, Painel, Severidade, Tabela, Vazio } from "../componentes";
 import { numero, quando } from "../formato";
-import { EvidenciasDoCaso, FatosEHipoteses, PassarPlantao, ResumoDoPlantao, TIPOS_DE_NOTA, type EvidenciaDoCaso, type NotaDoCaso } from "./CasosParte2";
+import { ChamadoNoCaso, EvidenciasDoCaso, FatosEHipoteses, PassarPlantao, ResumoDoPlantao, TIPOS_DE_NOTA, type ChamadoDoCaso, type EvidenciaDoCaso, type FerramentaDeChamado, type NotaDoCaso } from "./CasosParte2";
 
 interface Responsavel { id: string; nome: string }
 interface ResumoDoCaso {
@@ -17,7 +17,7 @@ interface ItemDoCaso {
   descricao?: string | null; ativo?: string | null; regras?: string[]; total?: number; ip_origem?: string | null; usuario?: string | null;
   entidade?: string; entidade_tipo?: string; risco_maximo?: number; estado?: string;
 }
-interface DadosDoCaso { caso: ResumoDoCaso & { responsavel_id: string | null }; itens: ItemDoCaso[]; notas: NotaDoCaso[]; evidencias: EvidenciaDoCaso[]; responsaveis: Responsavel[] }
+interface DadosDoCaso { caso: ResumoDoCaso & { responsavel_id: string | null }; itens: ItemDoCaso[]; notas: NotaDoCaso[]; evidencias: EvidenciaDoCaso[]; responsaveis: Responsavel[]; chamado: ChamadoDoCaso | null; ferramentas: FerramentaDeChamado[] }
 
 const SEVERIDADES = [{ value: "critica", label: "Crítica" }, { value: "alta", label: "Alta" }, { value: "media", label: "Média" }, { value: "baixa", label: "Baixa" }];
 const ESTADOS: Record<string, { texto: string; tipo: string }> = {
@@ -135,6 +135,7 @@ function DetalheDoCaso({ id, aoMudar }: { id: number; aoMudar: () => void }) {
         </Group>
       )}
       {falha && <Alert color="red" variant="light" p="xs" fz="sm">{falha}</Alert>}
+      <ChamadoNoCaso casoId={caso.id} chamado={dados.chamado} ferramentas={dados.ferramentas} aoMudar={atualizar} />
 
       <div>
         <Title order={3} mb="xs">Itens</Title>

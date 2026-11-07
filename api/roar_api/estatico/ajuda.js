@@ -304,6 +304,16 @@ export const AJUDA = [
         "Google Workspace: crie uma conta de serviço com a Admin SDK API ativa, dê a ela delegação no domínio com o escopo de leitura da auditoria e, em Conectar, preencha o e-mail de um administrador e cole o JSON da chave.",
       ] },
       { aviso: "Na primeira busca vem só o último dia. O Google libera os relatórios com atraso de minutos a horas: o Roar volta três horas a cada busca e não repete o que já entregou. Testados com serviços de exemplo, ainda não com conta real." },
+      { h: "Chamados: ServiceNow, Jira e GLPI" },
+      "Em Fontes de dados, o grupo Chamados (ITSM) conecta a ferramenta de chamados da organização. Depois, em cada caso aparece o quadro Chamado, com o botão Abrir chamado.",
+      { lista: [
+        "ServiceNow: um usuário de integração que crie e leia incidentes, com a instância (empresa.service-now.com), o usuário e a senha.",
+        "Jira Service Management: o site (empresa.atlassian.net), o e-mail da conta, a chave do projeto (como SOC), o tipo de item e um token da API.",
+        "GLPI: o endereço da API (terminando em /apirest.php), o token do aplicativo e o token do usuário. Os dois tokens ficam no cofre.",
+      ] },
+      "O Roar abre o chamado em segundos, com o título, a severidade, o prazo e o número do caso, e um link de volta. O número do chamado aparece no caso, com link para a ferramenta, e o histórico do caso registra a abertura. De cinco em cinco minutos o Roar confere o andamento; quando a ferramenta resolve ou fecha, o caso ganha uma nota. O caso não é encerrado sozinho: a decisão é do analista.",
+      "Se a ferramenta recusar, a mensagem aparece no quadro. Depois de três tentativas, o chamado fica como Não abriu e o botão vira Tentar de novo.",
+      { aviso: "O chamado sai do ambiente para a ferramenta. Os alertas e as provas não vão junto: o que precisar contar lá, escreva na própria ferramenta. Testados com servidores de exemplo, ainda não com instâncias reais." },
       { h: "Saúde de cada fonte" },
       "Em Fontes configuradas, a coluna Últimas 24 h mostra quantos eventos cada fonte mandou, com um gráfico por hora. Clique na fonte para ver o resto:",
       { lista: [

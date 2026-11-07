@@ -1328,7 +1328,49 @@ def caso(identificador: int, request: Request, sessao=Depends(exige(permissoes.V
             """SELECT id, tipo, nome, tipo_midia, descricao, tamanho, sha256, adicionado_por_nome, adicionado_em
                FROM casos_evidencias WHERE caso_id = %s ORDER BY adicionado_em, id""", (identificador,)).fetchall()
         responsaveis = _responsaveis(con)
-    return {"caso": dados, "itens": grupos + riscos + eventos, "notas": notas, "evidencias": evidencias, "responsaveis": responsaveis}
+        chamado = con.execute(
+            """SELECT ch.estado, ch.numero, ch.endereco, ch.situacao_externa, ch.mensagem, ch.pedido_por_nome, ch.pedido_em, ch.aberto_em,
+                      ch.resolvido_em, ch.conferido_em, f.tipo, f.nome AS ferramenta
+               FROM chamados ch JOIN fontes f ON f.id = ch.fonte_id WHERE ch.caso_id = %s""", (identificador,)).fetchone()
+        ferramentas = con.execute("SELECT id, tipo, nome FROM fontes WHERE tipo = ANY(%s) AND estado = 'ativa' ORDER BY nome",
+                                  (list(TIPOS_DE_CHAMADO),)).fetchall()
+    return {"caso": dados, "itens": grupos + riscos + eventos, "notas": notas, "evidencias": evidencias, "responsaveis": responsaveis,
+            "chamado": chamado, "ferramentas": ferramentas}
+
+
+# As ferramentas de ITSM (roar_ingestao.chamados), cadastradas como fontes.
+TIPOS_DE_CHAMADO = ("servicenow", "jira", "glpi")
+
+
+class PedidoDeChamado(BaseModel):
+    # Com uma ferramenta só, não precisa dizer qual.
+    fonte_id: int | None = None
+
+
+@app.post("/api/casos/{identificador}/chamado", status_code=202)
+def pedir_chamado(identificador: int, dados: PedidoDeChamado, request: Request, sessao=Depends(exige(permissoes.TRIAR))):
+    """Pede o chamado do caso na ferramenta de ITSM. O serviço de fontes cria em segundos e escreve no histórico do caso.
+    Depois de uma falha, pedir de novo reaproveita o mesmo chamado."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        if not con.execute("SELECT 1 FROM casos WHERE id = %s", (identificador,)).fetchone():
+            raise HTTPException(status_code=404)
+        ferramentas = con.execute("SELECT id FROM fontes WHERE tipo = ANY(%s) AND estado = 'ativa'", (list(TIPOS_DE_CHAMADO),)).fetchall()
+        escolhida = dados.fonte_id if dados.fonte_id is not None else (ferramentas[0]["id"] if len(ferramentas) == 1 else None)
+        if escolhida not in [f["id"] for f in ferramentas]:
+            raise HTTPException(status_code=422, detail="Escolha uma das ferramentas de chamados conectadas em Fontes de dados.")
+        atual = con.execute("SELECT estado FROM chamados WHERE caso_id = %s", (identificador,)).fetchone()
+        if atual and atual["estado"] != "falhou":
+            raise HTTPException(status_code=409, detail="Este caso já tem um chamado.")
+        if atual:
+            con.execute("""UPDATE chamados SET estado = 'pedido', fonte_id = %s, tentativas = 0, mensagem = NULL, pedido_por_nome = %s, pedido_em = now()
+                           WHERE caso_id = %s""", (escolhida, sessao["nome"], identificador))
+        else:
+            con.execute("INSERT INTO chamados (cliente_id, caso_id, fonte_id, pedido_por_nome) VALUES (%s, %s, %s, %s)",
+                        (sessao["cliente_id"], identificador, escolhida, sessao["nome"]))
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_chamado', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+    return {"estado": "pedido"}
 
 
 @app.patch("/api/casos/{identificador}", status_code=204)
@@ -4880,7 +4922,7 @@ def ver_fluxos(request: Request, sessao=Depends(exige(permissoes.VER)), horas: i
 
 class FonteDeNuvem(BaseModel):
     nome: str = Field(min_length=1, max_length=120)
-    tipo: str = Field(pattern="^(github|office365|msgraph|aws|azure|gcp|okta|workspace|slack|pagerduty|virustotal|maltiverse)$")
+    tipo: str = Field(pattern="^(github|office365|msgraph|aws|azure|gcp|okta|workspace|servicenow|jira|glpi|slack|pagerduty|virustotal|maltiverse)$")
     campos: dict[str, str]
     # O arquivo de conta de serviço do Google Cloud passa de 2 KB com facilidade.
     segredo: str = Field(min_length=1, max_length=20_000)

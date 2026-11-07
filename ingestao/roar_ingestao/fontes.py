@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape
 
 import requests
 
-from . import coletor_syslog, identidade, rede_externa, syslog_cifrado
+from . import chamados, coletor_syslog, identidade, rede_externa, syslog_cifrado
 
 log = logging.getLogger("roar.fontes")
 EVENTOS_POR_LOTE = 100
@@ -110,6 +110,12 @@ def validar_nuvem(tipo, campos):
             return identidade.validar(tipo, campos)
         except ValueError as erro:
             raise FonteInvalida(str(erro))
+    if tipo in chamados.TIPOS:
+        # ServiceNow, Jira e GLPI: o Roar abre e acompanha os chamados (chamados.py).
+        try:
+            return chamados.validar(tipo, campos)
+        except ValueError as erro:
+            raise FonteInvalida(str(erro))
     if tipo in TIPOS_DE_AVISO:
         try:
             nivel = int(campos.get("nivel", NIVEL_PADRAO_DO_AVISO))
@@ -126,6 +132,12 @@ def validar_segredo(tipo, segredo):
     if tipo in identidade.TIPOS:
         try:
             identidade.validar_segredo(tipo, segredo)
+        except ValueError as erro:
+            raise FonteInvalida(str(erro))
+        return
+    if tipo in chamados.TIPOS:
+        try:
+            chamados.validar_segredo(tipo, segredo)
         except ValueError as erro:
             raise FonteInvalida(str(erro))
         return
@@ -428,6 +440,7 @@ def ciclo(banco):
             aplicar_fontes_de_fluxo(banco, gerenciador_id, cliente)
             buscar_apis(banco, gerenciador_id, cliente)
             identidade.coletar(banco, gerenciador_id, cliente)
+            chamados.processar(banco, gerenciador_id, cliente)
             fim.aplicar_caminhos(banco, gerenciador_id, cliente)
             fim.enviar_varreduras(banco, gerenciador_id, cliente)
             fim.atualizar_base(banco, gerenciador_id, cliente)

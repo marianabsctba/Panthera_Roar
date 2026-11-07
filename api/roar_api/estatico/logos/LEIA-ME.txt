@@ -1,3 +1,3 @@
 Icones do projeto Simple Icons, licenca CC0 1.0. As marcas pertencem aos seus titulares.
 Exceto sophos.svg, redesenhado em uma cor a partir do logotipo oficial da Sophos, que nao esta no Simple Icons.
-okta.svg e google.svg tambem sao do Simple Icons. O Google Workspace usa o G do Google ate termos o logo proprio dele.
+okta.svg, google.svg e jira.svg tambem sao do Simple Icons. O Google Workspace usa o G do Google ate termos o logo proprio dele. ServiceNow e GLPI nao estao no Simple Icons: aparecem com a sigla.

@@ -1,5 +1,5 @@
-import { Alert, Badge, Button, CopyButton, FileInput, Group, Menu, Modal, SegmentedControl, Select, Stack, Text, Textarea, TextInput, Title } from "@mantine/core";
-import { useState } from "react";
+import { Alert, Anchor, Badge, Button, CopyButton, FileInput, Group, Menu, Modal, Paper, SegmentedControl, Select, Stack, Text, Textarea, TextInput, Title } from "@mantine/core";
+import { useEffect, useState } from "react";
 
 import { detalhe, enviar, useDados, useEu, usePode } from "../api";
 import { Carregando, Severidade, Vazio } from "../componentes";
@@ -221,5 +221,78 @@ export function ResumoDoPlantao() {
         </Stack>
       </Modal>
     </>
+  );
+}
+
+export interface ChamadoDoCaso {
+  estado: "pedido" | "aberto" | "resolvido" | "falhou";
+  numero: string | null;
+  endereco: string | null;
+  situacao_externa: string | null;
+  mensagem: string | null;
+  pedido_por_nome: string;
+  pedido_em: string;
+  conferido_em: string | null;
+  tipo: string;
+  ferramenta: string;
+}
+export interface FerramentaDeChamado { id: number; tipo: string; nome: string }
+
+const ESTADOS_DO_CHAMADO: Record<ChamadoDoCaso["estado"], { texto: string; cor: string }> = {
+  pedido: { texto: "Abrindo", cor: "yellow" }, aberto: { texto: "Aberto", cor: "blue" }, resolvido: { texto: "Resolvido", cor: "teal" }, falhou: { texto: "Não abriu", cor: "red" },
+};
+
+/** O chamado do caso na ferramenta de ITSM (roar_ingestao.chamados): pedir, ver o número e acompanhar o andamento. */
+export function ChamadoNoCaso({ casoId, chamado, ferramentas, aoMudar }: { casoId: number; chamado: ChamadoDoCaso | null; ferramentas: FerramentaDeChamado[]; aoMudar: () => void }) {
+  const eu = useEu();
+  const pode = usePode();
+  const [escolhida, setEscolhida] = useState<string | null>(ferramentas.length === 1 ? String(ferramentas[0].id) : null);
+  const [falha, setFalha] = useState<string | null>(null);
+  // Enquanto o serviço cria o chamado, a tela confere a cada poucos segundos.
+  useEffect(() => {
+    if (chamado?.estado !== "pedido") return;
+    const relogio = window.setInterval(aoMudar, 5000);
+    return () => window.clearInterval(relogio);
+  }, [chamado?.estado, aoMudar]);
+  if (!chamado && !ferramentas.length) return null;
+  const pedirChamado = async () => {
+    setFalha(null);
+    const r = await enviar(`/api/casos/${casoId}/chamado`, { fonte_id: escolhida ? Number(escolhida) : null });
+    if (!r.ok) setFalha(await detalhe(r));
+    aoMudar();
+  };
+  const triar = pode("triar");
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Stack gap={6}>
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" fw={600}>Chamado</Text>
+          {chamado && <Badge color={ESTADOS_DO_CHAMADO[chamado.estado].cor} variant="light" radius="sm">{ESTADOS_DO_CHAMADO[chamado.estado].texto}</Badge>}
+        </Group>
+        {chamado && chamado.numero && (
+          <Text size="sm">
+            {chamado.endereco ? <Anchor href={chamado.endereco} target="_blank" rel="noreferrer noopener">{chamado.numero}</Anchor> : chamado.numero} no {chamado.ferramenta}
+            {chamado.situacao_externa ? `, ${chamado.situacao_externa.toLowerCase()}` : ""}.
+          </Text>
+        )}
+        {chamado && chamado.estado === "pedido" && <Text size="xs" c="dimmed">O Roar está abrindo o chamado no {chamado.ferramenta}. Leva alguns segundos.</Text>}
+        {chamado?.mensagem && <Text size="xs" c={chamado.estado === "falhou" ? "red" : "dimmed"}>{chamado.mensagem}</Text>}
+        {chamado && (
+          <Text size="xs" c="dimmed">
+            Pedido por {chamado.pedido_por_nome} em {quando(chamado.pedido_em, eu.fuso)}.{chamado.conferido_em && chamado.estado === "aberto" ? ` Conferido no ${chamado.ferramenta} em ${quando(chamado.conferido_em, eu.fuso)}.` : ""}
+          </Text>
+        )}
+        {triar && (!chamado || chamado.estado === "falhou") && ferramentas.length > 0 && (
+          <Group gap="xs" align="flex-end">
+            {ferramentas.length > 1 && (
+              <Select size="xs" w={240} label="Ferramenta" placeholder="Escolha" value={escolhida} onChange={setEscolhida} data={ferramentas.map((f) => ({ value: String(f.id), label: f.nome }))} />
+            )}
+            <Button size="xs" variant="default" disabled={!escolhida} onClick={pedirChamado}>{chamado ? "Tentar de novo" : "Abrir chamado"}</Button>
+          </Group>
+        )}
+        {!chamado && <Text size="xs" c="dimmed">O chamado leva o título, a severidade, o prazo e o número do caso. Os alertas não vão junto.</Text>}
+        {falha && <Text size="xs" c="red">{falha}</Text>}
+      </Stack>
+    </Paper>
   );
 }

@@ -104,6 +104,17 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
       passos: ["Entre com a conta dona da organização e crie um token de acesso pessoal.", "Marque o escopo read:audit_log e gere o token.", "Em Conectar, preencha a organização e o token."],
       cuidado: "Só funciona com o plano GitHub Enterprise Cloud: nos outros, a API de auditoria não existe.", tipo: "github" },
   ] },
+  { grupo: "Chamados (ITSM)", itens: [
+    { id: "servicenow", rotulo: "ServiceNow", sigla: "SN", resumo: "Abre um incidente a partir do caso e traz de volta quando ele é resolvido.", prova: "Testado com um servidor de exemplo, ainda não com uma instância real",
+      passos: ["No ServiceNow, crie um usuário de integração com o papel itil (ou um que crie e leia incidentes).", "Em Conectar, preencha a instância, como empresa.service-now.com, o usuário e a senha.", "No caso, clique em Abrir chamado."],
+      cuidado: "O chamado leva o título, a severidade, o prazo e o número do caso, e sai do ambiente para o ServiceNow. Os alertas não vão junto.", tipo: "servicenow" },
+    { id: "jira", rotulo: "Jira Service Management", logo: "jira", resumo: "Cria um item no projeto do Jira a partir do caso e acompanha até ele ser concluído.", prova: "Testado com um servidor de exemplo, ainda não com um site real",
+      passos: ["Em id.atlassian.com, crie um token da API com a conta que vai abrir os chamados.", "Em Conectar, preencha o site, como empresa.atlassian.net, o e-mail da conta, a chave do projeto (como SOC), o tipo de item e o token.", "No caso, clique em Abrir chamado."],
+      cuidado: "O tipo de item precisa existir no projeto, com o nome igual ao do Jira (Task, Incident, [System] Incident). O chamado sai do ambiente para o Jira.", tipo: "jira" },
+    { id: "glpi", rotulo: "GLPI", sigla: "GLPI", resumo: "Abre um chamado no GLPI a partir do caso e traz de volta quando ele é solucionado.", prova: "Testado com um servidor de exemplo, ainda não com um GLPI real",
+      passos: ["No GLPI, em Configurar > Geral > API, ligue a API REST e crie um cliente: ele dá o token do aplicativo.", "No perfil do usuário que vai abrir os chamados, gere o token da API remota.", "Em Conectar, preencha o endereço da API (terminando em /apirest.php), o token do aplicativo e o token do usuário."],
+      cuidado: "GLPI na rede interna só é aceito se a instalação liberar destinos internos (ROAR_DESTINO_INTERNO). O chamado sai do ambiente para o GLPI.", tipo: "glpi" },
+  ] },
   { grupo: "Seus sistemas", itens: [
     { id: "webhook", rotulo: "Webhook", sigla: "API", resumo: "Qualquer sistema que saiba enviar JSON por HTTP.", prova: "Testado com envio real",
       passos: ["Em Conectar, crie o endereço e guarde o token: ele aparece uma única vez.", "No sistema de origem, envie um POST em JSON com o token no cabeçalho Authorization.", "Os eventos passam pelas mesmas regras de qualquer outro log."], tipos: ["webhook"] },
@@ -126,7 +137,9 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
 interface CampoDeConector { id: string; rotulo: string; valor?: string }
 const CAMPOS_MICROSOFT: CampoDeConector[] = [{ id: "locatario", rotulo: "Locatário (tenant ID)" }, { id: "aplicativo", rotulo: "Aplicativo (client ID)" }];
 const CAMPO_NIVEL: CampoDeConector = { id: "nivel", rotulo: "Avisar a partir do nível", valor: "10" };
-const CONECTORES: Record<string, { segredo: string; longo?: boolean; campos: CampoDeConector[]; nota?: string }> = {
+// segredoExtra: uma segunda credencial (o token do aplicativo do GLPI). As duas vão juntas ao cofre, em JSON, e nenhuma
+// fica na configuração que a tela mostra.
+const CONECTORES: Record<string, { segredo: string; segredoExtra?: { id: string; rotulo: string }; longo?: boolean; campos: CampoDeConector[]; nota?: string }> = {
   github: { segredo: "Token de acesso", campos: [{ id: "organizacao", rotulo: "Organização" }] },
   office365: { segredo: "Segredo do aplicativo", campos: CAMPOS_MICROSOFT },
   msgraph: { segredo: "Segredo do aplicativo", campos: CAMPOS_MICROSOFT },
@@ -134,6 +147,9 @@ const CONECTORES: Record<string, { segredo: string; longo?: boolean; campos: Cam
   azure: { segredo: "Segredo do aplicativo", campos: [{ id: "dominio", rotulo: "Domínio do locatário" }, { id: "aplicativo", rotulo: "Aplicativo (client ID)" }, { id: "workspace", rotulo: "Workspace" }] },
   gcp: { segredo: "Arquivo JSON da conta de serviço", longo: true, campos: [{ id: "projeto", rotulo: "Projeto" }, { id: "assinatura", rotulo: "Assinatura" }] },
   okta: { segredo: "Token da API", campos: [{ id: "dominio", rotulo: "Domínio do Okta" }] },
+  servicenow: { segredo: "Senha do usuário de integração", campos: [{ id: "instancia", rotulo: "Instância" }, { id: "usuario", rotulo: "Usuário" }] },
+  jira: { segredo: "Token da API", campos: [{ id: "site", rotulo: "Site" }, { id: "email", rotulo: "E-mail da conta" }, { id: "projeto", rotulo: "Chave do projeto" }, { id: "tipo_de_item", rotulo: "Tipo de item", valor: "Task" }] },
+  glpi: { segredo: "Token do usuário", segredoExtra: { id: "app_token", rotulo: "Token do aplicativo" }, campos: [{ id: "endereco", rotulo: "Endereço da API" }] },
   workspace: { segredo: "Arquivo JSON da conta de serviço", longo: true, campos: [{ id: "administrador", rotulo: "E-mail de um administrador" }] },
   slack: { segredo: "Endereço do webhook do Slack", campos: [CAMPO_NIVEL], nota: "Os alertas a partir deste nível saem do ambiente para o Slack, com os dados que trazem." },
   pagerduty: { segredo: "Chave da integração", campos: [CAMPO_NIVEL], nota: "Os alertas a partir deste nível saem do ambiente para o PagerDuty, com os dados que trazem." },
@@ -185,12 +201,12 @@ const SAUDE_DA_FONTE: Record<string, string> = { recebendo: "● Recebendo", par
 const ESTADOS_DE_FONTE: Record<string, string> = { pendente: "Aplicando", recusada: "Recusada", ativa: "Ativa" };
 const TIPOS_DE_FONTE: Record<string, string> = {
   syslog: "Syslog", fluxo: "NetFlow, IPFIX e sFlow", webhook: "Webhook", api: "API", github: "GitHub", office365: "Microsoft 365", msgraph: "Microsoft Graph", aws: "AWS CloudTrail",
-  azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", okta: "Okta", workspace: "Google Workspace",
+  azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", okta: "Okta", workspace: "Google Workspace", servicenow: "ServiceNow", jira: "Jira Service Management", glpi: "GLPI",
   slack: "Aviso no Slack", pagerduty: "Aviso no PagerDuty", maltiverse: "Consulta no Maltiverse", virustotal: "Consulta no VirusTotal",
 };
 const CAMPOS_DA_CONFIG: Record<string, string> = {
   protocolo: "Protocolo", origens: "Endereços", organizacao: "Organização", locatario: "Locatário", aplicativo: "Aplicativo", bucket: "Bucket", dominio: "Domínio", workspace: "Workspace",
-  projeto: "Projeto", assinatura: "Assinatura", nivel: "A partir do nível", endereco: "Endereço", caminho: "Onde está a lista", cabecalho: "Cabeçalho", intervalo_minutos: "Buscar a cada (minutos)", administrador: "Administrador",
+  projeto: "Projeto", assinatura: "Assinatura", nivel: "A partir do nível", endereco: "Endereço", caminho: "Onde está a lista", cabecalho: "Cabeçalho", intervalo_minutos: "Buscar a cada (minutos)", administrador: "Administrador", instancia: "Instância", usuario: "Usuário", site: "Site", email: "E-mail", tipo_de_item: "Tipo de item",
 };
 
 const abaixoDoNormal = (f: Fonte) => Boolean(f.volume?.abaixo_do_normal || f.volume?.equipamentos?.some((q) => q.abaixo_do_normal));
@@ -202,7 +218,7 @@ function detalheDaFonte(f: Fonte) {
   const c = f.config;
   if (f.tipo === "fluxo") return ((c.origens as string[] | undefined) ?? []).join(", ");
   if (f.tipo === "syslog") return `${String(c.protocolo ?? "").toUpperCase()}: ${((c.origens as string[] | undefined) ?? []).join(", ")}`;
-  const direto = c.organizacao ?? c.locatario ?? c.endereco ?? c.bucket ?? c.dominio ?? c.projeto ?? c.administrador;
+  const direto = c.organizacao ?? c.locatario ?? c.endereco ?? c.bucket ?? c.dominio ?? c.projeto ?? c.administrador ?? c.instancia ?? c.site;
   if (direto !== undefined && direto !== null) return String(direto);
   if (c.nivel !== undefined) return `A partir do nível ${String(c.nivel)}`;
   return f.tipo === "webhook" ? "Token guardado" : "-";
@@ -418,12 +434,15 @@ function FormularioDeNuvem({ item, aoFechar, aoCriar }: PropsDoFormulario) {
   const [campos, setCampos] = useState<Record<string, string>>(() => Object.fromEntries(conector.campos.map((c) => [c.id, c.valor ?? ""])));
   // A credencial mora só neste formulário, que some inteiro ao fechar a janela.
   const [segredo, setSegredo] = useState("");
+  const [segredoExtra, setSegredoExtra] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const salvar = async (e: FormEvent) => {
     e.preventDefault();
     setErro(null);
-    const credencial = conector.longo ? segredo.trim() : segredo;
+    const extra = conector.segredoExtra;
+    if (extra && (!segredoExtra.trim() || !segredo.trim())) return setErro("Preencha as duas credenciais.");
+    const credencial = extra ? JSON.stringify({ [extra.id]: segredoExtra.trim(), usuario: segredo.trim() }) : conector.longo ? segredo.trim() : segredo;
     if (!nome.trim() || !credencial) return setErro("Preencha o nome e a credencial.");
     setOcupado(true);
     const r = await enviar("/api/fontes/nuvem", { nome: nome.trim(), tipo: item.tipo, campos, segredo: credencial });
@@ -443,6 +462,9 @@ function FormularioDeNuvem({ item, aoFechar, aoCriar }: PropsDoFormulario) {
               <TextInput key={c.id} label={c.rotulo} spellCheck={false} data-autofocus={i === 0 || undefined} value={campos[c.id] ?? ""} onChange={(e) => { const v = e.currentTarget.value; setCampos((a) => ({ ...a, [c.id]: v })); }} />
             ))}
           </SimpleGrid>
+        )}
+        {conector.segredoExtra && (
+          <PasswordInput label={conector.segredoExtra.rotulo} maxLength={400} autoComplete="new-password" value={segredoExtra} onChange={(e) => setSegredoExtra(e.currentTarget.value)} />
         )}
         {conector.longo
           ? <Textarea label={conector.segredo} rows={5} spellCheck={false} value={segredo} onChange={(e) => setSegredo(e.currentTarget.value)} styles={{ input: { fontFamily: "var(--mantine-font-family-monospace)", fontSize: 12 } }} />
