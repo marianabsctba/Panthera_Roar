@@ -207,6 +207,7 @@ export const AJUDA = [
     { id: "prova", vista: "prova", titulo: "Prova e evidência", blocos: [
       "A cada 15 minutos, os logs e os alertas da janela são selados: viram um resumo criptográfico, ligado ao selo anterior e assinado. Os selos ficam guardados separados dos eventos.",
       "De tempos em tempos, o Roar confere tudo de novo e aponta qual evento foi alterado, apagado ou incluído depois da selagem. Se aparecer uma violação, preserve o ambiente e trate como incidente: um aviso também aparece no alto de todas as telas.",
+      "Em volume alto, acima de 100 mil eventos numa janela de 15 minutos, a selagem é feita em blocos de umas mil folhas, calculados no próprio armazém. A conferência aponta o bloco que mudou, com quantos eventos ele tinha e quantos tem hoje, em vez do evento exato. A prova de um evento no pacote leva as folhas do bloco dele, e o pacote passa a aceitar até 500 eventos dessas janelas.",
       { h: "Gerar um pacote de evidência" },
       { passos: [
         "Em Logs brutos, abra um log. Ou abra o alerta bruto, em Fila ou Eventos.",
