@@ -187,6 +187,7 @@ export const AJUDA = [
     ] },
     { id: "inteligencia", vista: "inteligencia", titulo: "Inteligência", blocos: [
       "Ligue uma fonte MISP ou TAXII da sua organização, se tiver. É opcional, e o Roar funciona sem nenhuma.",
+      "Com fluxos de rede chegando (NetFlow, IPFIX ou sFlow), os IPs das fontes também são procurados nas conversas da rede. Aparecem em Conversas de rede com um indicador: qual endereço da sua rede falou com o IP, quem chamou quem, quantos fluxos e quanto passou, por dia. O sino avisa no primeiro achado de cada um, e um IP que entra na lista depois é procurado nos fluxos dos últimos 90 dias.",
       { passos: [
         "Crie no MISP ou no TAXII uma conta só com leitura.",
         "Clique em Nova fonte e informe o endereço e a credencial, que fica cifrada.",
@@ -266,6 +267,10 @@ export const AJUDA = [
       ] },
       "O MikroTik não é lido pelo servidor de fábrica: o Roar traz um parser próprio, com alertas de login recusado e de muitas tentativas seguidas vindas do mesmo endereço. Para outro fabricante, use o cartão Syslog e, se a parte entendida ficar baixa, crie um parser na aba Parsers.",
       { aviso: "Os cartões de firewall foram testados com linhas de exemplo de cada fabricante, ainda não com o equipamento ligado. Se a linha do seu equipamento não sair como esperado no teste, avise." },
+      { h: "NetFlow, IPFIX e sFlow" },
+      "Os fluxos de rede dizem quem conversou com quem, por qual porta e quanto. No cartão NetFlow, IPFIX e sFlow, clique em Conectar e cadastre o endereço de onde o equipamento exporta. No equipamento, ligue a exportação de fluxos e aponte para o endereço e a porta do cartão, em UDP: uma porta para NetFlow e IPFIX, outra para sFlow.",
+      "Os fluxos vão direto ao armazém, sem passar pelas regras, e aparecem em Fluxos de rede, no menu Investigar: volume por hora, quem mais manda e recebe, portas de destino, países do lado de fora e os mais recentes. Clique num endereço para ver só os fluxos dele. A saúde da fonte mostra cada exportador.",
+      { aviso: "Com amostragem ligada no equipamento, o volume mostrado é uma fração do real. Um mesmo exportador não pode mandar para duas organizações da instalação: a fonte mais nova é recusada, com o motivo." },
       { h: "Syslog cifrado, pela internet" },
       "O syslog comum não é cifrado: serve para a rede de confiança. Para um equipamento que manda log pela internet, como o firewall de uma filial, use o syslog cifrado (TLS). A porta é uma só para a instalação, a 6514, e aparece no cartão Syslog e nos cartões de firewall.",
       { lista: [
@@ -275,6 +280,13 @@ export const AJUDA = [
       ] },
       "O receptor só aceita os endereços cadastrados. Um mesmo endereço não pode mandar para duas organizações da instalação: a fonte mais nova é recusada, com o motivo. A saúde da fonte mostra cada equipamento do mesmo jeito que no syslog comum.",
       { aviso: "Aceita TLS 1.2. Equipamento que só fala TLS 1.0 ou 1.1 não conecta, de propósito: essas versões são inseguras." },
+      { h: "Okta e Google Workspace" },
+      "Em Nuvem e SaaS, os cartões Okta e Google Workspace trazem quem entrou, de onde, e o que mudou nas contas. O Roar busca a cada 5 minutos e entrega só o novo. Os alertas já vêm prontos: login recusado, muitas tentativas do mesmo endereço, segundo fator negado, conta bloqueada, mudança de privilégio ou de administração, login que o Google achou suspeito e arquivo do Drive aberto para fora.",
+      { lista: [
+        "Okta: crie um token da API com um administrador só de leitura e, em Conectar, preencha o domínio (como empresa.okta.com) e o token.",
+        "Google Workspace: crie uma conta de serviço com a Admin SDK API ativa, dê a ela delegação no domínio com o escopo de leitura da auditoria e, em Conectar, preencha o e-mail de um administrador e cole o JSON da chave.",
+      ] },
+      { aviso: "Na primeira busca vem só o último dia. O Google libera os relatórios com atraso de minutos a horas: o Roar volta três horas a cada busca e não repete o que já entregou. Testados com serviços de exemplo, ainda não com conta real." },
       { h: "Saúde de cada fonte" },
       "Em Fontes configuradas, a coluna Últimas 24 h mostra quantos eventos cada fonte mandou, com um gráfico por hora. Clique na fonte para ver o resto:",
       { lista: [
