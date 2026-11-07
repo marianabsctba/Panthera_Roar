@@ -151,6 +151,20 @@ def criar_organizacao(armazem, cliente_id, dias_alertas, dias_logs, dias_quentes
                              SETTINGS storage_policy = 'roar', ttl_only_drop_parts = 1, non_replicated_deduplication_window = 1000""")
         for coluna, tipo in COLUNAS_NOVAS:
             armazem.executar(f"ALTER TABLE {banco}.{tabela} ADD COLUMN IF NOT EXISTS {coluna} {tipo}")
+        # Os dias trazidos de volta da cópia fria (copia_do_armazem.recuperar): à parte, sem a retenção, que apagaria de
+        # novo na hora o dia antigo. Quem apaga é o pedido, quando vence.
+        armazem.executar(f"""CREATE TABLE IF NOT EXISTS {banco}.{tabela}_recuperados ({COLUNAS})
+                             ENGINE = MergeTree
+                             PARTITION BY toYYYYMMDD(ocorrido_em)
+                             ORDER BY (toStartOfHour(ocorrido_em), agente_id, ocorrido_em)
+                             SETTINGS storage_policy = 'roar'""")
+        # O que as telas leem: a tabela de sempre e os dias que voltaram, juntas. O selo, o volume e a saúde das fontes
+        # leem só a de sempre.
+        armazem.executar(f"""CREATE TABLE IF NOT EXISTS {banco}.{tabela}_leitura AS {banco}.{tabela}
+                             ENGINE = Merge('{banco}', '^{tabela}(_recuperados)?$')""")
+        for coluna, tipo in COLUNAS_NOVAS:
+            armazem.executar(f"ALTER TABLE {banco}.{tabela}_recuperados ADD COLUMN IF NOT EXISTS {coluna} {tipo}")
+            armazem.executar(f"ALTER TABLE {banco}.{tabela}_leitura ADD COLUMN IF NOT EXISTS {coluna} {tipo}")
     criar_resumo_das_origens(armazem, banco)
     aplicar_retencao(armazem, cliente_id, dias_alertas, dias_logs, dias_quentes)
     armazem.executar(f"GRANT SELECT ON {banco}.* TO {LEITOR}")

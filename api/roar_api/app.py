@@ -53,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
 from roar_api import buscas as blocos_de_busca, correcao, leitor_armazem, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
-from roar_ingestao import avisos as avisos_por_email, cofre, copia_fria, fim, rede_externa  # noqa: E402
+from roar_ingestao import avisos as avisos_por_email, cofre, copia_do_armazem, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
@@ -3069,7 +3069,11 @@ def ver_armazenamento(request: Request, sessao=Depends(exige(permissoes.GERIR_US
     with do_cliente(request, sessao) as con:
         dados = con.execute("""SELECT retencao_alertas_dias, retencao_logs_dias, guardar_logs, armazenamento_estado AS estado,
                                       armazenamento_mensagem AS mensagem, ler_do_armazem, desvio_de_volume FROM clientes""").fetchone()
-    return {**dados, "arquivo": _ultima_copia_fria(request.app.state.indexer), "armazem_disponivel": _armazem_disponivel(request, sessao)}
+        do_armazem = _copia_do_armazem(request, con, sessao)
+    # A cópia do armazém é por organização e por dia; a do indexador, da instalação inteira.
+    arquivo = ({"ultima": do_armazem[1][-1].isoformat() if do_armazem[1] else None, "copias": len(do_armazem[1]), "dias": int(_ler_env().get("ROAR_ARQUIVO_DIAS", 365))}
+               if do_armazem else _ultima_copia_fria(request.app.state.indexer))
+    return {**dados, "arquivo": arquivo, "armazem_disponivel": _armazem_disponivel(request, sessao)}
 
 
 def _armazem_disponivel(request, sessao):
@@ -3122,6 +3126,15 @@ class Recuperacao(BaseModel):
     dias_de_consulta: int = Field(default=7, ge=1, le=30)
 
 
+def _copia_do_armazem(request, con, sessao):
+    """A organização que lê do armazém de eventos traz os dias de volta da cópia dele (roar_ingestao.copia_do_armazem)."""
+    onde = _armazem_da_organizacao(request, con, sessao)
+    if not onde:
+        return None
+    dias = [l["dia"] for l in con.execute("SELECT dia FROM copias_do_armazem ORDER BY dia").fetchall()]
+    return onde, dias
+
+
 @app.get("/api/organizacao/copia-fria")
 def ver_copia_fria(request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
     """Os dias que dá para trazer de volta: só os desta organização, escolhidos pelos gerenciadores dela."""
@@ -3129,6 +3142,16 @@ def ver_copia_fria(request: Request, sessao=Depends(exige(permissoes.GERIR_USUAR
         gerenciadores = [g["id"] for g in con.execute("SELECT id FROM gerenciadores").fetchall()]
         pedidos = con.execute("SELECT id, de, ate, tipo, dias_de_consulta, estado, mensagem, cardinality(indices) AS indices, criado_em, expira_em "
                               "FROM recuperacoes ORDER BY id DESC LIMIT 20").fetchall()
+        do_armazem = _copia_do_armazem(request, con, sessao)
+    if do_armazem:
+        onde, dias = do_armazem
+        try:
+            ja = copia_do_armazem.presentes(onde["armazem"], onde["banco"])
+        except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+            return {"disponivel": None, "pedidos": pedidos}
+        # Guardado na cópia e fora do armazém: nem na tabela de sempre, nem já de volta.
+        return {"disponivel": {tipo: [d.isoformat() for d in dias if (tipo, d.strftime("%Y%m%d")) not in ja] for tipo in ("alertas", "logs")},
+                "pedidos": pedidos}
     try:
         disponivel = copia_fria.dias_disponiveis(request.app.state.indexer.get, INDEXER_URL, gerenciadores)
     except requests.RequestException:
@@ -3143,8 +3166,9 @@ def pedir_recuperacao(dados: Recuperacao, request: Request, sessao=Depends(exige
     with do_cliente(request, sessao) as con:
         if con.execute("SELECT count(*) AS n FROM recuperacoes WHERE estado IN ('pendente', 'em_andamento')").fetchone()["n"]:
             raise HTTPException(status_code=409, detail="Já há uma recuperação em andamento. Espere terminar.")
-        novo = con.execute("INSERT INTO recuperacoes (cliente_id, de, ate, tipo, dias_de_consulta, pedido_por) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                           (sessao["cliente_id"], dados.de, dados.ate, dados.tipo, dados.dias_de_consulta, sessao["usuario_id"])).fetchone()["id"]
+        origem = "armazem" if _armazem_da_organizacao(request, con, sessao) else "indexador"
+        novo = con.execute("INSERT INTO recuperacoes (cliente_id, de, ate, tipo, dias_de_consulta, pedido_por, origem) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                           (sessao["cliente_id"], dados.de, dados.ate, dados.tipo, dados.dias_de_consulta, sessao["usuario_id"], origem)).fetchone()["id"]
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'recuperar_copia_fria', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], f"{dados.tipo} de {dados.de} a {dados.ate}, por {dados.dias_de_consulta} dias"))
     return {"id": novo}

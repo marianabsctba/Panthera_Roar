@@ -183,7 +183,7 @@ Limites:
 Limites:
 
 - **Selo em volume alto (feito, versão 2 dos selos):** a janela do armazém com mais de 100 mil eventos é selada em blocos (`roar_ingestao.selo_em_blocos`, migração 077). A folha de cada evento é calculada no próprio ClickHouse, sobre o log exatamente como foi gravado (os bytes, sem reescrever o JSON), com sal por evento derivado de um segredo da janela; os eventos se espalham em blocos de umas mil folhas pelos primeiros bytes do sal; o ClickHouse resume cada bloco (as folhas em ordem, num hash) e a árvore de Merkle é feita só sobre os blocos. O Postgres guarda o selo e o resumo de cada bloco (até uns 2 MB por janela em 50 mil eventos por segundo), em vez de 45 milhões de folhas. Cada selo cobre uma faixa de chegada ao armazém (`recebido_de` e `recebido_ate`, no cabeçalho assinado): o que chega depois do corte vira selo tardio, e incluir um evento com chegada antiga muda o bloco dele. A conferência aponta o bloco que mudou (eventos selados e de hoje), não o evento; a prova de um evento no pacote leva as folhas do bloco e o caminho do bloco até a raiz, e o `verificar.py` confere sozinho (o laudo só pode mostrar o mesmo log que a prova cobre). Até 100 mil eventos por janela, continua a versão 1, que aponta evento por evento; os selos antigos não mudam de hash. Medido no servidor de teste: uma janela de um milhão de eventos de uns 600 bytes foi selada em 0,6 s e conferida em 0,7 s. Teste: `testes/fase4/testar_selo_em_blocos.py` (18 checagens). Limites: o pacote de perícia aceita até 500 eventos de janelas em blocos (cada um leva umas mil folhas); a medida de 45 milhões por janela fica para o teste de carga.
-- **Trazer de volta da cópia fria do armazém:** a cópia é feita e vence; a recuperação pela tela ainda é a do indexador.
+- **Trazer de volta da cópia fria do armazém (feito):** o dia volta para `logs_recuperados` e `alertas_recuperados` (`roar_ingestao.copia_do_armazem.recuperar`, `RESTORE ... AS ... PARTITION`), à parte da tabela de sempre, cuja retenção apagaria de novo na hora o dia antigo; quem apaga o dia de volta é o pedido, quando vence ou é devolvido (`DROP PARTITION`). As telas leem as duas juntas por `logs_leitura` e `alertas_leitura` (tabelas `Merge`): a tela de Logs brutos e o pacote de perícia mostram o dia que voltou em qualquer período, porque ele foi pedido justamente para ser consultado; o selo, o volume e a saúde das fontes continuam só com a tabela de sempre. A pasta das cópias é só do root, então o serviço de organizações registra os dias guardados de cada organização em `copias_do_armazem` (migração 078), e a tela mostra os que estão na cópia e fora do armazém. O pedido diz de onde o dia volta (`recuperacoes.origem`): a organização que lê do armazém traz do armazém. Teste: `testes/fase4/testar_copia_do_armazem.py` (11 checagens).
 
 ### Etapa 5: armazém ligado, caminho antigo desligado (pronta)
 
@@ -199,6 +199,4 @@ Para voltar ao caminho antigo: `ROAR_SO_ARMAZEM=0` e `ROAR_ALERTAS_DO_ARMAZEM=0`
 
 ### Próximas etapas
 
-6. Recuperação da cópia fria do armazém.
-   Medir no teste de carga o buffer em memória (50 mil eventos por envio) e a confirmação de ponta a ponta.
-7. Teste de carga fora da VPS.
+6. Teste de carga fora da VPS: medir o coletor (buffer em memória com confirmação de ponta a ponta), o desvio de volume e o selo em blocos em 50 mil eventos por segundo.

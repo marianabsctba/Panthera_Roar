@@ -96,7 +96,7 @@ def _buscar_documentos(indexer, url, gerenciadores, fonte, ids, armazem=None, ba
     for inicio in range(0, len(do_armazem), LOTE_DE_BUSCA):
         lote = do_armazem[inicio:inicio + LOTE_DE_BUSCA]
         for linha in armazem.linhas(f"""SELECT toString(id) AS i, gerenciador, dados, full_log, resumo_do_original, toUnixTimestamp64Milli(ocorrido_em) AS ms
-                                        FROM {banco}.{fonte} WHERE id IN (SELECT toUUID(arrayJoin(splitByChar(',', {{ids:String}}))))""", {"ids": ",".join(lote)}):
+                                        FROM {banco}.{fonte}_leitura WHERE id IN (SELECT toUUID(arrayJoin(splitByChar(',', {{ids:String}}))))""", {"ids": ",".join(lote)}):
             # O banco é o da organização da sessão; o gerenciador ainda tem de ser um dos dela.
             if linha["gerenciador"] in gerenciadores:
                 achados[linha["i"]] = (linha["gerenciador"], armazem_de_eventos.documento_original(linha),

@@ -1,4 +1,5 @@
-"""Traz dias da cópia fria de volta ao índice, e apaga quando o prazo de consulta vence.
+"""Traz dias da cópia fria de volta ao índice, e apaga quando o prazo de consulta vence. O pedido de uma organização que
+lê do armazém de eventos traz o dia da cópia do armazém (copia_do_armazem.recuperar).
 
 Os nomes dos índices saem dos gerenciadores da própria organização: um pedido nunca alcança índice de outra.
 O que volta fica fora da retenção automática, para não ser apagado na hora por ser antigo: quem apaga é este módulo.
@@ -8,7 +9,8 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from . import provisao
+from . import armazem as armazem_de_eventos
+from . import copia_do_armazem, provisao
 
 log = logging.getLogger("roar.copia_fria")
 MAXIMO_DE_INDICES_RECUPERADOS = 200
@@ -89,20 +91,38 @@ def processar(env):
     with provisao.banco_admin(env) as b:
         vencidos = b.execute("""UPDATE recuperacoes SET estado = 'devolvido'
                                 WHERE estado = 'devolver' OR (estado = 'pronto' AND expira_em < now())
-                                RETURNING id, indices""").fetchall()
-    for _, indices in vencidos:
-        devolver(indexer, indices)
+                                RETURNING id, indices, origem, cliente_id""").fetchall()
+    for _, indices, origem, cliente in vencidos:
+        if origem == "armazem":
+            copia_do_armazem.devolver(armazem_de_eventos.admin(env), cliente, indices)
+        else:
+            devolver(indexer, indices)
         feito = True
     with provisao.banco_admin(env) as b:
         linha = b.execute("""UPDATE recuperacoes SET estado = 'em_andamento' WHERE id = (
                                SELECT id FROM recuperacoes WHERE estado = 'pendente' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-                             RETURNING id, cliente_id, de, ate, tipo, dias_de_consulta""").fetchone()
+                             RETURNING id, cliente_id, de, ate, tipo, dias_de_consulta, origem""").fetchone()
         if not linha:
             return feito
-        pedido, cliente, de, ate, tipo, dias = linha
+        pedido, cliente, de, ate, tipo, dias, origem = linha
         gerenciadores = [g[0] for g in b.execute("SELECT id FROM gerenciadores WHERE cliente_id = %s", (cliente,)).fetchall()]
         ja_de_volta = b.execute("SELECT coalesce(sum(cardinality(indices)), 0) FROM recuperacoes WHERE cliente_id = %s AND estado = 'pronto'", (cliente,)).fetchone()[0]
     estado, mensagem, voltaram = "pronto", None, []
+    if origem == "armazem":
+        adm = armazem_de_eventos.admin(env)
+        try:
+            voltaram = copia_do_armazem.recuperar(adm, copia_do_armazem.pasta(env), cliente, de, ate, tipo)
+            if not voltaram:
+                estado, mensagem = "falhou", "Nenhum dia desse período está na cópia fria fora do armazém."
+        except Exception:
+            log.exception("recuperação %s", pedido)
+            copia_do_armazem.devolver(adm, cliente, voltaram)
+            estado, mensagem, voltaram = "falhou", "Não foi possível recuperar. Veja o registro do serviço de organizações.", []
+        with provisao.banco_admin(env) as b:
+            b.execute("""UPDATE recuperacoes SET estado = %s, mensagem = %s, indices = %s, pronto_em = now(),
+                         expira_em = CASE WHEN %s = 'pronto' THEN now() + make_interval(days => dias_de_consulta) END WHERE id = %s""",
+                      (estado, mensagem, voltaram, estado, pedido))
+        return True
     try:
         if ja_de_volta + len(indices_do_periodo(gerenciadores, de, ate, tipo)) > MAXIMO_DE_INDICES_RECUPERADOS:
             estado, mensagem = "falhou", "Já há muitos dias de volta. Devolva algum antes de pedir mais."

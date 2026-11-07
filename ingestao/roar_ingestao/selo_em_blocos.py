@@ -137,14 +137,15 @@ def provar(leitor, banco, selo, segredo, guardados, identificador):
     from .selo import caminho_de_merkle
 
     p = {**_parametros(selo, segredo), "blocos": selo["blocos"], "i": identificador}
-    proprio = leitor.linhas(f"""SELECT hex({SAL}) AS s, {BRUTO} AS bruto FROM {banco}.{selo['fonte']}
+    # Pela tabela de leitura: o evento pode estar num dia trazido de volta da cópia fria.
+    proprio = leitor.linhas(f"""SELECT hex({SAL}) AS s, {BRUTO} AS bruto FROM {banco}.{selo['fonte']}_leitura
                                 WHERE {_filtro(selo)} AND id = toUUID({{i:String}}) LIMIT 1""", p)
     if not proprio:
         return None
     sal_da_folha = bytes.fromhex(proprio[0]["s"])
     bloco = bloco_do_sal(sal_da_folha, selo["blocos"])
     folhas = sorted(bytes.fromhex(l["f"]) for l in leitor.linhas(f"""
-        SELECT hex(SHA256(concat(char(2), {SAL}, toString(id), '\\n', {BRUTO}))) AS f FROM {banco}.{selo['fonte']}
+        SELECT hex(SHA256(concat(char(2), {SAL}, toString(id), '\\n', {BRUTO}))) AS f FROM {banco}.{selo['fonte']}_leitura
         WHERE {_filtro(selo)} AND reinterpretAsUInt64(reverse(substring({SAL}, 1, 8))) % {{blocos:UInt64}} = {{bloco:UInt64}}""", {**p, "bloco": bloco}))
     blocos = sorted(guardados)
     posicao = next((k for k, (b, _, _) in enumerate(blocos) if b == bloco), None)

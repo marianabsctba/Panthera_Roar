@@ -41,14 +41,17 @@ def documento(linha):
 
 
 COLUNAS_DO_DOCUMENTO = "dados, full_log, resumo_do_original, pais, cidade, regiao, operadora, asn, toString(ocorrido_em) AS quando"
+# A tela de logs e o pacote de perícia leem a tabela de sempre e os dias trazidos da cópia fria (logs_leitura). O dia que
+# voltou entra em qualquer período: foi pedido justamente para ser consultado, e costuma ser mais antigo que o período.
+DENTRO_DO_PERIODO = "ocorrido_em >= now64(3) - INTERVAL {dias} DAY OR _table = 'logs_recuperados'"
 
 
 def logs(armazem, banco, pedido, condicoes, exclusoes, dias, depois_de, tamanho, campos_de_log, primeira_pagina):
     """A mesma resposta de /api/logs. `depois_de` é o cursor [milissegundos, id] da página anterior."""
     t = Tradutor()
     filtro = t.onde({"bool": {"filter": [*condicoes, pedido.filtro], "must_not": exclusoes}})
-    onde = f"ocorrido_em >= now64(3) - INTERVAL {int(dias)} DAY AND ({filtro})"
-    tabela = f"{banco}.logs"
+    onde = f"({DENTRO_DO_PERIODO.format(dias=int(dias))}) AND ({filtro})"
+    tabela = f"{banco}.logs_leitura"
     total = int(armazem.linhas(f"SELECT count() AS n FROM (SELECT 1 FROM {tabela} WHERE {onde} LIMIT {LIMITE_DO_TOTAL + 1})", t.parametros)[0]["n"])
     contagem, linhas, linha_do_tempo, campos = None, [], [], {}
     if pedido.contar:
@@ -144,12 +147,12 @@ def ids_para_pericia(armazem, banco, pedido, condicoes, exclusoes, dias, selados
     gerenciador), em ordem; o total conta todos, para o pacote dizer quantos ficaram de fora."""
     t = Tradutor()
     filtro = t.onde({"bool": {"filter": [*condicoes, pedido.filtro], "must_not": exclusoes}})
-    onde = f"ocorrido_em >= now64(3) - INTERVAL {int(dias)} DAY AND ({filtro})"
-    total = int(armazem.linhas(f"SELECT count() AS n FROM {banco}.logs WHERE {onde}", t.parametros)[0]["n"])
+    onde = f"({DENTRO_DO_PERIODO.format(dias=int(dias))}) AND ({filtro})"
+    total = int(armazem.linhas(f"SELECT count() AS n FROM {banco}.logs_leitura WHERE {onde}", t.parametros)[0]["n"])
     if not selados_ate:
         return [], total
     cobertos = " OR ".join(f"(gerenciador = {t.p(g)} AND ocorrido_em < parseDateTime64BestEffort({t.p(ate.isoformat())}, 3))" for g, ate in selados_ate.items())
-    ids = [l["i"] for l in armazem.linhas(f"""SELECT toString(id) AS i FROM {banco}.logs WHERE {onde} AND ({cobertos})
+    ids = [l["i"] for l in armazem.linhas(f"""SELECT toString(id) AS i FROM {banco}.logs_leitura WHERE {onde} AND ({cobertos})
                                               ORDER BY ocorrido_em, id LIMIT {int(limite) + 1}""", t.parametros)]
     return ids, total
 
