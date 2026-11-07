@@ -1,7 +1,7 @@
 import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group, Indicator, Loader, Menu, ScrollArea, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
-  IconAlertTriangle, IconApi, IconBell, IconBriefcase, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
+  IconAlertTriangle, IconApi, IconBell, IconBriefcase, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconSparkles, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
   IconLayoutDashboard, IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconArrowsExchange, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -12,6 +12,7 @@ import { Entrada } from "./Entrada";
 import { trocarDeOrganizacao } from "./trocarDeOrganizacao";
 import { Ajuda } from "./telas/Ajuda";
 import { Armazenamento } from "./telas/Armazenamento";
+import { IaLocal } from "./telas/IaLocal";
 import { Ataques } from "./telas/Ataques";
 import { Ativos } from "./telas/Ativos";
 import { AVISOS_MUDARAM, Auditoria, nomeDaAcao } from "./telas/Auditoria";
@@ -74,6 +75,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { id: "usuarios", rotulo: "Usuários", icone: IconUsers, permissao: "gerir_usuarios", tela: Usuarios },
     { id: "integracao", rotulo: "API", icone: IconApi, tela: Api },
     { id: "armazenamento", rotulo: "Armazenamento", icone: IconDatabaseCog, modulo: "siem", permissao: "gerir_usuarios", tela: Armazenamento },
+    { id: "ia", rotulo: "IA local", icone: IconSparkles, modulo: "siem", permissao: "gerir_usuarios", tela: IaLocal },
     { id: "ajuda", rotulo: "Ajuda", icone: IconHelpCircle, tela: Ajuda },
   ] },
 ];

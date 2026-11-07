@@ -192,9 +192,10 @@ services:
     container_name: roar-ia
     profiles: ["ia"]
     environment:
-      # Um parecer por vez, e o modelo fica carregado meia hora depois do último.
+      # Um parecer por vez, e o modelo fica carregado só cinco minutos depois do último: ele ocupa uns 8 GB de memória, e
+      # numa máquina com o resto do Roar isso faz falta.
       OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_KEEP_ALIVE: "5m"
       # Atenção e cache em 8 bits ocupam menos memória da placa, e cabe mais do modelo nela.
       OLLAMA_FLASH_ATTENTION: "1"
       OLLAMA_KV_CACHE_TYPE: "q8_0"

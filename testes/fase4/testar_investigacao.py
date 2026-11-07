@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
+from psycopg.rows import dict_row
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
@@ -21,7 +22,7 @@ from psycopg.types.json import Jsonb
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "api"), str(RAIZ / "motor"), str(RAIZ / "ingestao"), str(RAIZ / "ueba")]
 
-from roar_api import parecer as parecer_da_ia  # noqa: E402
+from roar_api import ia_automatica, parecer as parecer_da_ia  # noqa: E402
 from roar_api.app import app  # noqa: E402
 from roar_ingestao import armazem  # noqa: E402
 
@@ -146,7 +147,7 @@ def main():
             registrar("sem armazém, as perguntas do banco continuam", s["armazem"] is None and {"origem", "entrou", "conta", "risco", "ativo"} <= {x["id"] for x in s["perguntas"]}
                       and not {"logs", "fluxos"} & {x["id"] for x in s["perguntas"]})
             do_gerenciador = evento(a, AGORA, "1002", "Problema", 2, [], agente="000", agente_nome="gerenciador")
-            registrar("alerta sem origem nem conta, do gerenciador, não inventa pergunta", http.get(f"/api/eventos/{do_gerenciador}/investigacao").json()["perguntas"] == [])
+            registrar("alerta sem origem nem conta, do gerenciador, só fala de si", [x["id"] for x in http.get(f"/api/eventos/{do_gerenciador}/investigacao").json()["perguntas"]] == ["alerta"])
             registrar("alerta que não existe", http.get("/api/eventos/999999999999/investigacao").status_code == 404)
             admin.execute("UPDATE clientes SET ler_do_armazem = true WHERE id = %s", (a["id"],))
 
@@ -189,6 +190,30 @@ def main():
                 print(f"  falso positivo: [{f['veredito']}, {f['confianca']}] em {f['segundos']} s: {f['resumo']}" + ("\n  avisos: " + " | ".join(f["avisos"]) if f["avisos"] else ""), flush=True)
                 registrar("no falso positivo, não vê ataque", f["veredito"] in ("benigno", "inconclusivo"), f["veredito"])
                 registrar("o pedido fica na auditoria", admin.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'pedir_parecer'", (a["id"],)).fetchone()[0] == 2)
+
+                print("\n== Ligar, desligar e parecer automático", flush=True)
+                situacao = http.get("/api/ia").json()
+                registrar("a tela mostra a IA no ar, com o modelo", situacao["instalada"] and situacao["no_ar"] and situacao["modelo"] == app.state.ia[1]
+                          and situacao["organizacao"] == {"ligada": True, "automatico_nivel": None}, str(situacao)[:200])
+                registrar("e conta os pareceres da semana", situacao["semana"]["pareceres"] == 2 and situacao["semana"]["automaticos"] == 0, str(situacao["semana"]))
+                registrar("desligar responde", http.put("/api/organizacao/ia", json={"ligada": False}).status_code == 204)
+                registrar("desligada, o botão some", http.get(f"/api/eventos/{alerta}/parecer").json()["disponivel"] is False)
+                registrar("e ninguém pede parecer", http.post(f"/api/eventos/{alerta}/parecer").status_code == 409)
+                registrar("nível fora da faixa é recusado", http.put("/api/organizacao/ia", json={"ligada": True, "automatico_nivel": 20}).status_code == 422)
+                registrar("ligar com automático a partir do nível 10", http.put("/api/organizacao/ia", json={"ligada": True, "automatico_nivel": 10}).status_code == 204
+                          and http.get("/api/ia").json()["organizacao"] == {"ligada": True, "automatico_nivel": 10})
+                registrar("a mudança fica na auditoria", admin.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'definir_ia'", (a["id"],)).fetchone()[0] == 2)
+                # O automático só vale para o que chega depois de ligar; o teste volta o começo para pegar os alertas montados.
+                admin.execute("UPDATE clientes SET ia_automatico_desde = %s WHERE id = %s", (AGORA - timedelta(hours=2), a["id"]))
+                with psycopg.connect(f"postgresql://roar_api:{ENV['ROAR_API_SENHA']}@127.0.0.1:5433/roar", autocommit=True, row_factory=dict_row) as api:
+                    dados = ia_automatica.volta(api, app.state.ia, None)
+                automaticos = admin.execute("SELECT evento_id, pedido_por_nome FROM pareceres WHERE cliente_id = %s AND pedido_por IS NULL", (a["id"],)).fetchall()
+                registrar("o automático deu parecer no alerta grave que não tinha", dados >= 1 and root in [x[0] for x in automaticos]
+                          and all(x[1] == "Parecer automático" for x in automaticos), str(automaticos))
+                registrar("e não repetiu o que já tinha parecer", alerta not in [x[0] for x in automaticos])
+                with psycopg.connect(f"postgresql://roar_api:{ENV['ROAR_API_SENHA']}@127.0.0.1:5433/roar", autocommit=True, row_factory=dict_row) as api:
+                    registrar("na volta seguinte, nada de novo", ia_automatica.volta(api, app.state.ia, None) == 0)
+                http.put("/api/organizacao/ia", json={"ligada": True})
             else:
                 registrar("IA local ligada nesta instalação (IA_MODELO no .env)", False)
 
@@ -202,6 +227,7 @@ def main():
             if app.state.ia:
                 m = http.get(f"/api/eventos/{alerta}/parecer")
                 registrar("o parecer também sai mascarado", m.json()["parecer"] and "joao" not in m.text and ATACANTE not in m.text, m.text[:300])
+            registrar("quem só analisa não liga nem desliga a IA", http.put("/api/organizacao/ia", json={"ligada": False}).status_code == 403)
             http.post("/api/sair")
             http.cookies.clear()
             http.post("/api/entrar", json=b["acessos"]["administrador"])

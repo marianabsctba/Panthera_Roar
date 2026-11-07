@@ -4,8 +4,9 @@ Cada pergunta roda uma consulta fixa nos alertas, no risco das pessoas, nos ativ
 nos logs e nos fluxos de rede. A resposta vem com o tom (agrava, atenua ou só informa) e os alertas que a provam, para
 o analista conferir com um clique. A janela é de 24 horas antes e depois do alerta.
 
-Sem a pergunta certa para o alerta (sem origem, sem conta, alerta do próprio gerenciador), ela não aparece: melhor
-nenhuma resposta que uma vazia. Uma IA que vier depois lê este mesmo pacote, e só pode citar o que estiver nele.
+A primeira pergunta é sobre o próprio alerta: quantos eventos ele juntou, em quanto tempo, a técnica e os arquivos. As
+outras só aparecem quando cabem (sem origem, sem conta, alerta do próprio gerenciador): melhor nenhuma resposta que uma
+vazia. Uma IA que vier depois lê este mesmo pacote, e só pode citar o que estiver nele.
 """
 
 import ipaddress
@@ -21,6 +22,10 @@ CITADOS = 5
 GRUPOS_SUCESSO = {"authentication_success"}
 GRUPOS_FALHA = {"authentication_failed", "authentication_failures", "invalid_login"}
 NIVEL_GRAVE = 7
+# Instalação e atualização de pacotes (Debian, Red Hat, Windows): trocam muitos arquivos de uma vez.
+GRUPOS_PACOTE = {"dpkg", "yum", "rpm", "apt", "msi", "windows_update"}
+# A partir de quantas contas tentadas pelo mesmo endereço o padrão é de pulverização de senhas.
+CONTAS_DE_PULVERIZACAO = 5
 # Volume que sai da rede para um endereço de fora a partir do qual vale olhar: 50 MB.
 SAIDA_GRANDE = 50 * 1024 * 1024
 AGENTE_DO_GERENCIADOR = "000"
@@ -73,6 +78,60 @@ def _alertas(con, coluna, valor, alerta, extra=""):
         (valor, alerta["ocorrido_em"] - JANELA, alerta["ocorrido_em"] + JANELA, alerta["id"])).fetchall()
 
 
+def _enderecos_conhecidos(con, usuario, antes):
+    """Os endereços de onde a conta já entrava pelo menos um dia antes do alerta, pelo risco das pessoas."""
+    chave = chave_do_usuario(usuario) if usuario else None
+    if not chave:
+        return set()
+    return {l["valor"] for l in con.execute(
+        """SELECT v.valor FROM vistos v JOIN entidades e ON e.id = v.entidade_id
+           WHERE e.tipo = 'usuario' AND e.chave = %s AND v.dimensao = 'ip' AND v.primeira_vez < %s""",
+        (chave, antes - timedelta(days=1))).fetchall()}
+
+
+def do_alerta(con, alerta):
+    """O que o próprio alerta juntou: quantos eventos, em quanto tempo, a técnica de ataque e os arquivos mexidos."""
+    if alerta["grupo_id"]:
+        irmaos = con.execute(
+            """SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, agente_nome, host(ip_origem) AS ip, usuario, bruto #>> '{syscheck,path}' AS arquivo
+               FROM eventos WHERE grupo_id = %s ORDER BY ocorrido_em LIMIT 2000""", (alerta["grupo_id"],)).fetchall()
+        como = "Os eventos que o Roar juntou neste mesmo alerta, na Fila."
+    else:
+        irmaos = con.execute(
+            """SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, agente_nome, host(ip_origem) AS ip, usuario, bruto #>> '{syscheck,path}' AS arquivo
+               FROM eventos WHERE regra_id = %s AND gerenciador_id = %s AND agente_id = %s AND ocorrido_em BETWEEN %s AND %s
+               ORDER BY ocorrido_em LIMIT 2000""",
+            (alerta["regra_id"], alerta["gerenciador_id"], alerta["agente_id"], alerta["ocorrido_em"] - timedelta(hours=1), alerta["ocorrido_em"] + timedelta(hours=1))).fetchall()
+        como = "Eventos da mesma regra no mesmo ativo, uma hora antes e depois."
+    if not irmaos:
+        return []
+    minutos = round((irmaos[-1]["ocorrido_em"] - irmaos[0]["ocorrido_em"]).total_seconds() / 60)
+    duracao = "em menos de um minuto" if minutos < 1 else f"em {_plural(minutos, 'minuto', 'minutos')}"
+    partes = [f"{_plural(len(irmaos), 'evento', 'eventos')}" + (f" {duracao}" if len(irmaos) > 1 else ""),
+              f"nível {alerta['nivel']}"]
+    if alerta["mitre"]:
+        partes.append(f"técnica {', '.join(alerta['mitre'][:3])}")
+    arquivos = sorted({i["arquivo"] for i in irmaos if i["arquivo"]})
+    resposta = (alerta["regra_descricao"] or alerta["regra_id"]).rstrip(". ") + ": " + ", ".join(partes) + "."
+    citados = list(irmaos)
+    atualizacao = None
+    if arquivos:
+        resposta += f" {_plural(len(arquivos), 'arquivo mexido', 'arquivos diferentes mexidos')}, como {', '.join(arquivos[:3])}."
+        # Arquivos trocados logo depois de instalar ou atualizar um pacote no mesmo ativo: é o que a atualização faz.
+        atualizacao = con.execute(
+            """SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, agente_nome, host(ip_origem) AS ip, usuario FROM eventos
+               WHERE gerenciador_id = %s AND agente_id = %s AND regra_grupos && %s AND ocorrido_em BETWEEN %s AND %s
+               ORDER BY ocorrido_em DESC LIMIT 1""",
+            (alerta["gerenciador_id"], alerta["agente_id"], list(GRUPOS_PACOTE), irmaos[0]["ocorrido_em"] - timedelta(hours=1),
+             irmaos[-1]["ocorrido_em"])).fetchone()
+        if atualizacao:
+            resposta += (f" Pouco antes, o ativo instalou ou atualizou um pacote ({(atualizacao['regra_descricao'] or atualizacao['regra_id']).rstrip('. ')}),"
+                         " o que costuma trocar muitos arquivos de uma vez.")
+            citados.append(atualizacao)
+    tom = "informa" if atualizacao and alerta["nivel"] < 12 else "agrava" if alerta["nivel"] >= 12 or len(arquivos) >= 20 else "informa"
+    return [_pergunta("alerta", "O que o próprio alerta mostra?", resposta, tom, como, _citar(citados))]
+
+
 def da_origem(con, alerta):
     ip = alerta["ip"]
     vizinhos = _alertas(con, "ip_origem", ip, alerta)
@@ -88,6 +147,11 @@ def da_origem(con, alerta):
         if contas:
             partes.append(f"contra {_plural(len(contas), 'conta', 'contas')}")
         resposta = " ".join(partes) + f". O mais comum: {regras.most_common(1)[0][0]} ({regras.most_common(1)[0][1]})."
+        falhas = [a for a in vizinhos if set(a["regra_grupos"]) & GRUPOS_FALHA]
+        contas_com_falha = {a["usuario"] for a in falhas if a["usuario"]}
+        if len(contas_com_falha) >= CONTAS_DE_PULVERIZACAO:
+            resposta += (f" O mesmo endereço errou a senha em {len(contas_com_falha)} contas diferentes: é o padrão de quem testa uma"
+                         " senha em muitas contas (pulverização de senhas).")
         if len(vizinhos) >= LIMITE_DE_ALERTAS:
             resposta = "Mais de " + resposta[0].lower() + resposta[1:]
         espalhado = len(ativos) > 1 or len(contas) > 2 or any(a["nivel"] >= NIVEL_GRAVE for a in vizinhos)
@@ -99,9 +163,15 @@ def da_origem(con, alerta):
     como = f"Logins com sucesso vindos de {ip} na mesma janela."
     if falhou and depois:
         contas = sorted({a["usuario"] for a in depois if a["usuario"]})
-        resposta = (f"Sim. Depois das falhas, {_plural(len(depois), 'login deu certo', 'logins deram certo')} desse endereço"
-                    + (f", na conta {', '.join(contas[:3])}" if contas else "") + ".")
-        perguntas.append(_pergunta("entrou", "Alguém conseguiu entrar a partir desse endereço?", resposta, "agrava", como, _citar(depois)))
+        # A própria pessoa errando a senha e acertando depois, da máquina de sempre, é o caso mais comum de todos.
+        de_sempre = alerta["usuario"] and contas == [alerta["usuario"]] and ip in _enderecos_conhecidos(con, alerta["usuario"], alerta["ocorrido_em"])
+        if de_sempre:
+            resposta = (f"Sim, a própria conta {contas[0]}, desse mesmo endereço, que ela já usava antes: "
+                        "parece alguém errando a senha e acertando depois.")
+        else:
+            resposta = (f"Sim. Depois das falhas, {_plural(len(depois), 'login deu certo', 'logins deram certo')} desse endereço"
+                        + (f", na conta {', '.join(contas[:3])}" if contas else "") + ".")
+        perguntas.append(_pergunta("entrou", "Alguém conseguiu entrar a partir desse endereço?", resposta, "informa" if de_sempre else "agrava", como, _citar(depois)))
     elif falhou:
         perguntas.append(_pergunta("entrou", "Alguém conseguiu entrar a partir desse endereço?",
                                    "Não há login com sucesso desse endereço depois das falhas.", "atenua", como))
@@ -126,7 +196,13 @@ def da_conta(con, alerta):
         if len(paises) > 1:
             partes.append(f"em {len(paises)} países ({', '.join(sorted(paises)[:4])})")
         resposta = " ".join(partes) + "." + (f" {_plural(len(falhas), 'é login recusado', 'são logins recusados')}." if falhas else "")
-        tom = "agrava" if len(paises) > 1 or len(falhas) >= 5 or any(a["nivel"] >= NIVEL_GRAVE for a in vizinhos) else "informa"
+        conhecidos = _enderecos_conhecidos(con, usuario, alerta["ocorrido_em"])
+        # Muitas falhas só dos endereços de sempre da conta: senha vencida num serviço, não alguém de fora tentando.
+        falhas_de_fora = [a for a in falhas if a["ip"] not in conhecidos]
+        if falhas and not falhas_de_fora and conhecidos:
+            resposta += " Todas as falhas vieram de endereços que a conta já usava antes."
+        graves = [a for a in vizinhos if a["nivel"] >= NIVEL_GRAVE and not (set(a["regra_grupos"]) & GRUPOS_FALHA and a["ip"] in conhecidos)]
+        tom = "agrava" if len(paises) > 1 or len(falhas_de_fora) >= 5 or graves else "informa"
         perguntas.append(_pergunta("conta", "O que mais aconteceu com essa conta?", resposta, tom, como, _citar(vizinhos)))
     else:
         perguntas.append(_pergunta("conta", "O que mais aconteceu com essa conta?", "Nenhum outro alerta dessa conta nas 24 horas antes e depois.", "informa", como))
@@ -174,8 +250,11 @@ def do_ativo(con, alerta):
     graves = con.execute(
         f"""SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, agente_nome, host(ip_origem) AS ip, usuario FROM eventos
             WHERE gerenciador_id = %s AND agente_id = %s AND nivel >= {NIVEL_GRAVE} AND ocorrido_em BETWEEN %s AND %s AND id <> %s
+              AND regra_id <> %s
             ORDER BY ocorrido_em LIMIT {LIMITE_DE_ALERTAS}""",
-        (alerta["gerenciador_id"], alerta["agente_id"], alerta["ocorrido_em"] - JANELA, alerta["ocorrido_em"] + JANELA, alerta["id"])).fetchall()
+        (alerta["gerenciador_id"], alerta["agente_id"], alerta["ocorrido_em"] - JANELA, alerta["ocorrido_em"] + JANELA, alerta["id"],
+         # A mesma regra no mesmo ativo é o próprio alerta repetido, e já está na pergunta do alerta.
+         alerta["regra_id"])).fetchall()
     critico = bool(ativo) and ativo["criticidade"] in ("alta", "critica")
     partes = []
     if graves:
@@ -219,18 +298,30 @@ def do_armazem(armazem, banco, alerta):
     if not pares:
         perguntas.append(_pergunta("fluxos", "Esse endereço trocou tráfego com a rede?", "Nenhum fluxo de rede com esse endereço.", "atenua", como))
         return perguntas
+    def dele(p):
+        return p["dele"] in (1, "1", True)
+
     internos = {p["par"] for p in pares if _interno(p["par"])}
-    recebido = sum(int(p["bytes"]) for p in pares if p["dele"] in (1, "1", True))
-    enviado = sum(int(p["bytes"]) for p in pares if p["dele"] not in (1, "1", True))
+    externos = {p["par"] for p in pares if not _interno(p["par"])}
+    mandou = sum(int(p["bytes"]) for p in pares if dele(p))
+    recebeu = sum(int(p["bytes"]) for p in pares if not dele(p))
     # As portas que o endereço procurou: nas respostas, a porta de destino é a dele, que não diz nada.
     portas = Counter()
     for p in pares:
-        if p["dele"] in (1, "1", True):
+        if dele(p):
             portas.update(int(x) for x in p["portas"])
-    resposta = (f"Sim: {sum(int(p['fluxos']) for p in pares)} fluxos com {_plural(len(internos), 'máquina da rede', 'máquinas da rede')}. "
-                f"Esse endereço mandou {_bytes(recebido)} e recebeu {_bytes(enviado)}"
-                + (f", mais na porta {portas.most_common(1)[0][0]}" if portas else "") + ".")
-    tom = "agrava" if (not _interno(ip) and enviado >= SAIDA_GRANDE) or len(internos) > 5 else "informa"
+    porta = f", mais na porta {portas.most_common(1)[0][0]}" if portas else ""
+    fluxos = sum(int(p["fluxos"]) for p in pares)
+    if _interno(ip):
+        # Máquina da rede: o que pesa é quanto ela mandou para fora.
+        para_fora = sum(int(p["bytes"]) for p in pares if dele(p) and not _interno(p["par"]))
+        resposta = (f"Sim: {fluxos} fluxos, com {_plural(len(externos), 'endereço de fora', 'endereços de fora')} e "
+                    f"{_plural(len(internos), 'máquina da rede', 'máquinas da rede')}. Mandou {_bytes(para_fora)} para fora{porta}.")
+        tom = "agrava" if para_fora >= SAIDA_GRANDE else "informa"
+    else:
+        resposta = (f"Sim: {fluxos} fluxos com {_plural(len(internos), 'máquina da rede', 'máquinas da rede')}. "
+                    f"Esse endereço mandou {_bytes(mandou)} e recebeu {_bytes(recebeu)}{porta}.")
+        tom = "agrava" if recebeu >= SAIDA_GRANDE or len(internos) > 5 else "informa"
     perguntas.append(_pergunta("fluxos", "Esse endereço trocou tráfego com a rede?", resposta, tom, como))
     return perguntas
 
@@ -238,11 +329,11 @@ def do_armazem(armazem, banco, alerta):
 def investigar(con, identificador, armazem=None, banco=None):
     """O pacote de provas do alerta, ou None se ele não existe para esta organização."""
     alerta = con.execute(
-        """SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, regra_grupos, gerenciador_id, agente_id, agente_nome,
+        """SELECT id, ocorrido_em, nivel, regra_id, regra_descricao, regra_grupos, mitre, grupo_id, gerenciador_id, agente_id, agente_nome,
                   host(ip_origem) AS ip, usuario FROM eventos WHERE id = %s""", (identificador,)).fetchone()
     if not alerta:
         return None
-    perguntas = []
+    perguntas = do_alerta(con, alerta)
     if alerta["ip"]:
         perguntas += da_origem(con, alerta)
     if alerta["usuario"]:

@@ -1819,8 +1819,74 @@ def investigacao_do_evento(identificador: int, request: Request, sessao=Depends(
 IA_OCUPADA = threading.Lock()
 
 
+def _ia_da_organizacao(request, con):
+    """(endereço, modelo) da IA local para a organização da sessão, ou None quando a instalação não tem IA ou a organização
+    a desligou. O modelo escolhido na tela vale sobre o do .env."""
+    ia = request.app.state.ia
+    if ia is None or not con.execute("SELECT ia_ligada FROM clientes").fetchone()["ia_ligada"]:
+        return None
+    escolhido = con.execute("SELECT modelo FROM ia_instalacao").fetchone()
+    return ia[0], (escolhido and escolhido["modelo"]) or ia[1]
+
+
 def _parecer_da_tela(linha):
     return {k: linha[k] for k in ("id", "veredito", "confianca", "resumo", "motivos", "proximos_passos", "avisos", "segundos", "modelo", "criado_em", "pedido_por_nome")}
+
+
+class ConfiguracaoDaIa(BaseModel):
+    ligada: bool
+    # A partir de que nível a IA dá o parecer sozinha; None, só quando alguém pede.
+    automatico_nivel: int | None = Field(default=None, ge=3, le=15)
+
+
+class ModeloDaIa(BaseModel):
+    modelo: str = Field(min_length=1, max_length=120)
+
+
+@app.get("/api/ia")
+def ver_ia(request: Request, sessao=Depends(exige(permissoes.VER))):
+    """A IA local: se a instalação tem, se está no ar, o modelo, quanto dele cabe na placa de vídeo e o que a organização
+    escolheu. Os modelos que dá para escolher só aparecem para quem administra a instalação."""
+    ia = request.app.state.ia
+    with do_cliente(request, sessao) as con:
+        org = con.execute("SELECT ia_ligada, ia_automatico_nivel FROM clientes").fetchone()
+        escolhido = con.execute("SELECT modelo FROM ia_instalacao").fetchone()
+        semana = con.execute("""SELECT count(*) AS total, count(*) FILTER (WHERE pedido_por IS NULL) AS automaticos,
+                                       round(avg(segundos)::numeric, 1) AS segundos FROM pareceres WHERE criado_em >= now() - interval '7 days'""").fetchone()
+        plataforma = con.execute("SELECT roar_e_plataforma(%s) AS p", (sessao["usuario_id"],)).fetchone()["p"]
+    resposta = {"instalada": ia is not None, "organizacao": {"ligada": org["ia_ligada"], "automatico_nivel": org["ia_automatico_nivel"]},
+                "semana": {"pareceres": semana["total"], "automaticos": semana["automaticos"], "segundos_medios": float(semana["segundos"]) if semana["segundos"] else None},
+                "plataforma": plataforma}
+    if ia is None:
+        return resposta
+    modelo = (escolhido and escolhido["modelo"]) or ia[1]
+    situacao = parecer_da_ia.situacao(ia[0], modelo)
+    resposta.update({"modelo": modelo, "no_ar": situacao["no_ar"], "na_placa": situacao["na_placa"]})
+    if plataforma:
+        resposta["modelos"] = situacao["modelos"]
+    return resposta
+
+
+@app.put("/api/organizacao/ia", status_code=204)
+def definir_ia(dados: ConfiguracaoDaIa, request: Request, sessao=Depends(exige(permissoes.GERIR_USUARIOS))):
+    """Liga ou desliga a IA para a organização, e o parecer automático. Desligada, o botão some e nada é lido."""
+    with do_cliente(request, sessao) as con:
+        con.execute("SELECT roar_definir_ia(%s, %s::smallint)", (dados.ligada, dados.automatico_nivel if dados.ligada else None))
+        alvo = "desligada" if not dados.ligada else f"ligada, automática a partir do nível {dados.automatico_nivel}" if dados.automatico_nivel else "ligada, só quando pedirem"
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'definir_ia', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], alvo))
+
+
+@app.put("/api/ia/modelo", status_code=204)
+def trocar_modelo_da_ia(dados: ModeloDaIa, request: Request, sessao=Depends(exige_plataforma)):
+    """O modelo da instalação inteira, entre os que o Ollama já baixou. Baixar um novo é feito no servidor."""
+    ia = request.app.state.ia
+    if ia is None:
+        raise HTTPException(status_code=409, detail="A IA local não está ligada nesta instalação.")
+    if dados.modelo not in parecer_da_ia.situacao(ia[0], dados.modelo)["modelos"]:
+        raise HTTPException(status_code=422, detail="Este modelo não está baixado no servidor.")
+    with request.app.state.banco.connection() as con:
+        con.execute("UPDATE ia_instalacao SET modelo = %s, alterado_em = now(), alterado_por = %s", (dados.modelo, sessao["usuario_id"]))
 
 
 @app.get("/api/eventos/{identificador}/parecer")
@@ -1833,7 +1899,7 @@ def ver_parecer(identificador: int, request: Request, sessao=Depends(exige(permi
             raise HTTPException(status_code=404)
         linha = con.execute(
             "SELECT * FROM pareceres WHERE evento_id = %s ORDER BY criado_em DESC LIMIT 1", (identificador,)).fetchone()
-    ia = request.app.state.ia
+        ia = _ia_da_organizacao(request, con)
     # A conta e o endereço do alerta vão junto para a máscara achar o nome dentro dos textos do parecer.
     return {"disponivel": ia is not None, "modelo": ia[1] if ia else None, "alerta": alerta, "parecer": _parecer_da_tela(linha) if linha else None}
 
@@ -1842,10 +1908,10 @@ def ver_parecer(identificador: int, request: Request, sessao=Depends(exige(permi
 def pedir_parecer(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
     """A IA local lê o pacote da investigação e dá o parecer. Leva de segundos a um minuto, conforme a máquina."""
     _inteiro_valido(identificador)
-    ia = request.app.state.ia
-    if ia is None:
-        raise HTTPException(status_code=409, detail="A IA local não está ligada nesta instalação.")
     with do_cliente(request, sessao) as con:
+        ia = _ia_da_organizacao(request, con)
+        if ia is None:
+            raise HTTPException(status_code=409, detail="A IA local está desligada para esta organização ou nesta instalação.")
         onde = _armazem_da_organizacao(request, con, sessao)
         pacote = investigacao.investigar(con, identificador, onde.get("armazem"), onde.get("banco"))
     if pacote is None:

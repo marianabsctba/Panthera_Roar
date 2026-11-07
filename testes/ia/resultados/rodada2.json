@@ -1,0 +1,334 @@
+{
+ "resumo": {
+  "modelo": "qwen2.5:7b",
+  "quando": "2026-11-07T17:07:34+00:00",
+  "casos": 24,
+  "acertos": 23,
+  "ataques_reconhecidos": "12 de 12",
+  "normais_reconhecidos": "11 de 12",
+  "ataques_deixados_passar": [],
+  "alarmes_falsos": [],
+  "inconclusivos": [
+   "errou_a_senha_uma_vez"
+  ],
+  "segundos_medios": 19.1,
+  "com_aviso": 13
+ },
+ "casos": [
+  {
+   "caso": "forca_bruta_com_entrada_e_root",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.1,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica uma força bruta bem-sucedida, seguida de um acesso elevado de privilégios, com vários sinais de comportamento suspeito.",
+   "agrava": 5
+  },
+  {
+   "caso": "forca_bruta_que_deu_certo",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 21.6,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica uma força bruta bem-sucedida, com múltiplos tentativas de login recusadas e um login bem-sucedido, todos vindos de um endereço inesperado para a conta. Isso sugere um ataque cibernético.",
+   "agrava": 3
+  },
+  {
+   "caso": "pulverizacao_de_senhas",
+   "esperado": "ataque",
+   "veredito": "suspeito",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.1,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O alerta indica várias tentativas de logon recusadas de origens diferentes, mas não há login com sucesso. O endereço tem histórico de atividade suspeita, mas não há evidências claras de que a conta foi comprometida.",
+   "agrava": 1
+  },
+  {
+   "caso": "endereco_novo_e_privilegio",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.1,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica que a conta diego, que normalmente vem de endereços diferentes, conseguiu se tornar root em srv-erp, e há sinais de que o acesso foi recente e suspeito. Além disso, um arquivo do sistema foi alterado, o que sugere atividade maliciosa.",
+   "agrava": 3
+  },
+  {
+   "caso": "okta_mfa_negado_e_entrada",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.7,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O alerta indica várias tentativas recusadas seguidas por um login bem-sucedido, com atividade suspeita vinda do mesmo endereço. As respostas agravam a situação, mostrando um padrão de comportamento malicioso.",
+   "agrava": 4
+  },
+  {
+   "caso": "workspace_admin_apos_login_suspeito",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 19.9,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica uma mudança de administração associada a uma conta que recentemente teve vários alertas de risco, o que sugere atividade maliciosa.",
+   "agrava": 3
+  },
+  {
+   "caso": "malware_com_varios_alertas_graves",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.8,
+   "motivos": 2,
+   "avisos": [
+    "2 citações inventadas foram tiradas: a IA citou algo que não estava no pacote."
+   ],
+   "resumo": "O ativo estacao-rh está sendo atacado, com múltiplos alertas indicando atividades suspeitas e potencialmente maliciosas.",
+   "agrava": 2
+  },
+  {
+   "caso": "varredura_de_fora_em_ssh_e_rdp",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 21.0,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O endereço está realizando uma força bruta contra o servidor de banco de dados, com várias tentativas de login recusadas. Não há sinais de sucesso, mas a atividade é suspeita.",
+   "agrava": 2
+  },
+  {
+   "caso": "saida_grande_para_fora",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 21.8,
+   "motivos": 1,
+   "avisos": [
+    "2 motivos repetiam as provas de outro e saíram."
+   ],
+   "resumo": "O alerta indica uma ação maliciosa, com o endereço conhecido do gustavo acessando o ativo estacao-financeiro e copiando um arquivo sensível. Há múltiplas provas de atividade suspeita, incluindo contato com endereços de indicadores de ameaça e um risco atual elevado.",
+   "agrava": 4
+  },
+  {
+   "caso": "conta_criada_e_posta_em_admins",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.5,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta indica que a conta helena foi posta no grupo Domain Admins em srv-dc, com atividades recentes de criação de contas e alterações de permissões, sugerindo um ataque.",
+   "agrava": 5
+  },
+  {
+   "caso": "viagem_impossivel",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 20.0,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta indica uma viagem impossível, comprovada por um login com sucesso vindo de um endereço inusitado para essa conta. Há sinais de comportamento suspeito recente e o endereço é novo para a conta. Isso sugere uma tentativa de acesso não autorizado.",
+   "agrava": 1
+  },
+  {
+   "caso": "movimento_lateral",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 20.9,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta indica que a conta julia foi elevada a root com sudo a partir do 10.11.0.99, acompanhado de múltiplos logins bem-sucedidos. Essa atividade é inusual para a conta e o endereço envolvidos, sugerindo uma ação maliciosa.",
+   "agrava": 3
+  },
+  {
+   "caso": "errou_a_senha_uma_vez",
+   "esperado": "normal",
+   "veredito": "inconclusivo",
+   "confianca": "baixa",
+   "acertou": false,
+   "segundos": 31.9,
+   "motivos": 0,
+   "avisos": [
+    "4 citações inventadas foram tiradas: a IA citou algo que não estava no pacote.",
+    "A IA disse benigno sem nenhum motivo com prova do pacote: o parecer ficou inconclusivo."
+   ],
+   "resumo": "O alerta é benigno pois o endereço e a conta são consistentes com o comportamento normal, sem sinais de atividade suspeita.",
+   "agrava": 0
+  },
+  {
+   "caso": "errou_tres_vezes_e_entrou",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.5,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta mostra tentativas de login recusadas de uma conta que costuma vir desse endereço, com sucesso posterior, mas sem sinais de comportamento suspeito.",
+   "agrava": 0
+  },
+  {
+   "caso": "monitoramento_com_senha_vencida",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 19.4,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica muitos logins recusados de um endereço conhecido e usado pela conta, sem sinais de atividade suspeita ou sucesso em logins. O comportamento é consistente com o histórico normal da conta.",
+   "agrava": 0
+  },
+  {
+   "caso": "admin_entrou_do_lugar_de_sempre",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 19.3,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O alerta indica que a conta marcos do 10.23.0.2 conseguiu se tornar root com sudo em srv-web2, mas as respostas das perguntas mostram que isso é comum e não há sinais de comportamento suspeito recentemente.",
+   "agrava": 0
+  },
+  {
+   "caso": "okta_errou_o_codigo_uma_vez",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 13.2,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta é benigno pois a conta e o endereço são consistentes com o comportamento normal da conta, sem sinais de atividade suspeita.",
+   "agrava": 0
+  },
+  {
+   "caso": "workspace_compartilhou_com_link",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.2,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta indica que o arquivo do Drive foi aberto para fora, mas as respostas mostram que a conta e o endereço são comuns e não apresentam sinais de atividade suspeita.",
+   "agrava": 0
+  },
+  {
+   "caso": "atualizacao_de_pacotes",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.4,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O alerta indica a instalação de um novo pacote em srv-app, mas não há outros sinais de atividade suspeita. A configuração segura do ativo e a ausência de outros alertas graves também apóiam essa conclusão.",
+   "agrava": 0
+  },
+  {
+   "caso": "copia_noturna_para_nuvem",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.3,
+   "motivos": 1,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta é benigno pois a conta e o endereço são consistentes com o comportamento normal, sem sinais de atividade suspeita.",
+   "agrava": 1
+  },
+  {
+   "caso": "varredura_interna_autorizada_sem_entrada",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.6,
+   "motivos": 1,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "A varredura de portas detectada parece ser um evento normal, já que o endereço envolvido não apresentou atividades suspeitas antes ou depois e o ativo envolvido tem uma configuração segura.",
+   "agrava": 0
+  },
+  {
+   "caso": "uma_falha_de_fora_sem_mais_nada",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 19.4,
+   "motivos": 1,
+   "avisos": [
+    "2 motivos repetiam as provas de outro e saíram."
+   ],
+   "resumo": "O alerta indica tentativa de login com usuário inexistente, mas não há atividade suspeita de endereço ou conta envolvidas. O ativo não registra outras atividades e a configuração é segura.",
+   "agrava": 0
+  },
+  {
+   "caso": "troca_de_senha_pelo_proprio",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 20.8,
+   "motivos": 2,
+   "avisos": [
+    "2 motivos repetiam as provas de outro e saíram."
+   ],
+   "resumo": "O alerta indica uma troca de senha, mas as respostas mostram que essa conta e endereço são normais, sem sinais de atividade suspeita.",
+   "agrava": 0
+  },
+  {
+   "caso": "login_fora_do_horario_do_lugar_de_sempre",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.5,
+   "motivos": 2,
+   "avisos": [
+    "1 motivo repetia as provas de outro e saiu."
+   ],
+   "resumo": "O alerta indica um horário fora do padrão, mas as respostas mostram que essa conta e endereço são normais, sem sinais de atividade suspeita.",
+   "agrava": 0
+  }
+ ]
+}

@@ -131,6 +131,8 @@ unidade biblioteca roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.bibli
 unidade selo roar-svc servicos.env ingestao "$PY -u -m roar_ingestao.selo" "ReadWritePaths=$DESTINO/selo"
 unidade ueba roar-svc servicos.env ueba "$PY -u -m roar_ueba.motor" "Environment=PYTHONPATH=$APP/ueba:$APP/ingestao"
 unidade disparo roar-svc servicos.env motor "$PY -u -m roar_motor.disparo"
+# O parecer automático da IA local lê como a API: mesmo usuário, mesma senha de banco, mesmo .env.
+unidade ia-automatica roar-api api.env api "$PY -u -m roar_api.ia_automatica" "Environment=PYTHONPATH=$APP/api:$APP/ueba:$APP/ingestao"
 
 cat >/etc/systemd/system/roar-backup.service <<UNIDADE
 [Unit]
@@ -161,9 +163,9 @@ cp -a "$RAIZ/infra/wazuh/gerenciador" "$APP/infra/wazuh/gerenciador"
 cp "$RAIZ/infra/backup.sh" "$RAIZ/infra/restaurar.sh" "$RAIZ/infra/conferir.sh" "$APP/infra/"
 
 case "$PERFIL" in
-  vulnerabilidades) SERVICOS="api varredura cves organizacoes avisos superficie"; DESLIGAR="ingestao fontes parsers buscas selo ueba disparo inteligencia biblioteca portao" ;;
-  siem) SERVICOS="api ingestao fontes parsers buscas avisos cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="varredura superficie" ;;
-  *) SERVICOS="api ingestao fontes parsers buscas avisos varredura superficie cves selo ueba disparo inteligencia biblioteca organizacoes portao"; DESLIGAR="" ;;
+  vulnerabilidades) SERVICOS="api varredura cves organizacoes avisos superficie"; DESLIGAR="ingestao fontes parsers buscas selo ueba disparo inteligencia biblioteca portao ia-automatica" ;;
+  siem) SERVICOS="api ingestao fontes parsers buscas avisos cves selo ueba disparo inteligencia biblioteca organizacoes portao ia-automatica"; DESLIGAR="varredura superficie" ;;
+  *) SERVICOS="api ingestao fontes parsers buscas avisos varredura superficie cves selo ueba disparo inteligencia biblioteca organizacoes portao ia-automatica"; DESLIGAR="" ;;
 esac
 systemctl daemon-reload
 for nome in $DESLIGAR; do systemctl disable --now --quiet "roar-$nome" 2>/dev/null || true; done

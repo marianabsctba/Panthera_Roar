@@ -1,0 +1,432 @@
+{
+ "resumo": {
+  "modelo": "qwen2.5:7b",
+  "quando": "2026-11-07T17:28:33+00:00",
+  "casos": 26,
+  "acertos": 25,
+  "ataques_reconhecidos": "13 de 13",
+  "normais_reconhecidos": "12 de 13",
+  "ataques_deixados_passar": [],
+  "alarmes_falsos": [
+   "atualizacao_do_sistema_troca_arquivos"
+  ],
+  "inconclusivos": [],
+  "segundos_medios": 17.1,
+  "com_aviso": 1,
+  "passos_genericos_tirados": 18,
+  "passos_que_ficaram": 32
+ },
+ "casos": [
+  {
+   "caso": "forca_bruta_com_entrada_e_root",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 24.2,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O ataque foi bem-sucedido, com o usuário bruno logando com sucesso em srv-web a partir do endereço 45.33.20.7. Além disso, o usuário conseguiu se tornar root com sudo, o que indica ação maliciosa.",
+   "agrava": 5,
+   "passos": [
+    "Bloquear o endereço 45.33.20.7.",
+    "Examinar o servidor srv-web para identificar quaisquer alterações não autorizadas.",
+    "Examinar a conta bruno para identificar se há atividades suspeitas."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "forca_bruta_que_deu_certo",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.1,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O endereço 103.44.8.9 realizou uma força bruta contra a conta carla no servidor srv-vpn, resultando em um login bem-sucedido. Os sinais de atividade suspeita incluem 13 tentativas de login recusadas e um login bem-sucedido.",
+   "agrava": 3,
+   "passos": [
+    "Bloquear o endereço 103.44.8.9.",
+    "Examinar o servidor srv-vpn para identificar quaisquer alterações recentes.",
+    "Verificar a autenticidade do login bem-sucedido com o carla."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "pulverizacao_de_senhas",
+   "esperado": "ataque",
+   "veredito": "suspeito",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.3,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O endereço 91.240.118.3 tentou logar em várias contas do servidor srv-ad, mas sem sucesso, sugerindo uma tentativa de força bruta.",
+   "agrava": 1,
+   "passos": [
+    "Verificar as credenciais das contas tentadas pelo endereço 91.240.118.3."
+   ],
+   "passos_genericos": 2
+  },
+  {
+   "caso": "endereco_novo_e_privilegio",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 24.3,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O usuário diego, de origem 185.199.10.4, conseguiu obter privilégios de root em srv-erp e alterou um arquivo do sistema, indicando uma ação maliciosa.",
+   "agrava": 3,
+   "passos": [
+    "Bloquear o endereço 185.199.10.4.",
+    "Examinar o servidor srv-erp para identificar quaisquer alterações não autorizadas.",
+    "Verificar a autenticidade do usuário diego e suas atividades recentes."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "okta_mfa_negado_e_entrada",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.7,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O endereço 45.155.205.9 tentou acessar a conta elisa no gerenciador, com várias tentativas recusadas seguidas por um login bem-sucedido, indicando um ataque de força bruta.",
+   "agrava": 4,
+   "passos": [
+    "Bloquear o endereço 45.155.205.9.",
+    "Examinar a máquina gerenciador para verificar se houve comprometimento."
+   ],
+   "passos_genericos": 2
+  },
+  {
+   "caso": "workspace_admin_apos_login_suspeito",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 19.0,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O 5.188.62.11 realizou uma mudança de administração no gerenciador, acompanhada por alertas de risco no login e acesso externo ao Drive, indicando atividade suspeita.",
+   "agrava": 3,
+   "passos": [
+    "Bloquear o 5.188.62.11",
+    "Examinar o gerenciador afetado",
+    "Verificar a autenticidade das credenciais do fabio"
+   ],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "malware_com_varios_alertas_graves",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.5,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "A estação de RH foi alvo de atividades suspeitas, incluindo execução de código malicioso via PowerShell e alterações em arquivos, além de um alerta de YARA indicando uma regra de ransomware.",
+   "agrava": 2,
+   "passos": [],
+   "passos_genericos": 4
+  },
+  {
+   "caso": "varredura_de_fora_em_ssh_e_rdp",
+   "esperado": "ataque",
+   "veredito": "suspeito",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 20.2,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O endereço 193.32.162.40 realizou uma força bruta contra o servidor srv-banco, com 12 tentativas de login recusadas em 24 horas. Embora nenhuma conta tenha conseguido entrar, o comportamento suscita suspeitas.",
+   "agrava": 2,
+   "passos": [
+    "Realizar um exame detalhado do servidor srv-banco para identificar quaisquer alterações recentes.",
+    "Verificar as configurações de firewall e segurança do endereço 193.32.162.40 para garantir que as regras estejam atualizadas."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "saida_grande_para_fora",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 27.5,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O usuário gustavo, do endereço 10.8.0.15, acessou e copiou um arquivo sensível na estação financeira estacao-financeiro, com sinais fortes de atividade maliciosa, incluindo contato com endereços de indicadores de ameaça e movimentação de tráfego para fora da rede.",
+   "agrava": 4,
+   "passos": [
+    "Bloquear o endereço 10.8.0.15 na firewall.",
+    "Isolar a estação financeira estacao-financeiro da rede.",
+    "Realizar uma análise forense no computador do usuário gustavo."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "conta_criada_e_posta_em_admins",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 18.4,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O endereço 10.9.0.77 postou a conta helena no grupo Domain Admins em srv-dc, o que agrava o risco, e há sinais de atividade suspeita recente.",
+   "agrava": 5,
+   "passos": [
+    "Bloquear o endereço 10.9.0.77",
+    "Examinar o ativo srv-dc",
+    "Verificar a conta helena para identificar atividades anormais"
+   ],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "viagem_impossivel",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 20.0,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O usuário igor tentou acessar o servidor de email srv-email a partir de um endereço novo e inesperado, o que é considerado uma viagem impossível. Além disso, houve um login com sucesso nesse mesmo endereço recentemente, indicando que a tentativa pode estar em curso.",
+   "agrava": 1,
+   "passos": [
+    "Bloquear o endereço 36.110.50.2",
+    "Examinar o servidor de email srv-email",
+    "Verificar o histórico de atividade do usuário igor"
+   ],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "movimento_lateral",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 22.6,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O usuário julia, de origem 10.11.0.99, conseguiu se tornar root em srv-c, após vários logins bem-sucedidos nesse endereço. Isso indica uma ação maliciosa.",
+   "agrava": 3,
+   "passos": [
+    "Bloquear o endereço 10.11.0.99.",
+    "Examinar o servidor srv-c para identificar quaisquer alterações.",
+    "Verificar a autenticidade do usuário julia."
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "ransomware_no_servidor_de_arquivos",
+   "esperado": "ataque",
+   "veredito": "ataque",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 12.5,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "O servidor srv-arquivos2 foi alvo de atividade suspeita, com múltiplos alertas de possível ransomware, incluindo a criptografia de arquivos financeiros.",
+   "agrava": 2,
+   "passos": [
+    "Isolar o servidor srv-arquivos2 da rede",
+    "Realizar um exame detalhado do servidor srv-arquivos2"
+   ],
+   "passos_genericos": 1
+  },
+  {
+   "caso": "errou_a_senha_uma_vez",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.9,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "O alerta indica um login recusado de karen a partir de 10.20.0.9 em estacao-karen, mas não há sinais de atividade suspeita, já que a conta costuma vir desse endereço e não há outros alertas relacionados.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "errou_tres_vezes_e_entrou",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 17.0,
+   "motivos": 4,
+   "avisos": [],
+   "resumo": "O usuário lucas tentou acessar a estação estacao-lucas de seu endereço habitual, mas foi recusado. Em seguida, conseguiu entrar com a senha correta.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "monitoramento_com_senha_vencida",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 15.9,
+   "motivos": 3,
+   "avisos": [],
+   "resumo": "O endereço 10.22.0.50 tentou acessar o servidor srv-banco-relatorio com a conta svc-zabbix, mas todos os acessos foram recusados. Não há sinais de atividade suspeita, pois a conta já vinha se comportando normalmente e não houve login com sucesso.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "admin_entrou_do_lugar_de_sempre",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 16.0,
+   "motivos": 4,
+   "avisos": [],
+   "resumo": "O usuário marcos do endereço 10.23.0.2 realizou um comando sudo para se tornar root em srv-web2, mas não há sinais de atividade suspeita além disso.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "okta_errou_o_codigo_uma_vez",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 10.9,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "A conta natalia tentou entrar no gerenciador a partir do 189.40.11.5, mas o segundo fator foi negado. A conta já vinha desse endereço e tem histórico de login bem-sucedido nesse mesmo endereço.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "workspace_compartilhou_com_link",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 13.6,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "A conta otavio, do endereço 200.150.9.9, abriu um arquivo do Drive para fora, mas há uma longa história de atividades normais e sem risco nesse endereço.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "atualizacao_de_pacotes",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 6.0,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "Instalação de um novo pacote em srv-app sem sinais de atividade suspeita.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "copia_noturna_para_nuvem",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "baixa",
+   "acertou": true,
+   "segundos": 12.6,
+   "motivos": 1,
+   "avisos": [
+    "A IA disse benigno, mas 1 resposta da investigação pesa contra: confira antes de encerrar."
+   ],
+   "resumo": "O usuário svc-backup fez um login bem-sucedido no servidor de backup srv-backup a partir do endereço conhecido 10.24.0.40, sem sinais de atividade suspeita.",
+   "agrava": 1,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "varredura_interna_autorizada_sem_entrada",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 15.2,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "A varredura de portas detectada em srv-impressao de 10.25.0.200 não apresenta sinais de atividade maliciosa, pois o endereço não tem histórico de atividades suspeitas e o ativo tem configuração segura.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "atualizacao_do_sistema_troca_arquivos",
+   "esperado": "normal",
+   "veredito": "suspeito",
+   "confianca": "alta",
+   "acertou": false,
+   "segundos": 17.3,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O servidor srv-app2 sofreu múltiplas alterações de arquivos em um curto período, coincidindo com a instalação de um novo pacote. Isso sugere uma atividade suspeita, mas não há evidências claras de ataque.",
+   "agrava": 1,
+   "passos": [
+    "Verificar o histórico de alterações no servidor srv-app2."
+   ],
+   "passos_genericos": 3
+  },
+  {
+   "caso": "uma_falha_de_fora_sem_mais_nada",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 13.8,
+   "motivos": 1,
+   "avisos": [],
+   "resumo": "O alerta indica um login recusado com um usuário inexistente a partir do 64.62.197.10, sem sinais de atividade suspeita.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "troca_de_senha_pelo_proprio",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 15.9,
+   "motivos": 4,
+   "avisos": [],
+   "resumo": "O endereço 10.26.0.7 acessou a conta paula na estação estacao-paula, trocando a senha. Este comportamento é comum e não indica atividade suspeita.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  },
+  {
+   "caso": "login_fora_do_horario_do_lugar_de_sempre",
+   "esperado": "normal",
+   "veredito": "benigno",
+   "confianca": "alta",
+   "acertou": true,
+   "segundos": 15.9,
+   "motivos": 2,
+   "avisos": [],
+   "resumo": "O usuário rafael acessou o servidor srv-monitor a partir do endereço 10.27.0.3, com horário fora do padrão, mas sem sinais de atividade suspeita.",
+   "agrava": 0,
+   "passos": [],
+   "passos_genericos": 0
+  }
+ ]
+}
