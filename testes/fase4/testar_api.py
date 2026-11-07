@@ -81,9 +81,10 @@ def novo_cliente(nome):
         " regra_id, regra_descricao, agente_id, agente_nome, ip_origem, usuario, bruto)"
         " VALUES (%s, %s, %s, 'wazuh', 'e1', %s, 10, 'media', '5712', %s, '001', 'servidor', '203.0.113.5', %s, %s)"
         " RETURNING id", (cliente, grupo, ger, agora, XSS, XSS, Jsonb({"segredo_do_bruto": "nao-sair"}))).fetchone()[0]
+    # O peso bate com o risco do alerta: com menos, o motor de risco, que roda junto, encerra o alerta por ter caído.
     ADMIN.execute(
         "INSERT INTO sinais (cliente_id, entidade_id, tipo, valor, dia, peso, ocorrido_em, evento_id, detalhes)"
-        " VALUES (%s, %s, 'primeiro_host', 'h', %s, 15, %s, %s, %s)",
+        " VALUES (%s, %s, 'primeiro_host', 'h', %s, 75, %s, %s, %s)",
         (cliente, entidade, agora.date(), agora, evento, Jsonb({"host": XSS})))
     alerta = ADMIN.execute(
         "INSERT INTO alertas_risco (cliente_id, entidade_id, severidade, risco_maximo, aberto_em)"
@@ -1250,7 +1251,7 @@ def main():
         tecnica = risco["sinais"][0]["tecnica"] or {}
         registrar("sinal leva a subtécnica do próprio evento", tecnica.get("codigo") == "T1110.001" and tecnica.get("nome") == "Password Guessing", str(tecnica))
         registrar("técnica do sinal vem com a tática", tecnica.get("tatica") == "Credential Access")
-        registrar("risco traz o risco depois de cada sinal", risco["sinais"][0]["risco_depois"] == 15.0)
+        registrar("risco traz o risco depois de cada sinal", risco["sinais"][0]["risco_depois"] == 75.0)
         registrar("campo mitre cru não sai na linha do tempo", "mitre" not in risco["sinais"][0])
         ADMIN.execute("DELETE FROM tecnicas_defesa WHERE defesa_id = 'D3-TESTE'")
         if criar_attack:
