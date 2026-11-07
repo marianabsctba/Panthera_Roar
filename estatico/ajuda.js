@@ -500,6 +500,20 @@ export const AJUDA = [
       { h: "Remover uma organização" },
       "No menu da linha, escolha Remover e digite o nome para confirmar. Eventos, regras, pessoas e o gerenciador são apagados, sem volta. Os selos de integridade ficam, porque são prova. O que já estava nas cópias frias só sai quando cada cópia vencer. A organização em que você está não pode ser removida.",
     ] },
+    { id: "ia", vista: "ia", titulo: "IA local", blocos: [
+      "A IA lê a investigação de um alerta e dá um parecer: ataque, suspeito, benigno ou inconclusivo, com os motivos e os próximos passos. Ela roda no próprio servidor, e nada sai dele.",
+      { h: "Ligar ou desligar nesta organização" },
+      { passos: [
+        "Abra IA local, no menu Administrar.",
+        "Em Nesta organização, ligue ou desligue Usar a IA nos alertas desta organização. Desligada, o botão Pedir parecer da IA some dos alertas e nenhum alerta é lido pela IA.",
+        "Em Parecer automático, escolha a partir de que nível a IA dá o parecer sozinha, ou Só quando alguém pedir.",
+      ] },
+      "O parecer automático pega os alertas que chegarem depois de ligar, um por grupo da Fila, os mais graves primeiro, e um por vez. O parecer aparece no alerta como pedido por Parecer automático.",
+      { h: "Na instalação" },
+      "Mostra se a IA está no ar, o modelo e quanto dele está na placa de vídeo. Quem administra a instalação também troca o modelo, entre os que já foram baixados no servidor.",
+      { aviso: "A IA pode errar. Na última medição, com 26 casos montados (13 ataques e 13 de uso normal), ela acertou os 26, mas casos reais são mais variados que os montados. Confira os alertas citados antes de agir." },
+      { artigo: "fila", texto: "Onde o parecer aparece" },
+    ] },
     { id: "armazenamento", vista: "armazenamento", titulo: "Armazenamento", blocos: [
       "Define por quanto tempo esta organização guarda os alertas e os logs brutos, e se guarda os logs brutos. Os logs brutos são o que mais ocupa disco.",
       { h: "Os prazos" },
