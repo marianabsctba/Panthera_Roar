@@ -1,0 +1,9 @@
+# A IA local na placa de vídeo NVIDIA. infra/servicos.sh só usa este arquivo quando o Docker tem o runtime da NVIDIA
+# (NVIDIA Container Toolkit); sem placa, o modelo roda no processador, mais devagar. Pelo runtime, e não por
+# deploy.resources: o runtime vale com o Docker só recarregado, sem derrubar os outros contêineres.
+services:
+  ia:
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility

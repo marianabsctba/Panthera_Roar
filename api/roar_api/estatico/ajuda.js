@@ -81,6 +81,14 @@ export const AJUDA = [
         "Com o armazém de eventos: quanto o endereço aparece nos logs e se ele trocou tráfego com máquinas da rede (NetFlow, IPFIX e sFlow).",
       ] },
       "O ícone vermelho pesa contra, o verde alivia e o cinza só informa. Cada resposta diz como foi achada e lista os alertas que a provam: clique num deles para ver como chegou. Não há IA aqui, só consultas fixas, então o mesmo alerta dá sempre a mesma resposta.",
+      { h: "Parecer da IA" },
+      "No fim da Investigação, clique em Pedir parecer da IA. A IA roda no próprio servidor, lê só as respostas acima e diz se acha que é ataque, suspeito, benigno ou inconclusivo, com os motivos e os próximos passos. Cada motivo mostra as perguntas e os alertas em que se apoia: clique no número para ver o alerta.",
+      { lista: [
+        "Nada sai do servidor. E mesmo lá a IA não vê nomes de conta nem endereços: eles viram apelidos antes e voltam ao normal só na tela.",
+        "O Roar confere a resposta: citação de algo que não estava nas provas sai, e veredito sem nenhuma prova vira inconclusivo. Se a IA disser benigno com várias respostas pesando contra, a confiança cai e aparece um aviso amarelo.",
+        "Leva de alguns segundos a um minuto e meio, conforme a máquina. Um parecer por vez; o último fica guardado no alerta, com quem pediu.",
+      ] },
+      { aviso: "A IA pode errar. O parecer ajuda a ler as provas mais rápido, mas a decisão é sua: confira os alertas citados antes de encerrar ou de agir." },
       { h: "Encerrar um risco" },
       "Clique em Encerrar e diga o que era. A escolha ensina o Roar:",
       { chaves: [

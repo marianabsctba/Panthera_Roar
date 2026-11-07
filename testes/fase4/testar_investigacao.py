@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "api"), str(RAIZ / "motor"), str(RAIZ / "ingestao"), str(RAIZ / "ueba")]
 
+from roar_api import parecer as parecer_da_ia  # noqa: E402
 from roar_api.app import app  # noqa: E402
 from roar_ingestao import armazem  # noqa: E402
 
@@ -147,6 +148,49 @@ def main():
             do_gerenciador = evento(a, AGORA, "1002", "Problema", 2, [], agente="000", agente_nome="gerenciador")
             registrar("alerta sem origem nem conta, do gerenciador, não inventa pergunta", http.get(f"/api/eventos/{do_gerenciador}/investigacao").json()["perguntas"] == [])
             registrar("alerta que não existe", http.get("/api/eventos/999999999999/investigacao").status_code == 404)
+            admin.execute("UPDATE clientes SET ler_do_armazem = true WHERE id = %s", (a["id"],))
+
+            print("\n== O Roar confere a resposta da IA", flush=True)
+            pacote = http.get(f"/api/eventos/{alerta}/investigacao").json()
+            n_origem = next(i for i, x in enumerate(pacote["perguntas"], 1) if x["id"] == "origem")
+            limpo, avisos = parecer_da_ia.conferir({"veredito": "ataque", "confianca": "alta", "resumo": "x", "proximos_passos": ["Bloquear"], "motivos": [
+                {"texto": "provado", "perguntas": [f"P{n_origem}"], "alertas": [entrou]},
+                {"texto": "inventado", "perguntas": ["P99"], "alertas": [123456789]}]}, pacote)
+            registrar("motivo com citação inventada sai, e o aviso conta", [m["texto"] for m in limpo["motivos"]] == ["provado"] and "2 citações inventadas" in avisos[0], str(avisos))
+            registrar("o código da pergunta vira o nome dela", limpo["motivos"][0]["perguntas"] == ["origem"])
+            limpo, avisos = parecer_da_ia.conferir({"veredito": "ataque", "confianca": "alta", "resumo": "x", "motivos": [], "proximos_passos": []}, pacote)
+            registrar("veredito sem nenhuma prova vira inconclusivo", limpo["veredito"] == "inconclusivo" and limpo["confianca"] == "baixa", str(avisos))
+            limpo, avisos = parecer_da_ia.conferir({"veredito": "benigno", "confianca": "alta", "resumo": "x", "proximos_passos": [],
+                                                    "motivos": [{"texto": "t", "perguntas": [f"P{n_origem}"], "alertas": []}]}, pacote)
+            registrar("benigno contra as provas fica com confiança baixa e aviso", limpo["confianca"] == "baixa" and any("pesam contra" in x for x in avisos), str(avisos))
+            limpo, _ = parecer_da_ia.conferir({"veredito": "talvez", "confianca": "enorme", "resumo": 5, "motivos": "x", "proximos_passos": None}, pacote)
+            registrar("resposta torta não quebra", limpo["veredito"] == "inconclusivo" and limpo["confianca"] == "baixa")
+            vistos = []
+            parecer_da_ia.dar(pacote, "http://ia", "teste", lambda e, m, texto: vistos.append(texto) or {})
+            registrar("a IA não vê a conta nem o endereço", "joao" not in vistos[0] and "maria" not in vistos[0] and ATACANTE not in vistos[0] and "usuario-1" in vistos[0]
+                      and "endereco-1" in vistos[0], vistos[0][:300])
+            devolvido = parecer_da_ia.dar(pacote, "http://ia", "teste", lambda e, m, t: {"veredito": "ataque", "confianca": "alta", "resumo": "A conta usuario-1 entrou do Endereço-1.",
+                                                                                          "motivos": [], "proximos_passos": ["Trocar a senha de usuário 1"]})
+            registrar("os apelidos voltam a ser a conta e o endereço", devolvido["resumo"] == f"A conta joao entrou do {ATACANTE}." and devolvido["proximos_passos"] == ["Trocar a senha de joao"],
+                      devolvido["resumo"])
+
+            if app.state.ia:
+                print(f"\n== Parecer da IA local ({app.state.ia[1]})", flush=True)
+                r = http.post(f"/api/eventos/{alerta}/parecer")
+                registrar("a IA dá o parecer da conta invadida", r.status_code == 200, r.text[:200])
+                p = r.json()["parecer"]
+                print(f"  [{p['veredito']}, {p['confianca']}] em {p['segundos']} s: {p['resumo']}\n  " + "\n  ".join(f"- {m['texto']} {m['perguntas']} {m['alertas']}" for m in p["motivos"])
+                      + "\n  passos: " + " | ".join(p["proximos_passos"]) + ("\n  avisos: " + " | ".join(p["avisos"]) if p["avisos"] else ""), flush=True)
+                registrar("vê ataque ou suspeita", p["veredito"] in ("ataque", "suspeito"), p["veredito"])
+                registrar("com motivos provados", len(p["motivos"]) >= 2 and all(m["perguntas"] or m["alertas"] for m in p["motivos"]))
+                registrar("e sugere o que fazer", len(p["proximos_passos"]) >= 1)
+                registrar("o parecer fica guardado", http.get(f"/api/eventos/{alerta}/parecer").json()["parecer"]["veredito"] == p["veredito"])
+                f = http.post(f"/api/eventos/{engano}/parecer").json()["parecer"]
+                print(f"  falso positivo: [{f['veredito']}, {f['confianca']}] em {f['segundos']} s: {f['resumo']}" + ("\n  avisos: " + " | ".join(f["avisos"]) if f["avisos"] else ""), flush=True)
+                registrar("no falso positivo, não vê ataque", f["veredito"] in ("benigno", "inconclusivo"), f["veredito"])
+                registrar("o pedido fica na auditoria", admin.execute("SELECT count(*) FROM auditoria WHERE cliente_id = %s AND acao = 'pedir_parecer'", (a["id"],)).fetchone()[0] == 2)
+            else:
+                registrar("IA local ligada nesta instalação (IA_MODELO no .env)", False)
 
             print("\n== Máscara e isolamento", flush=True)
             http.post("/api/sair")
@@ -155,10 +199,14 @@ def main():
             m = http.get(f"/api/eventos/{alerta}/investigacao")
             registrar("quem vê mascarado recebe a investigação", m.status_code == 200 and m.json()["perguntas"], m.text[:120])
             registrar("sem o nome da conta nem o endereço", "joao" not in m.text and ATACANTE not in m.text, m.text[:300])
+            if app.state.ia:
+                m = http.get(f"/api/eventos/{alerta}/parecer")
+                registrar("o parecer também sai mascarado", m.json()["parecer"] and "joao" not in m.text and ATACANTE not in m.text, m.text[:300])
             http.post("/api/sair")
             http.cookies.clear()
             http.post("/api/entrar", json=b["acessos"]["administrador"])
             registrar("outra organização não vê", http.get(f"/api/eventos/{alerta}/investigacao").status_code == 404)
+            registrar("nem o parecer, nem pede um", http.get(f"/api/eventos/{alerta}/parecer").status_code == 404 and http.post(f"/api/eventos/{alerta}/parecer").status_code in (404, 409))
             o = http.get(f"/api/eventos/{alheio}/investigacao").json()
             registrar("e o mesmo endereço lá não traz nada daqui", o["perguntas"] and not any(c["id"] in validos for x in o["perguntas"] for c in x["eventos"])
                       and "Nenhum outro alerta" in {x["id"]: x for x in o["perguntas"]}["origem"]["resposta"])
@@ -166,9 +214,10 @@ def main():
         for banco in bancos:
             armazem_admin.executar(f"DROP DATABASE IF EXISTS {banco}")
         # O motor de risco roda junto e pode ter guardado o que viu destes alertas.
-        for tabela in ("sinais", "vistos", "alertas_risco", "notificacoes", "pares", "eventos", "auditoria", "ativos"):
+        for tabela in ("pareceres", "sinais", "vistos", "alertas_risco", "notificacoes", "pares", "eventos", "auditoria", "ativos"):
             admin.execute(f"DELETE FROM {tabela} WHERE cliente_id = ANY(%s)", (clientes,))
         admin.execute("DELETE FROM horas WHERE cliente_id = ANY(%s)", (clientes,))
+        admin.execute("DELETE FROM falhas_por_hora WHERE cliente_id = ANY(%s)", (clientes,))
         admin.execute("DELETE FROM entidades WHERE cliente_id = ANY(%s)", (clientes,))
         admin.execute("DELETE FROM ueba_cursor WHERE cliente_id = ANY(%s)", (clientes,))
         admin.execute("DELETE FROM sessoes WHERE usuario_id = ANY(SELECT id FROM usuarios WHERE cliente_id = ANY(%s))", (clientes,))

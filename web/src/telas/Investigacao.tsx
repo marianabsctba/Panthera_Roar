@@ -1,9 +1,9 @@
-import { Anchor, Box, Group, Paper, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconAlertTriangle, IconArrowDown, IconInfoCircle } from "@tabler/icons-react";
+import { Alert, Anchor, Badge, Box, Button, Group, List, Paper, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { IconAlertTriangle, IconArrowDown, IconInfoCircle, IconSparkles } from "@tabler/icons-react";
 import { useState } from "react";
 
-import { useDados, useEu, usePode } from "../api";
-import { GavetaDoBruto } from "../componentes";
+import { detalhe, enviar, useDados, useEu, usePode } from "../api";
+import { Data, GavetaDoBruto } from "../componentes";
 import { quando } from "../formato";
 
 interface Citado { id: number; quando: string; descricao: string; ip: string | null; usuario: string | null; ativo: string | null }
@@ -55,7 +55,108 @@ export function PainelDeInvestigacao({ evento }: { evento: number }) {
         );
       })}
       {dados.armazem === false && <Text size="xs" c="dimmed">O armazém não respondeu agora: os logs e os fluxos de rede ficaram de fora.</Text>}
+      <ParecerDaIa evento={evento} perguntas={dados.perguntas} aoAbrir={pode("ver_bruto") ? setBruto : undefined} />
       <GavetaDoBruto evento={bruto} aoFechar={() => setBruto(null)} />
     </Stack>
+  );
+}
+
+interface Motivo { texto: string; perguntas: string[]; alertas: number[] }
+interface Parecer {
+  veredito: "ataque" | "suspeito" | "benigno" | "inconclusivo";
+  confianca: "baixa" | "media" | "alta";
+  resumo: string;
+  motivos: Motivo[];
+  proximos_passos: string[];
+  avisos: string[];
+  segundos: number;
+  modelo: string;
+  criado_em: string;
+  pedido_por_nome: string | null;
+}
+interface RespostaDoParecer { disponivel: boolean; modelo: string | null; parecer: Parecer | null }
+
+const VEREDITOS = {
+  ataque: { cor: "red", texto: "Ataque" },
+  suspeito: { cor: "orange", texto: "Suspeito" },
+  benigno: { cor: "teal", texto: "Benigno" },
+  inconclusivo: { cor: "gray", texto: "Inconclusivo" },
+} as const;
+const CONFIANCAS = { baixa: "confiança baixa", media: "confiança média", alta: "confiança alta" } as const;
+
+/** A IA local lê as perguntas acima e dá um parecer. O Roar já tirou o que ela não conseguiu provar (api/roar_api/parecer.py). */
+function ParecerDaIa({ evento, perguntas, aoAbrir }: { evento: number; perguntas: Pergunta[]; aoAbrir?: (id: number) => void }) {
+  const { dados, recarregar } = useDados<RespostaDoParecer>(`/api/eventos/${evento}/parecer`);
+  const [pensando, setPensando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  if (!dados || !dados.disponivel) return null;
+  const pedirParecer = async () => {
+    setPensando(true);
+    setErro(null);
+    try {
+      const r = await enviar(`/api/eventos/${evento}/parecer`);
+      if (!r.ok) setErro(await detalhe(r));
+      recarregar();
+    } finally {
+      setPensando(false);
+    }
+  };
+  const p = dados.parecer;
+  const nomeDaPergunta = (id: string) => perguntas.find((q) => q.id === id)?.pergunta ?? id;
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Group gap="xs">
+            <ThemeIcon variant="light" color="grape" size="md" radius="xl"><IconSparkles size={14} /></ThemeIcon>
+            <Text size="sm" fw={600}>Parecer da IA</Text>
+          </Group>
+          <Button size="xs" variant={p ? "default" : "filled"} loading={pensando} onClick={pedirParecer}>{p ? "Pedir de novo" : "Pedir parecer da IA"}</Button>
+        </Group>
+        {!p && !pensando && (
+          <Text size="xs" c="dimmed">A IA roda no próprio servidor ({dados.modelo}) e lê só as respostas acima, com contas e endereços trocados por apelidos. Nada sai do servidor.</Text>
+        )}
+        {pensando && <Text size="xs" c="dimmed">A IA está lendo as provas. Pode levar de alguns segundos a um minuto.</Text>}
+        {erro && <Text size="xs" c="red">{erro}</Text>}
+        {p && (
+          <>
+            <Group gap="xs">
+              <Badge color={VEREDITOS[p.veredito].cor} variant="filled" radius="sm">{VEREDITOS[p.veredito].texto}</Badge>
+              <Text size="xs" c="dimmed">{CONFIANCAS[p.confianca]}</Text>
+            </Group>
+            <Text size="sm">{p.resumo}</Text>
+            {p.motivos.length > 0 && (
+              <List size="sm" spacing={4}>
+                {p.motivos.map((m, i) => (
+                  <List.Item key={i}>
+                    {m.texto}
+                    <Text size="xs" c="dimmed" component="div">
+                      {m.perguntas.map(nomeDaPergunta).join(" · ")}
+                      {m.alertas.length > 0 && <>{m.perguntas.length > 0 && " · "}alertas {m.alertas.map((a, j) => (
+                        <span key={a}>{j > 0 && ", "}{aoAbrir ? <Anchor component="button" type="button" size="xs" onClick={() => aoAbrir(a)}>nº {a}</Anchor> : `nº ${a}`}</span>
+                      ))}</>}
+                    </Text>
+                  </List.Item>
+                ))}
+              </List>
+            )}
+            {p.proximos_passos.length > 0 && (
+              <div>
+                <Text size="xs" fw={600}>Próximos passos</Text>
+                <List size="sm" type="ordered" spacing={2}>{p.proximos_passos.map((x, i) => <List.Item key={i}>{x}</List.Item>)}</List>
+              </div>
+            )}
+            {p.avisos.length > 0 && (
+              <Alert color="yellow" variant="light" p="xs" icon={<IconAlertTriangle size={14} />}>
+                <Stack gap={2}>{p.avisos.map((a) => <Text key={a} size="xs">{a}</Text>)}</Stack>
+              </Alert>
+            )}
+            <Text size="xs" c="dimmed">
+              {p.modelo} no próprio servidor, em {String(p.segundos).replace(".", ",")} s · <Data valor={p.criado_em} />{p.pedido_por_nome ? ` · pedido por ${p.pedido_por_nome}` : ""}. A IA pode errar: confira as provas antes de decidir.
+            </Text>
+          </>
+        )}
+      </Stack>
+    </Paper>
   );
 }

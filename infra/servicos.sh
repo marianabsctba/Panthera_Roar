@@ -37,7 +37,7 @@ escrever_env() {
   install -m 640 -o root -g "$grupo" "$temporario" "$arquivo"
   rm -f "$temporario"
 }
-escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA SYSLOG_CIFRADO_PORTA NETFLOW_PORTA SFLOW_PORTA
+escrever_env api.env roar-api ROAR_API_SENHA ROAR_LEITOR_SENHA ROAR_MFA_CHAVE RETENCAO_DIAS ROAR_ARQUIVO_DIAS ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA SYSLOG_CIFRADO_PORTA NETFLOW_PORTA SFLOW_PORTA IA_MODELO IA_PORTA
 escrever_env servicos.env roar-svc ROAR_INGESTAO_SENHA ROAR_LEITOR_SENHA ROAR_UEBA_SENHA ROAR_SOAR_SENHA RETENCAO_DIAS ROAR_SELO_ANCORA ARMAZEM_LEITOR_SENHA ARMAZEM_PORTA ROAR_SELOS_DO_ARMAZEM
 
 # Só as chaves públicas e o certificado da autoridade ficam legíveis fora do root.
@@ -50,6 +50,17 @@ PYTHONPATH="$APP/ingestao" "$PY" -m roar_ingestao.syslog_cifrado --dominio "$DOM
 # arquivo.
 PYTHONPATH="$APP/ingestao" "$PY" -c "from roar_ingestao import fluxos; fluxos.preparar()"
 docker compose --project-directory "$DESTINO" --project-name panthera-roar up -d recepcao fluxos >/dev/null
+# IA local: só com IA_MODELO no .env. Com o runtime da NVIDIA no Docker, o modelo roda na placa de vídeo. Baixar o modelo
+# só demora na primeira vez.
+cp "$RAIZ/infra/docker-compose.yml" "$RAIZ/infra/docker-compose.gpu.yml" "$DESTINO/"
+if [ -n "$(valor IA_MODELO)" ]; then
+  arquivos=(-f "$DESTINO/docker-compose.yml")
+  if docker info 2>/dev/null | grep -q 'Runtimes:.*nvidia'; then arquivos+=(-f "$DESTINO/docker-compose.gpu.yml"); fi
+  docker compose --project-directory "$DESTINO" --project-name panthera-roar "${arquivos[@]}" --profile ia up -d ia >/dev/null
+  # O servidor do Ollama leva uns segundos para atender depois que o contêiner sobe.
+  for _ in $(seq 60); do docker exec roar-ia ollama list >/dev/null 2>&1 && break; sleep 1; done
+  docker exec roar-ia ollama pull "$(valor IA_MODELO)" >/dev/null
+fi
 chmod 755 "$DESTINO/cofre"; chmod 600 "$DESTINO/cofre/privada"; chmod 644 "$DESTINO/cofre/publica"
 if [ "$PERFIL" != vulnerabilidades ]; then
   install -m 644 "$DESTINO/wazuh/single-node/config/wazuh_indexer_ssl_certs/root-ca.pem" "$DESTINO/ca-indexer.pem"

@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -54,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
 # A investigação do alerta usa a mesma chave de pessoa que o motor de risco.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ueba"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import buscas as blocos_de_busca, correcao, investigacao, leitor_armazem, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
+from roar_api import buscas as blocos_de_busca, correcao, investigacao, leitor_armazem, parecer as parecer_da_ia, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
 from roar_ingestao import avisos as avisos_por_email, cofre, copia_do_armazem, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
@@ -164,6 +165,8 @@ async def ciclo_de_vida(app):
     app.state.indexer = _sessao_do_indexer(valores)
     # O armazém de eventos (docs/clickhouse.md): sem a senha de leitura, a instalação ainda não tem um, e tudo lê do indexador.
     app.state.armazem = armazem_de_eventos.leitor(valores)
+    # A IA local (parecer.py): sem IA_MODELO no .env, ela não foi ligada e o botão não aparece.
+    app.state.ia = parecer_da_ia.configuracao(valores)
     # O apelido de cada usuário não pode ser refeito por quem só vê a tela: vem de um segredo do servidor.
     app.state.cofre_do_sso = outras_entradas.Cofre(valores["ROAR_API_SENHA"])
     app.state.chave_de_apelido = hashlib.sha256(b"apelido:" + valores["ROAR_API_SENHA"].encode()).digest()
@@ -1810,6 +1813,61 @@ def investigacao_do_evento(identificador: int, request: Request, sessao=Depends(
     if pacote is None:
         raise HTTPException(status_code=404)
     return pacote
+
+
+# Um parecer por vez: o modelo ocupa a placa de vídeo inteira, e dois ao mesmo tempo só deixariam os dois lentos.
+IA_OCUPADA = threading.Lock()
+
+
+def _parecer_da_tela(linha):
+    return {k: linha[k] for k in ("id", "veredito", "confianca", "resumo", "motivos", "proximos_passos", "avisos", "segundos", "modelo", "criado_em", "pedido_por_nome")}
+
+
+@app.get("/api/eventos/{identificador}/parecer")
+def ver_parecer(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """O último parecer da IA sobre o alerta, se houver, e se a IA local está ligada nesta instalação."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        alerta = con.execute("SELECT host(ip_origem) AS ip, usuario FROM eventos WHERE id = %s", (identificador,)).fetchone()
+        if not alerta:
+            raise HTTPException(status_code=404)
+        linha = con.execute(
+            "SELECT * FROM pareceres WHERE evento_id = %s ORDER BY criado_em DESC LIMIT 1", (identificador,)).fetchone()
+    ia = request.app.state.ia
+    # A conta e o endereço do alerta vão junto para a máscara achar o nome dentro dos textos do parecer.
+    return {"disponivel": ia is not None, "modelo": ia[1] if ia else None, "alerta": alerta, "parecer": _parecer_da_tela(linha) if linha else None}
+
+
+@app.post("/api/eventos/{identificador}/parecer")
+def pedir_parecer(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """A IA local lê o pacote da investigação e dá o parecer. Leva de segundos a um minuto, conforme a máquina."""
+    _inteiro_valido(identificador)
+    ia = request.app.state.ia
+    if ia is None:
+        raise HTTPException(status_code=409, detail="A IA local não está ligada nesta instalação.")
+    with do_cliente(request, sessao) as con:
+        onde = _armazem_da_organizacao(request, con, sessao)
+        pacote = investigacao.investigar(con, identificador, onde.get("armazem"), onde.get("banco"))
+    if pacote is None:
+        raise HTTPException(status_code=404)
+    if not IA_OCUPADA.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A IA está dando outro parecer agora. Tente de novo em instantes.")
+    try:
+        novo = parecer_da_ia.dar(pacote, *ia)
+    except requests.RequestException:
+        raise HTTPException(status_code=503, detail="A IA local não respondeu. Confira se o serviço roar-ia está no ar.")
+    finally:
+        IA_OCUPADA.release()
+    with do_cliente(request, sessao) as con:
+        linha = con.execute(
+            """INSERT INTO pareceres (cliente_id, evento_id, modelo, veredito, confianca, resumo, motivos, proximos_passos, avisos, segundos, pedido_por, pedido_por_nome)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+            (sessao["cliente_id"], identificador, novo["modelo"], novo["veredito"], novo["confianca"], novo["resumo"], Jsonb(novo["motivos"]),
+             Jsonb(novo["proximos_passos"]), Jsonb(novo["avisos"]), novo["segundos"], sessao["usuario_id"], sessao["nome"])).fetchone()
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'pedir_parecer', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(identificador)))
+    return {"disponivel": True, "modelo": ia[1], "alerta": {"ip": pacote["alerta"]["ip"], "usuario": pacote["alerta"]["usuario"]},
+            "parecer": _parecer_da_tela(linha)}
 
 
 @app.get("/api/eventos/{identificador}/bruto")
