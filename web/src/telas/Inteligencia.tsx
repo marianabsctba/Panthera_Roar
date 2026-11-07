@@ -4,13 +4,14 @@ import { useState, type ReactNode } from "react";
 
 import { detalhe, enviar, useDados, usePode } from "../api";
 import { AcoesDaLinha, Busca, Cabecalho, Carregando, Data, Estado, GavetaDoBruto, Painel, Severidade, Tabela } from "../componentes";
-import { numero } from "../formato";
+import { numero, tamanho } from "../formato";
 import { Fatos } from "./Ataques";
 import { recomecar } from "../rota";
 
 interface Fonte { id: number; nome: string; tipo: string; endereco: string; colecao: string | null; com_credencial: boolean; ativa: boolean; interna: boolean; a_cada_minutos: number; proxima_em: string | null; ultima_em: string | null; ultimo_erro: string | null; indicadores: number }
 interface Ocorrencia { evento_id: number; ocorrido_em: string; encontrada_em: string | null; no_passado: boolean; tipo: string; valor: string; descricao: string | null; fonte: string; regra_descricao: string | null; severidade: string; ativo: string | null }
-interface Visao { fontes: Fonte[]; ocorrencias: Ocorrencia[]; conferencia: { ate: string; eventos_30_dias: number; indicadores: number } | null }
+interface NoFluxo { dia: string; interno: string; sentido: "saida" | "entrada"; fluxos: number; bytes: number; primeira: string; ultima: string; exportador: string; no_passado: boolean; valor: string; descricao: string | null; fonte: string }
+interface Visao { fontes: Fonte[]; ocorrencias: Ocorrencia[]; nos_fluxos?: NoFluxo[]; conferencia: { ate: string; eventos_30_dias: number; indicadores: number } | null }
 
 interface IndicadorCacado { tipo: string; valor: string; eventos: number; logs: number | null; vigiado: boolean }
 interface Achado { id: number; ocorrido_em: string; severidade: string; regra_descricao: string | null; ativo: string | null; usuario: string | null; ip_origem: string | null; tipo: string; indicador: string }
@@ -326,6 +327,25 @@ export function Inteligencia() {
             )}
             <TabelaDeOcorrencias linhas={dados.ocorrencias} vazio={busca ? "Nenhuma ocorrência com essa busca." : dados.conferencia ? "Nenhum evento bateu. Isso é bom: nenhum endereço, domínio ou arquivo visto aqui está nas fontes." : "A primeira conferência ainda não terminou."} aoAbrir={setOcorrencia} aoVerBruto={verBruto} />
           </Painel>
+          {dados.nos_fluxos && dados.nos_fluxos.length > 0 && (
+            <Painel titulo="Conversas de rede com um indicador">
+              <Text size="xs" c="dimmed" mb="sm">Dos fluxos de rede (NetFlow, IPFIX e sFlow): um endereço da sua rede conversou com um IP das fontes. Um resumo por dia, com quantos fluxos e quanto passou.</Text>
+              <Tabela
+                linhas={dados.nos_fluxos}
+                chave={(x) => `${x.valor}-${x.interno}-${x.sentido}-${x.dia}`}
+                vazio=""
+                colunas={[
+                  { titulo: "Indicador", celula: (x) => <Group gap={6}><span className="mono">{x.valor}</span>{x.no_passado && <Badge size="xs" variant="light" color="gray">no passado</Badge>}</Group> },
+                  { titulo: "Endereço da rede", celula: (x) => <span className="mono">{x.interno}</span> },
+                  { titulo: "Quem chamou", celula: (x) => (x.sentido === "saida" ? "A rede chamou o indicador" : "O indicador chamou a rede") },
+                  { titulo: "Fluxos", alinhar: "right", celula: (x) => numero(x.fluxos) },
+                  { titulo: "Volume", alinhar: "right", celula: (x) => tamanho(x.bytes) },
+                  { titulo: "Última vez", celula: (x) => <Data valor={x.ultima} /> },
+                  { titulo: "Fonte", celula: (x) => x.fonte },
+                ]}
+              />
+            </Painel>
+          )}
         </Stack>
       )}
       <NovaFonte aberto={nova} aoFechar={() => setNova(false)} aoCriar={recarregar} />

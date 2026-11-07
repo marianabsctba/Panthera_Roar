@@ -3234,11 +3234,16 @@ def inteligencia(request: Request, sessao=Depends(exige(permissoes.VER)), busca:
         ocorrencias = con.execute(f"""SELECT o.evento_id, o.ocorrido_em, o.encontrada_em, o.no_passado, i.tipo, i.valor, i.descricao, f.nome AS fonte, e.regra_descricao, e.severidade, e.agente_nome AS ativo
                                       FROM intel_ocorrencias o JOIN intel_indicadores i ON i.id = o.indicador_id JOIN intel_fontes f ON f.id = i.fonte_id JOIN eventos e ON e.id = o.evento_id
                                       {condicao} ORDER BY o.ocorrido_em DESC LIMIT 200""", valores).fetchall()
+        # Nos fluxos de rede (roar_ingestao.inteligencia.buscar_nos_fluxos): um resumo por indicador, endereço da rede e dia.
+        condicao_dos_fluxos, valores_dos_fluxos = ("WHERE i.valor ILIKE %s OR x.interno ILIKE %s", [f"%{_sem_curinga(busca)}%"] * 2) if busca else ("", [])
+        nos_fluxos = con.execute(f"""SELECT x.dia, x.interno, x.sentido, x.fluxos, x.bytes, x.primeira, x.ultima, x.exportador, x.no_passado, i.valor, i.descricao, f.nome AS fonte
+                                     FROM intel_fluxos x JOIN intel_indicadores i ON i.id = x.indicador_id JOIN intel_fontes f ON f.id = i.fonte_id
+                                     {condicao_dos_fluxos} ORDER BY x.ultima DESC LIMIT 200""", valores_dos_fluxos).fetchall()
         conferencia = con.execute("""SELECT (SELECT ocorrido_em FROM eventos WHERE id = c.ultimo_evento) AS ate,
                                             (SELECT count(*) FROM eventos WHERE id <= c.ultimo_evento AND ocorrido_em >= now() - interval '30 days') AS eventos_30_dias
                                      FROM intel_cursor c""").fetchone()
     indicadores = sum(int(f["indicadores"]) for f in fontes if f["ativa"])
-    return {"fontes": fontes, "ocorrencias": ocorrencias,
+    return {"fontes": fontes, "ocorrencias": ocorrencias, "nos_fluxos": nos_fluxos,
             "conferencia": {**conferencia, "indicadores": indicadores} if conferencia and conferencia["ate"] else None}
 
 

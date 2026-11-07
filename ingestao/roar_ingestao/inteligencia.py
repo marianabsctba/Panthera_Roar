@@ -280,6 +280,133 @@ def buscar_no_passado(banco, cliente, novos, dias=DIAS_NO_PASSADO):
     return total
 
 
+# ------------------------------------------------------------------ fluxos de rede
+
+# Os ips vão num parâmetro da consulta, no endereço do pedido: em lotes, para o endereço não passar do limite. Com listas de
+# milhões de indicadores, o certo é uma tabela de indicadores no próprio armazém.
+IPS_POR_BUSCA_NOS_FLUXOS = 2000
+# Os fluxos que chegam ao armazém nos últimos segundos ainda podem estar sendo gravados.
+FOLGA_DOS_FLUXOS = timedelta(seconds=15)
+# Na primeira volta, sem posição guardada, só a última hora: o passado é a busca dos indicadores novos.
+PRIMEIRA_JANELA_DOS_FLUXOS = timedelta(hours=1)
+
+
+def _consultar_fluxos(armazem, banco, ips, onde, parametros):
+    """[(indicador, interno, sentido, dia, fluxos, bytes, primeira, ultima, exportador)] dos fluxos com algum ip da lista.
+    A conta é toda no armazém: só sobe um resumo por indicador, endereço da rede e dia."""
+    linhas = armazem.linhas(f"""
+        SELECT if(has({{ips:Array(String)}}, destino), destino, origem) AS indicador,
+               if(has({{ips:Array(String)}}, destino), origem, destino) AS interno,
+               if(has({{ips:Array(String)}}, destino), 'saida', 'entrada') AS sentido,
+               toString(toDate(ocorrido_em)) AS dia, count() AS fluxos, sum(bytes) AS bytes,
+               toString(min(ocorrido_em)) AS primeira, toString(max(ocorrido_em)) AS ultima, any(exportador) AS exportador
+        FROM {banco}.fluxos WHERE {onde} AND (has({{ips:Array(String)}}, origem) OR has({{ips:Array(String)}}, destino))
+        GROUP BY indicador, interno, sentido, dia""", {**parametros, "ips": "[" + ",".join(f"'{ip}'" for ip in ips if _so_endereco(ip)) + "]"})
+    return [(l["indicador"], l["interno"], l["sentido"], l["dia"], int(l["fluxos"]), int(l["bytes"]), l["primeira"], l["ultima"], l["exportador"]) for l in linhas]
+
+
+def _so_endereco(valor):
+    """O ip vai escrito na lista do parâmetro: só passa o que é endereço de verdade."""
+    try:
+        return str(ipaddress.ip_address(valor)) == valor
+    except ValueError:
+        return False
+
+
+def _registrar_nos_fluxos(banco, cliente, por_valor, achados, no_passado):
+    """Soma no resumo do dia. O primeiro achado de cada indicador, endereço e dia avisa no sino."""
+    novas = 0
+    for indicador, interno, sentido, dia, fluxos, bytes_, primeira, ultima, exportador in achados:
+        indicador_id = por_valor.get(indicador)
+        if indicador_id is None:
+            continue
+        nova = banco.con.execute(
+            """INSERT INTO intel_fluxos (cliente_id, indicador_id, dia, interno, sentido, fluxos, bytes, primeira, ultima, exportador, no_passado)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s::timestamp AT TIME ZONE 'UTC', %s::timestamp AT TIME ZONE 'UTC', %s, %s)
+               ON CONFLICT (indicador_id, dia, interno, sentido) DO UPDATE SET fluxos = intel_fluxos.fluxos + EXCLUDED.fluxos,
+                 bytes = intel_fluxos.bytes + EXCLUDED.bytes, primeira = least(intel_fluxos.primeira, EXCLUDED.primeira),
+                 ultima = greatest(intel_fluxos.ultima, EXCLUDED.ultima)
+               RETURNING (xmax = 0)""", (cliente, indicador_id, dia, interno, sentido, fluxos, bytes_, primeira, ultima, exportador, no_passado)).fetchone()[0]
+        if nova:
+            novas += 1
+            banco.con.execute("SELECT roar_avisar_inteligencia(%s, %s)", (cliente, indicador))
+    return novas
+
+
+def _ips_dos_indicadores(banco, cliente, ids=None):
+    with banco.con.transaction():
+        _com_cliente(banco, cliente)
+        sql, args = "SELECT valor, id FROM intel_indicadores WHERE tipo = 'ip'", ()
+        if ids is not None:
+            sql, args = sql + " AND id = ANY(%s)", (list(ids),)
+        return dict(banco.con.execute(sql, args).fetchall())
+
+
+def _tem_fluxos(armazem, banco_do_armazem):
+    return armazem.linhas("SELECT count() AS n FROM system.tables WHERE database = {b:String} AND name = 'fluxos'", {"b": banco_do_armazem})[0]["n"] not in (0, "0")
+
+
+def buscar_nos_fluxos(banco, armazem, cliente, agora=None):
+    """Os fluxos que chegaram ao armazém desde a última volta, com algum ip de indicador de um lado ou do outro."""
+    from .armazem import banco_do
+
+    if armazem is None:
+        return 0
+    nome = banco_do(cliente)
+    if not _tem_fluxos(armazem, nome):
+        return 0
+    agora = agora or datetime.now(timezone.utc)
+    ate = agora - FOLGA_DOS_FLUXOS
+    with banco.con.transaction():
+        _com_cliente(banco, cliente)
+        linha = banco.con.execute("SELECT ate FROM intel_cursor_fluxos WHERE cliente_id = %s", (cliente,)).fetchone()
+    de = linha[0] if linha else ate - PRIMEIRA_JANELA_DOS_FLUXOS
+    por_valor = _ips_dos_indicadores(banco, cliente)
+    novas = 0
+    valores = sorted(por_valor)
+    for inicio in range(0, len(valores), IPS_POR_BUSCA_NOS_FLUXOS):
+        achados = _consultar_fluxos(armazem, nome, valores[inicio:inicio + IPS_POR_BUSCA_NOS_FLUXOS],
+                                    "recebido_em > parseDateTime64BestEffort({de:String}, 3) AND recebido_em <= parseDateTime64BestEffort({ate:String}, 3)",
+                                    {"de": de.isoformat(), "ate": ate.isoformat()})
+        with banco.con.transaction():
+            _com_cliente(banco, cliente)
+            novas += _registrar_nos_fluxos(banco, cliente, por_valor, achados, False)
+    with banco.con.transaction():
+        _com_cliente(banco, cliente)
+        banco.con.execute("""INSERT INTO intel_cursor_fluxos (cliente_id, ate) VALUES (%s, %s)
+                             ON CONFLICT (cliente_id) DO UPDATE SET ate = EXCLUDED.ate""", (cliente, ate))
+    return novas
+
+
+def buscar_nos_fluxos_do_passado(banco, armazem, cliente, novos, dias=DIAS_NO_PASSADO):
+    """Indicador de ip novo: os fluxos dos últimos dias que já tinham passado pela conferência."""
+    from .armazem import banco_do
+
+    ids = [i["id"] for i in novos if i["tipo"] == "ip"]
+    if armazem is None or not ids:
+        return 0
+    nome = banco_do(cliente)
+    if not _tem_fluxos(armazem, nome):
+        return 0
+    with banco.con.transaction():
+        _com_cliente(banco, cliente)
+        linha = banco.con.execute("SELECT ate FROM intel_cursor_fluxos WHERE cliente_id = %s", (cliente,)).fetchone()
+    if not linha:
+        return 0  # Nada conferido ainda: a volta normal pega tudo.
+    por_valor = _ips_dos_indicadores(banco, cliente, ids)
+    valores = sorted(por_valor)
+    novas = 0
+    for inicio in range(0, len(valores), IPS_POR_BUSCA_NOS_FLUXOS):
+        # Só o que já tinha sido conferido: o que chega depois, a volta normal pega, sem contar duas vezes.
+        achados = _consultar_fluxos(armazem, nome, valores[inicio:inicio + IPS_POR_BUSCA_NOS_FLUXOS],
+                                    f"ocorrido_em >= now64(3) - INTERVAL {int(dias)} DAY AND recebido_em <= parseDateTime64BestEffort({{ate:String}}, 3)",
+                                    {"ate": linha[0].isoformat()})
+        with banco.con.transaction():
+            _com_cliente(banco, cliente)
+            novas += _registrar_nos_fluxos(banco, cliente, por_valor, achados, True)
+    return novas
+
+
 def _pedir_local(metodo, endereco, cabecalhos, **kwargs):
     """A plataforma da própria instalação mora em endereço interno, que a proteção das fontes externas recusaria."""
     try:
@@ -311,7 +438,7 @@ def garantir_fonte_local(banco, cliente, local=None):
                ON CONFLICT (cliente_id) WHERE interna DO NOTHING RETURNING id""", (cliente,)).fetchone())
 
 
-def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None):
+def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None, armazem=None):
     buscadores = {"misp": buscar_misp, "taxii": buscar_taxii}
     segredo = None
     try:
@@ -333,6 +460,10 @@ def sincronizar_fonte(banco, cliente, fonte, privada=None, buscar=None):
         indicadores = (buscar or buscadores[fonte["tipo"]])(fonte, segredo)
         novos = gravar_indicadores(banco, cliente, fonte["id"], indicadores)
         passado = buscar_no_passado(banco, cliente, novos)
+        try:
+            passado += buscar_nos_fluxos_do_passado(banco, armazem, cliente, novos)
+        except Exception:
+            log.exception("indicadores novos nos fluxos de %s", cliente)
         erro = None
     except FonteComProblema as e:
         erro, novos, passado = str(e), [], 0
@@ -352,11 +483,17 @@ def fontes_vencidas(banco, cliente, agora=None):
     return [dict(zip(("id", "tipo", "endereco", "colecao", "segredo", "interna"), l)) for l in linhas]
 
 
-def ciclo(banco, cliente):
+def ciclo(banco, cliente, armazem=None):
     garantir_fonte_local(banco, cliente)
     for fonte in fontes_vencidas(banco, cliente):
-        sincronizar_fonte(banco, cliente, fonte)
-    return buscar_nos_eventos_novos(banco, cliente)
+        sincronizar_fonte(banco, cliente, fonte, armazem=armazem)
+    achados = buscar_nos_eventos_novos(banco, cliente)
+    try:
+        achados += buscar_nos_fluxos(banco, armazem, cliente)
+    except Exception:
+        # Os fluxos não podem parar a conferência dos eventos.
+        log.exception("indicadores nos fluxos de %s", cliente)
+    return achados
 
 
 def main():
@@ -366,11 +503,15 @@ def main():
     args = argparse.ArgumentParser()
     args.add_argument("--uma-vez", action="store_true")
     a = args.parse_args()
-    _, banco, _ = conexoes()
+    _, banco, env = conexoes()
+    # Os fluxos de rede ficam no armazém de eventos (roar_ingestao.fluxos): sem a leitura dele, só os eventos.
+    from .armazem import leitor
+
+    armazem = leitor(env) if env.get("ARMAZEM_LEITOR_SENHA") else None
     while True:
-        for _, cliente in banco.gerenciadores():
+        for cliente in {c for _, c in banco.gerenciadores()}:
             try:
-                ciclo(banco, cliente)
+                ciclo(banco, cliente, armazem)
             except Exception:
                 log.exception("inteligência de %s", cliente)
         if a.uma_vez:

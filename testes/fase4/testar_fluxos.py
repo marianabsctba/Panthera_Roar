@@ -21,7 +21,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(RAIZ / "ingestao"), str(RAIZ / "api")]
 
 from roar_api import leitor_armazem, saude_das_fontes  # noqa: E402
-from roar_ingestao import armazem, coletor_syslog, fluxos, fontes, provisao  # noqa: E402
+from roar_ingestao import armazem, coletor_syslog, fluxos, fontes, inteligencia, provisao  # noqa: E402
 from roar_ingestao.armazenamento import Armazenamento  # noqa: E402
 from roar_ingestao.ciclo import ler_env  # noqa: E402
 
@@ -111,10 +111,63 @@ def caminho():
         conta = saude_das_fontes.da_fonte({"tipo": "fluxo", "config": {"origens": ["172.16.0.0/12"]}}, resumo)
         registrar("os fluxos contam na saúde da fonte, por exportador", conta["eventos_24h"] >= 4 and conta["equipamentos"]
                   and not any(e["endereco"].startswith("fluxo:") for e in conta["equipamentos"]), str(conta.get("equipamentos"))[:200])
+
+        print("\n== Indicadores de ameaça nos fluxos", flush=True)
+        indicadores_nos_fluxos(admin, banco, leitor, cliente, usuario[0] if usuario else uuid.uuid4())
     finally:
         admin.execute("DELETE FROM fontes WHERE id = %s", (fonte,))
         fontes.aplicar_recepcao(banco)
         banco.fechar()
+
+
+def mandar_e_esperar(leitor, nome_do_banco, destino, n):
+    socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(netflow_v5(destino, n, int(time.time()) % 100000), ("127.0.0.1", fluxos.PORTA_NETFLOW))
+    for _ in range(15):
+        time.sleep(3)
+        if int(leitor.linhas(f"SELECT count() AS n FROM {nome_do_banco}.fluxos WHERE destino = {{d:String}}", {"d": destino})[0]["n"]) >= n:
+            return True
+    return False
+
+
+def indicadores_nos_fluxos(admin, banco, leitor, cliente, usuario):
+    nome_do_banco = armazem.banco_do(cliente)
+    fonte = admin.execute("SELECT id FROM intel_fontes WHERE cliente_id = %s AND tipo = 'manual'", (cliente,)).fetchone()
+    criada = fonte is None
+    if criada:
+        fonte = admin.execute("""INSERT INTO intel_fontes (cliente_id, nome, tipo, endereco, criado_por) VALUES (%s, 'Lista manual de teste', 'manual', '', %s) RETURNING id""",
+                              (cliente, usuario)).fetchone()
+    mau, outro = f"198.51.100.{10 + int(time.time()) % 80}", f"198.51.100.{100 + int(time.time()) % 80}"
+    ids = []
+    try:
+        ids.append(admin.execute("INSERT INTO intel_indicadores (cliente_id, fonte_id, tipo, valor, descricao) VALUES (%s, %s, 'ip', %s, 'teste') RETURNING id",
+                                 (cliente, fonte[0], mau)).fetchone()[0])
+        inteligencia.buscar_nos_fluxos(banco, leitor, cliente)  # Marca a posição antes dos fluxos de teste.
+        avisos_antes = admin.execute("SELECT coalesce(sum(contagem), 0) FROM notificacoes WHERE cliente_id = %s AND tipo = 'indicador_encontrado'", (cliente,)).fetchone()[0]
+        registrar("os fluxos para o IP malicioso chegam ao armazém", mandar_e_esperar(leitor, nome_do_banco, mau, 3))
+        time.sleep(16)  # A folga da conferência.
+        achados = inteligencia.buscar_nos_fluxos(banco, leitor, cliente)
+        linha = admin.execute("SELECT fluxos, sentido, interno FROM intel_fluxos WHERE indicador_id = %s", (ids[0],)).fetchall()
+        registrar("a conversa da rede com o indicador vira um achado, por endereço da rede", achados == 3 and len(linha) == 3
+                  and all(l[1] == "saida" and l[0] == 1 for l in linha), str(linha))
+        avisos = admin.execute("SELECT coalesce(sum(contagem), 0) FROM notificacoes WHERE cliente_id = %s AND tipo = 'indicador_encontrado'", (cliente,)).fetchone()[0]
+        registrar("o sino avisa", avisos > avisos_antes, f"{avisos_antes} -> {avisos}")
+        registrar("a volta seguinte não conta de novo", inteligencia.buscar_nos_fluxos(banco, leitor, cliente) == 0
+                  and admin.execute("SELECT sum(fluxos) FROM intel_fluxos WHERE indicador_id = %s", (ids[0],)).fetchone()[0] == 3)
+
+        # Indicador que chega depois: os fluxos já conferidos são procurados de novo.
+        registrar("fluxos para outro IP chegam antes de ele virar indicador", mandar_e_esperar(leitor, nome_do_banco, outro, 2))
+        time.sleep(16)
+        inteligencia.buscar_nos_fluxos(banco, leitor, cliente)
+        ids.append(admin.execute("INSERT INTO intel_indicadores (cliente_id, fonte_id, tipo, valor, descricao) VALUES (%s, %s, 'ip', %s, 'teste') RETURNING id",
+                                 (cliente, fonte[0], outro)).fetchone()[0])
+        passado = inteligencia.buscar_nos_fluxos_do_passado(banco, leitor, cliente, [{"id": ids[1], "tipo": "ip", "valor": outro}])
+        registrar("o indicador novo acha os fluxos que já tinham passado, marcados como do passado", passado == 2
+                  and admin.execute("SELECT bool_and(no_passado) FROM intel_fluxos WHERE indicador_id = %s", (ids[1],)).fetchone()[0], str(passado))
+    finally:
+        admin.execute("DELETE FROM intel_fluxos WHERE indicador_id = ANY(%s)", (ids,))
+        admin.execute("DELETE FROM intel_indicadores WHERE id = ANY(%s)", (ids,))
+        if criada:
+            admin.execute("DELETE FROM intel_fontes WHERE id = %s", (fonte[0],))
 
 
 def main():

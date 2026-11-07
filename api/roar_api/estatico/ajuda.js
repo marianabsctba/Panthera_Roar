@@ -187,6 +187,7 @@ export const AJUDA = [
     ] },
     { id: "inteligencia", vista: "inteligencia", titulo: "Inteligência", blocos: [
       "Ligue uma fonte MISP ou TAXII da sua organização, se tiver. É opcional, e o Roar funciona sem nenhuma.",
+      "Com fluxos de rede chegando (NetFlow, IPFIX ou sFlow), os IPs das fontes também são procurados nas conversas da rede. Aparecem em Conversas de rede com um indicador: qual endereço da sua rede falou com o IP, quem chamou quem, quantos fluxos e quanto passou, por dia. O sino avisa no primeiro achado de cada um, e um IP que entra na lista depois é procurado nos fluxos dos últimos 90 dias.",
       { passos: [
         "Crie no MISP ou no TAXII uma conta só com leitura.",
         "Clique em Nova fonte e informe o endereço e a credencial, que fica cifrada.",
