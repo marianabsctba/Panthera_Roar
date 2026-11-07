@@ -1,0 +1,26 @@
+# Fluxos de rede no receptor da instalação (roar_ingestao.fluxos). Gerado: as rotas, a chave do repasse, o roteador e as
+# saídas (uma por gerenciador, para o coletor dele) entram nos marcadores, que não podem aparecer em comentário.
+# O goflow2 (serviço fluxos) recebe NetFlow, IPFIX e sFlow e escreve um fluxo por linha, em JSON; aqui cada fluxo vai ao
+# coletor do gerenciador dono do exportador. Exportador fora das rotas é descartado.
+
+sources:
+  fluxos_arquivos:
+    type: file
+    include: [/var/fluxos/*.log]
+    read_from: beginning
+
+transforms:
+  fluxos_rotear:
+    type: remap
+    inputs: [fluxos_arquivos]
+    drop_on_abort: true
+    source: |
+      fluxo = object(parse_json(string(.message) ?? "") ?? {}) ?? {}
+      ip = string(fluxo.sampler_address) ?? ""
+      # Lida como JSON: o tipo de cada rota não depende de a lista estar vazia.
+      rotas = array(parse_json(s'__ROTAS__') ?? []) ?? []
+      achadas = filter(rotas) -> |_indice, rota| { ip_cidr_contains(string(rota.rede) ?? "", ip) ?? false }
+      if length(achadas) == 0 { abort }
+      . = {"message": "ROAR __CHAVE__ " + encode_json(fluxo), "gerenciador": achadas[0].gerenciador}
+
+__SAIDAS__

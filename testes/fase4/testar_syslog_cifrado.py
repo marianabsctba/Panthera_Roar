@@ -40,13 +40,14 @@ def regras():
               and "address: roar-ger-gera00001-coletor-1:5140" in texto and "__ROTAS__" not in texto and "__SAIDAS__" not in texto)
     registrar("o repasse leva a chave da instalação e o endereço do equipamento", '"ROAR chave-de-teste " + ip + " " + linha' in texto)
     import yaml
-    for nome, gerada in (("receptor com rota", texto), ("receptor sem rota", sc.configuracao([], "chave-de-teste")),
-                         ("coletor", coletor_syslog.configuracao(["10.0.0.0/8"], True, "chave-de-teste"))):
+    # O coletor confere a chave em dois lugares: o syslog e os fluxos de rede repassados.
+    for nome, gerada, vezes in (("receptor com rota", texto, 1), ("receptor sem rota", sc.configuracao([], "chave-de-teste"), 1),
+                                ("coletor", coletor_syslog.configuracao(["10.0.0.0/8"], True, "chave-de-teste"), 2)):
         try:
             yaml.safe_load(gerada)
-            registrar(f"{nome}: YAML válido, com a chave uma vez só", gerada.count("chave-de-teste") == 1, str(gerada.count("chave-de-teste")))
+            registrar(f"{nome}: YAML válido, com a chave só onde é conferida", gerada.count("chave-de-teste") == vezes, str(gerada.count("chave-de-teste")))
         except yaml.YAMLError as erro:
-            registrar(f"{nome}: YAML válido, com a chave uma vez só", False, str(erro)[:200])
+            registrar(f"{nome}: YAML válido, com a chave só onde é conferida", False, str(erro)[:200])
     vazio = sc.configuracao([], "k")
     registrar("sem fonte nenhuma, o receptor não tem rota nem destino", "parse_json(s'[]')" in vazio and "type: blackhole" in vazio and "coletor-1" not in vazio)
     try:

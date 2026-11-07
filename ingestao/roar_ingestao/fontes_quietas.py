@@ -13,7 +13,7 @@ from .armazem import banco_do as banco_do_armazem
 from .regras import PASTA_GERENCIADORES
 
 log = logging.getLogger("roar.fontes_quietas")
-TIPOS = ("syslog", "github", "office365", "msgraph", "aws", "azure", "gcp")
+TIPOS = ("syslog", "fluxo", "github", "office365", "msgraph", "aws", "azure", "gcp")
 # O que já foi avisado e continua quieto: (cliente, fonte, equipamento).
 _avisadas = set()
 
@@ -33,7 +33,7 @@ def quietas(fonte, conta):
     """[(chave do equipamento, texto do aviso)] do que está abaixo do normal nesta fonte."""
     def texto(rotulo, c):
         return f"{rotulo}: {_numero(c['ultima_hora'])} eventos na última hora; o normal nesse horário é {_numero(c['normal_da_hora'])}"
-    if fonte["tipo"] == "syslog":
+    if fonte["tipo"] in ("syslog", "fluxo"):
         return [(q["endereco"], texto(f"{fonte['nome']} ({q['endereco']})", q)) for q in conta.get("equipamentos", []) if q["abaixo_do_normal"]]
     return [("", texto(fonte["nome"], conta))] if conta["abaixo_do_normal"] else []
 

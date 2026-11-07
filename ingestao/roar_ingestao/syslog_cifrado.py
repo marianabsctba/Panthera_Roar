@@ -98,7 +98,7 @@ def preparar(dominio, raiz=PASTA):
     return True
 
 
-def distribuir(fontes):
+def distribuir(fontes, motivo="O endereço {} já envia syslog cifrado para outra organização desta instalação."):
     """fontes: [{"id", "gerenciador", "origens", "criada_em"}] de todas as organizações. Devolve (rotas, recusadas):
     rotas é [(rede, gerenciador)], e recusadas, {id da fonte: motivo}. A mais antiga fica com a rede."""
     rotas, recusadas = [], {}
@@ -106,32 +106,32 @@ def distribuir(fontes):
         redes = [ipaddress.ip_network(r) for r in fonte["origens"]]
         conflito = next((r for r in redes for tomada, dono in rotas if dono != fonte["gerenciador"] and r.overlaps(tomada)), None)
         if conflito:
-            recusadas[fonte["id"]] = f"O endereço {conflito} já envia syslog cifrado para outra organização desta instalação."
+            recusadas[fonte["id"]] = motivo.format(conflito)
             continue
         rotas += [(r, fonte["gerenciador"]) for r in redes if (r, fonte["gerenciador"]) not in rotas]
     return [(str(r), g) for r, g in rotas], recusadas
 
 
-def configuracao(rotas, chave):
-    """A configuração do receptor: as rotas e uma saída por gerenciador, para o coletor dele. Sem rota, recusa tudo."""
-    from .coletor_syslog import PORTA_DO_REPASSE
-
+def saidas(rotas, entrada, prefixo, porta):
+    """O roteador e uma saída por gerenciador, para o coletor dele, no fim de uma configuração do receptor. Sem rota, uma
+    saída que descarta (o Vector exige ao menos uma). Serve ao syslog cifrado e aos fluxos (fluxos.py)."""
     gerenciadores = sorted({g for _, g in rotas})
     for g in gerenciadores:
         if not NOME_DE_GERENCIADOR.fullmatch(g):
             raise ValueError("gerenciador inválido")
-    texto = (MODELO.read_text(encoding="utf-8")
-             .replace("__ROTAS__", json.dumps([{"rede": r, "gerenciador": g} for r, g in rotas]))
-             .replace("__CHAVE__", chave))
     if not gerenciadores:
-        # O Vector exige uma saída; sem rota nenhuma, nada chega até ela.
-        return texto.replace("__SAIDAS__", "sinks:\n  nenhum:\n    type: blackhole\n    inputs: [rotear]\n    print_interval_secs: 0")
+        return f"sinks:\n  {prefixo}nenhum:\n    type: blackhole\n    inputs: [{entrada}]\n    print_interval_secs: 0"
     destinos = "".join(f"      g{g}: .gerenciador == \"{g}\"\n" for g in gerenciadores)
-    saidas = "".join(f"""  coletor_{g}:
+    roteador = f"""  {prefixo}destino:
+    type: route
+    inputs: [{entrada}]
+    route:
+{destinos}"""
+    envios = "".join(f"""  {prefixo}coletor_{g}:
     type: socket
-    inputs: [destino.g{g}]
+    inputs: [{prefixo}destino.g{g}]
     mode: tcp
-    address: roar-ger-{g}-coletor-1:{PORTA_DO_REPASSE}
+    address: roar-ger-{g}-coletor-1:{porta}
     framing:
       method: newline_delimited
     encoding:
@@ -141,19 +141,24 @@ def configuracao(rotas, chave):
       max_events: 50000
       when_full: block
 """ for g in gerenciadores)
-    roteador = f"""  destino:
-    type: route
-    inputs: [rotear]
-    route:
-{destinos}"""
     # O roteador é uma transformação: entra no fim da lista de transformações do modelo.
-    return texto.replace("\n__SAIDAS__", roteador + "\nsinks:\n" + saidas.rstrip("\n"))
+    return roteador + "\nsinks:\n" + envios.rstrip("\n")
 
 
-def gravar_configuracao(texto, raiz=PASTA):
+def configuracao(rotas, chave):
+    """A configuração do receptor: as rotas e uma saída por gerenciador, para o coletor dele. Sem rota, recusa tudo."""
+    from .coletor_syslog import PORTA_DO_REPASSE
+
+    texto = (MODELO.read_text(encoding="utf-8")
+             .replace("__ROTAS__", json.dumps([{"rede": r, "gerenciador": g} for r, g in rotas]))
+             .replace("__CHAVE__", chave))
+    return texto.replace("\n__SAIDAS__", "\n" + saidas(rotas, "rotear", "", PORTA_DO_REPASSE))
+
+
+def gravar_configuracao(texto, raiz=PASTA, nome="recepcao.yaml"):
     """Troca o arquivo de uma vez só: o receptor relê a pasta sozinho quando ela muda. Só o root lê: tem a chave do
     repasse. Devolve True se mudou."""
-    destino = raiz / "configuracao" / "recepcao.yaml"
+    destino = raiz / "configuracao" / nome
     if destino.exists() and destino.read_text(encoding="utf-8") == texto:
         return False
     provisorio = destino.with_suffix(".novo")

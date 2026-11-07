@@ -2,7 +2,7 @@ import { ActionIcon, Alert, AppShell, Avatar, Box, Burger, Button, Center, Group
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconAlertTriangle, IconApi, IconBell, IconBriefcase, IconBuildingSkyscraper, IconCheck, IconDatabaseCog, IconDeviceMobile, IconKey, IconBug, IconChartHistogram, IconChevronDown, IconClipboardCheck, IconDatabase, IconFileCertificate, IconFileText, IconFingerprint, IconHelpCircle,
-  IconLayoutDashboard, IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconUsers,
+  IconLayoutDashboard, IconListSearch, IconLogout, IconPlugConnected, IconRobot, IconServer2, IconShieldCheck, IconShieldHalf, IconTargetArrow, IconTopologyStar3, IconArrowsExchange, IconUsers,
 } from "@tabler/icons-react";
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 
@@ -21,6 +21,7 @@ import { Api } from "./telas/Api";
 import { Casos } from "./telas/Casos";
 import { Fila } from "./telas/Fila";
 import { Fontes } from "./telas/Fontes";
+import { Fluxos } from "./telas/Fluxos";
 import { Inteligencia } from "./telas/Inteligencia";
 import { Integridade } from "./telas/Integridade";
 import { Logs } from "./telas/Logs";
@@ -50,6 +51,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
   { titulo: "Investigar", itens: [
     { id: "ataques", rotulo: "Ataque e defesa", icone: IconTargetArrow, modulo: "siem", tela: Ataques },
     { id: "inteligencia", rotulo: "Inteligência", icone: IconTopologyStar3, modulo: "siem", tela: Inteligencia },
+    { id: "fluxos", rotulo: "Fluxos de rede", icone: IconArrowsExchange, modulo: "siem", tela: Fluxos },
     { id: "prova", rotulo: "Prova e evidência", icone: IconFingerprint, modulo: "siem", tela: Prova },
   ] },
   { titulo: "Proteger", itens: [

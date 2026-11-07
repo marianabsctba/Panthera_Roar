@@ -58,6 +58,7 @@ from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
 from roar_ingestao import vulnerabilidades  # noqa: E402
 from roar_ingestao.normalizar import CAMPOS_DE_IP_DE_DESTINO, CAMPOS_DE_IP_DE_ORIGEM  # noqa: E402
+from roar_ingestao import fluxos as fluxos_de_rede  # noqa: E402
 from roar_ingestao.syslog_cifrado import PORTA as PORTA_DO_SYSLOG_CIFRADO, PASTA as PASTA_DO_SYSLOG_CIFRADO  # noqa: E402
 from roar_ingestao import superficie as superficie_externa_  # noqa: E402
 from roar_ingestao import fontes as fontes_de_dados  # noqa: E402
@@ -85,9 +86,11 @@ TAMANHO_MAXIMO_DO_ENVIO = 1_000_000
 LIMITE_DA_FILA_DO_WEBHOOK = 10_000
 MINUTOS_ATE_PARADA = 15
 # A porta que o equipamento usa; dentro do receptor é sempre PORTA_DO_SYSLOG_CIFRADO (infra/docker-compose.yml).
+PORTA_NETFLOW = int(os.getenv("NETFLOW_PORTA") or fluxos_de_rede.PORTA_NETFLOW)
+PORTA_SFLOW = int(os.getenv("SFLOW_PORTA") or fluxos_de_rede.PORTA_SFLOW)
 PORTA_SYSLOG_CIFRADO = int(os.getenv("SYSLOG_CIFRADO_PORTA") or str(PORTA_DO_SYSLOG_CIFRADO))
 # As fontes cujos eventos têm origem própria nos logs; webhook e API chegam todos pela mesma origem.
-TIPOS_COM_VOLUME = ("syslog", "github", "office365", "msgraph", "aws", "azure", "gcp")
+TIPOS_COM_VOLUME = ("syslog", "fluxo", "github", "office365", "msgraph", "aws", "azure", "gcp")
 DESLOCAMENTO_SYSLOG = 3
 VERSAO_DO_AGENTE = "4.14.9"
 # Endereço que os ativos e equipamentos do cliente usam para chegar a este servidor.
@@ -4604,11 +4607,15 @@ def _saude_da_fonte(fonte, origens):
     if origens is None:
         return {"saude": "desconhecida", "ultimo_dado": None}
     ultimos = []
-    if fonte["tipo"] == "syslog":
+    if fonte["tipo"] in ("syslog", "fluxo"):
+        # O fluxo aparece com o exportador depois de "fluxo:" (saude_das_fontes.PREFIXO_DO_FLUXO).
+        prefixo = saude_das_fontes.PREFIXO_DO_FLUXO if fonte["tipo"] == "fluxo" else ""
         redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
         for local, ultimo in origens:
+            if not local.startswith(prefixo) or (not prefixo and local.startswith(saude_das_fontes.PREFIXO_DO_FLUXO)):
+                continue
             try:
-                if ultimo and any(ipaddress.ip_address(local) in rede for rede in redes):
+                if ultimo and any(ipaddress.ip_address(local[len(prefixo):]) in rede for rede in redes):
                     ultimos.append(ultimo)
             except ValueError:
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
@@ -4650,7 +4657,9 @@ def listar_fontes(request: Request, sessao=Depends(exige(permissoes.VER))):
     return {"fontes": fontes, "agentes": agentes, "endereco": ENDERECO_PUBLICO,
             "porta_syslog": gerenciador["porta_base"] + DESLOCAMENTO_SYSLOG if gerenciador else None,
             # Só com o receptor preparado (infra/servicos.sh): sem ele, a tela não oferece o syslog cifrado.
-            "porta_syslog_cifrado": PORTA_SYSLOG_CIFRADO if (PASTA_DO_SYSLOG_CIFRADO / "certificados" / "autoridade.pem").is_file() else None}
+            "porta_syslog_cifrado": PORTA_SYSLOG_CIFRADO if (PASTA_DO_SYSLOG_CIFRADO / "certificados" / "autoridade.pem").is_file() else None,
+            # Fluxos de rede só com o coletor de fluxos preparado (infra/servicos.sh).
+            "portas_de_fluxo": {"netflow": PORTA_NETFLOW, "sflow": PORTA_SFLOW} if (fluxos_de_rede.PASTA / "dados").is_dir() else None}
 
 
 @app.get("/api/fontes/certificado-syslog")
@@ -4680,6 +4689,50 @@ def criar_fonte(dados: FonteNova, request: Request, sessao=Depends(exige(permiss
         con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
                     (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
     return {"id": nova, "estado": "pendente"}
+
+
+class FonteDeFluxo(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    origens: list[str] = Field(max_length=200)
+
+
+@app.post("/api/fontes/fluxo", status_code=201)
+def criar_fonte_de_fluxo(dados: FonteDeFluxo, request: Request, sessao=Depends(exige(permissoes.GERIR_FONTES))):
+    """Os equipamentos que exportam NetFlow, IPFIX ou sFlow para esta organização (roar_ingestao.fluxos)."""
+    try:
+        origens = fontes_de_dados.validar_fluxo(dados.origens)
+    except fontes_de_dados.FonteInvalida as erro:
+        raise HTTPException(status_code=422, detail=str(erro))
+    with do_cliente(request, sessao) as con:
+        gerenciador = con.execute("SELECT id FROM gerenciadores ORDER BY criado_em DESC LIMIT 1").fetchone()
+        if not gerenciador:
+            raise HTTPException(status_code=409, detail="Nenhum gerenciador disponível.")
+        if not _armazem_da_organizacao(request, con, sessao):
+            raise HTTPException(status_code=409, detail="Os fluxos de rede ficam no armazém novo, e esta organização ainda não lê dele.")
+        nova = con.execute("INSERT INTO fontes (cliente_id, gerenciador_id, tipo, nome, config, criada_por) VALUES (%s, %s, 'fluxo', %s, %s, %s) RETURNING id",
+                           (sessao["cliente_id"], gerenciador["id"], dados.nome, json.dumps({"origens": origens}), sessao["usuario_id"])).fetchone()["id"]
+        con.execute("INSERT INTO auditoria (cliente_id, usuario_id, acao, alvo) VALUES (%s, %s, 'criar_fonte', %s)",
+                    (sessao["cliente_id"], sessao["usuario_id"], str(nova)))
+    return {"id": nova, "estado": "pendente"}
+
+
+@app.get("/api/fluxos")
+def ver_fluxos(request: Request, sessao=Depends(exige(permissoes.VER)), horas: int = 24, ip: str = ""):
+    """Os fluxos de rede da organização no armazém: totais, horas, quem mais conversa, portas, países e os mais recentes."""
+    horas = max(1, min(horas, 24 * 30))
+    if ip:
+        try:
+            ip = str(ipaddress.ip_address(ip.strip()))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Endereço inválido.")
+    with do_cliente(request, sessao) as con:
+        onde = _armazem_da_organizacao(request, con, sessao)
+    if not onde:
+        return {"disponivel": False}
+    try:
+        return {"disponivel": True, **leitor_armazem.fluxos(onde["armazem"], onde["banco"], horas, ip or None)}
+    except (armazem_de_eventos.ArmazemRecusou, requests.RequestException):
+        raise HTTPException(status_code=503, detail="O armazém não respondeu. Tente de novo em instantes.")
 
 
 class FonteDeNuvem(BaseModel):

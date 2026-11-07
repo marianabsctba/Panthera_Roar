@@ -20,6 +20,33 @@ TAMANHO_MAXIMO = 262144
 DIAS_QUENTES_PADRAO = 30
 NOME_DE_GERENCIADOR = re.compile(r"[a-z0-9]{6,32}")
 TABELAS = ("logs", "alertas")
+# O que o coletor grava: os logs e alertas do gerenciador, e os fluxos de rede (roar_ingestao.fluxos).
+TABELAS_DO_COLETOR = (*TABELAS, "fluxos")
+# Um fluxo de rede: quem falou com quem, por qual porta, quanto. O país e a operadora são do lado de fora da rede.
+COLUNAS_DE_FLUXO = """
+    id UUID DEFAULT generateUUIDv4(),
+    ocorrido_em DateTime64(3, 'UTC'),
+    recebido_em DateTime64(3, 'UTC') DEFAULT now64(3),
+    gerenciador LowCardinality(String),
+    exportador LowCardinality(String),
+    tipo LowCardinality(String),
+    origem String,
+    destino String,
+    porta_origem UInt16,
+    porta_destino UInt16,
+    protocolo LowCardinality(String),
+    bytes UInt64,
+    pacotes UInt64,
+    amostragem UInt32,
+    interface_entrada UInt32,
+    interface_saida UInt32,
+    tcp_flags UInt16,
+    pais LowCardinality(String),
+    operadora LowCardinality(String),
+    asn LowCardinality(String),
+    INDEX ix_origem origem TYPE bloom_filter(0.01) GRANULARITY 4,
+    INDEX ix_destino destino TYPE bloom_filter(0.01) GRANULARITY 4
+"""
 # O resumo por hora de cada origem: o bastante para comparar com as semanas anteriores.
 DIAS_DO_RESUMO = 35
 
@@ -165,6 +192,12 @@ def criar_organizacao(armazem, cliente_id, dias_alertas, dias_logs, dias_quentes
         for coluna, tipo in COLUNAS_NOVAS:
             armazem.executar(f"ALTER TABLE {banco}.{tabela}_recuperados ADD COLUMN IF NOT EXISTS {coluna} {tipo}")
             armazem.executar(f"ALTER TABLE {banco}.{tabela}_leitura ADD COLUMN IF NOT EXISTS {coluna} {tipo}")
+    armazem.executar(f"""CREATE TABLE IF NOT EXISTS {banco}.fluxos ({COLUNAS_DE_FLUXO})
+                         ENGINE = MergeTree
+                         PARTITION BY toYYYYMMDD(ocorrido_em)
+                         ORDER BY (toStartOfHour(ocorrido_em), exportador, ocorrido_em)
+                         TTL {ttl(dias_logs, dias_quentes)}
+                         SETTINGS storage_policy = 'roar', ttl_only_drop_parts = 1""")
     criar_resumo_das_origens(armazem, banco)
     aplicar_retencao(armazem, cliente_id, dias_alertas, dias_logs, dias_quentes)
     armazem.executar(f"GRANT SELECT ON {banco}.* TO {LEITOR}")
@@ -195,6 +228,12 @@ def criar_resumo_das_origens(armazem, banco):
     armazem.executar(f"""CREATE MATERIALIZED VIEW IF NOT EXISTS {banco}.origens_por_hora_visao TO {banco}.origens_por_hora
                          DEFINER = CURRENT_USER SQL SECURITY DEFINER AS {selecao} GROUP BY hora, gerenciador, agente_id, local""")
     armazem.executar(f"ALTER TABLE {banco}.origens_por_hora_visao MODIFY DEFINER = CURRENT_USER SQL SECURITY DEFINER")
+    # Os fluxos também contam na saúde da fonte, com o exportador como origem; um fluxo é sempre entendido.
+    armazem.executar(f"""CREATE MATERIALIZED VIEW IF NOT EXISTS {banco}.fluxos_por_hora_visao TO {banco}.origens_por_hora
+                         DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+                         SELECT toStartOfHour(ocorrido_em) AS hora, gerenciador, '' AS agente_id, concat('fluxo:', exportador) AS local,
+                                count() AS eventos, count() AS entendidos, max(ocorrido_em) AS ultimo
+                         FROM {banco}.fluxos GROUP BY hora, gerenciador, local""")
     if novo:
         # Só o que chegou antes da visão existir: o que chega depois, ela mesma soma.
         corte = armazem.linhas("SELECT toString(now64(3)) AS t")[0]["t"]
@@ -208,7 +247,7 @@ def aplicar_retencao(armazem, cliente_id, dias_alertas, dias_logs, dias_quentes=
     # Organização sem gerenciador ainda não tem banco: a regra entra quando ele for criado.
     if armazem.linhas("SELECT count() AS n FROM system.databases WHERE name = {banco:String}", {"banco": banco})[0]["n"] in (0, "0"):
         return
-    for tabela, dias in (("logs", dias_logs), ("alertas", dias_alertas)):
+    for tabela, dias in (("logs", dias_logs), ("alertas", dias_alertas), ("fluxos", dias_logs)):
         # Só troca a regra: o ClickHouse aplica aos poucos, nas próximas junções, sem reescrever tudo agora.
         armazem.executar(f"ALTER TABLE {banco}.{tabela} MODIFY TTL {ttl(dias, dias_quentes)} SETTINGS materialize_ttl_after_modify = 0")
 
@@ -219,7 +258,7 @@ def criar_gravador(armazem, gerenciador_id, cliente_id, senha):
     armazem.executar(f"CREATE USER IF NOT EXISTS {usuario} IDENTIFIED WITH sha256_hash BY '{_hash_da_senha(senha)}'")
     armazem.executar(f"ALTER USER {usuario} IDENTIFIED WITH sha256_hash BY '{_hash_da_senha(senha)}'")
     armazem.executar(f"REVOKE ALL ON *.* FROM {usuario}")
-    for tabela in TABELAS:
+    for tabela in TABELAS_DO_COLETOR:
         armazem.executar(f"GRANT INSERT ON {banco}.{tabela} TO {usuario}")
     return usuario
 

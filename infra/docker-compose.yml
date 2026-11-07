@@ -156,7 +156,8 @@ services:
   recepcao:
     image: timberio/vector:0.60.0-debian@sha256:3ccb4bbd36e38734394e158db1411e91a69d076ed25013f8de385046a382d36a
     container_name: roar-recepcao
-    command: ["--config", "/etc/recepcao/configuracao/recepcao.yaml", "--watch-config"]
+    # A pasta inteira: o syslog cifrado (recepcao.yaml) e os fluxos de rede (fluxos.yaml), cada um gerado à parte.
+    command: ["--config-dir", "/etc/recepcao/configuracao", "--watch-config"]
     environment:
       - VECTOR_LOG=warn
     ports:
@@ -164,9 +165,24 @@ services:
     volumes:
       - ./syslog-cifrado/configuracao:/etc/recepcao/configuracao:ro
       - ./syslog-cifrado/certificados:/etc/recepcao/certificados:ro
+      - ./fluxos/dados:/var/fluxos:ro
       - roar-recepcao:/var/lib/vector
     networks:
       - gerenciadores
+    restart: unless-stopped
+
+  # Fluxos de rede (roar_ingestao.fluxos): NetFlow v5 e v9 e IPFIX na 2055, sFlow na 6343. Escreve um fluxo por linha,
+  # em JSON, que o receptor leva ao coletor do gerenciador dono do exportador. As portas escutam só onde
+  # FLUXOS_ENDERECO mandar.
+  fluxos:
+    image: netsampler/goflow2:v2.2.3@sha256:30f6e2a15db7a3848bf0ce4efb644c419fb761c0931f0cea27eac4f699b27287
+    container_name: roar-fluxos
+    command: ["-listen", "netflow://:2055,sflow://:6343", "-format", "json", "-transport", "file", "-transport.file", "/dados/fluxos.log"]
+    ports:
+      - "${FLUXOS_ENDERECO:-127.0.0.1}:${NETFLOW_PORTA:-2055}:2055/udp"
+      - "${FLUXOS_ENDERECO:-127.0.0.1}:${SFLOW_PORTA:-6343}:6343/udp"
+    volumes:
+      - ./fluxos/dados:/dados
     restart: unless-stopped
 
 volumes:

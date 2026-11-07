@@ -266,6 +266,10 @@ export const AJUDA = [
       ] },
       "O MikroTik não é lido pelo servidor de fábrica: o Roar traz um parser próprio, com alertas de login recusado e de muitas tentativas seguidas vindas do mesmo endereço. Para outro fabricante, use o cartão Syslog e, se a parte entendida ficar baixa, crie um parser na aba Parsers.",
       { aviso: "Os cartões de firewall foram testados com linhas de exemplo de cada fabricante, ainda não com o equipamento ligado. Se a linha do seu equipamento não sair como esperado no teste, avise." },
+      { h: "NetFlow, IPFIX e sFlow" },
+      "Os fluxos de rede dizem quem conversou com quem, por qual porta e quanto. No cartão NetFlow, IPFIX e sFlow, clique em Conectar e cadastre o endereço de onde o equipamento exporta. No equipamento, ligue a exportação de fluxos e aponte para o endereço e a porta do cartão, em UDP: uma porta para NetFlow e IPFIX, outra para sFlow.",
+      "Os fluxos vão direto ao armazém, sem passar pelas regras, e aparecem em Fluxos de rede, no menu Investigar: volume por hora, quem mais manda e recebe, portas de destino, países do lado de fora e os mais recentes. Clique num endereço para ver só os fluxos dele. A saúde da fonte mostra cada exportador.",
+      { aviso: "Com amostragem ligada no equipamento, o volume mostrado é uma fração do real. Um mesmo exportador não pode mandar para duas organizações da instalação: a fonte mais nova é recusada, com o motivo." },
       { h: "Syslog cifrado, pela internet" },
       "O syslog comum não é cifrado: serve para a rede de confiança. Para um equipamento que manda log pela internet, como o firewall de uma filial, use o syslog cifrado (TLS). A porta é uma só para a instalação, a 6514, e aparece no cartão Syslog e nos cartões de firewall.",
       { lista: [

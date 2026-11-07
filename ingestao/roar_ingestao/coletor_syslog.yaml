@@ -30,6 +30,17 @@ sources:
         max_length: 65000
     decoding:
       codec: bytes
+  # Os fluxos de rede repassados pelo receptor da instalação (roar_ingestao.fluxos), um por linha.
+  fluxos_repassados:
+    type: socket
+    mode: tcp
+    address: 0.0.0.0:5141
+    framing:
+      method: newline_delimited
+      newline_delimited:
+        max_length: 65200
+    decoding:
+      codec: bytes
   syslog_repassado:
     type: socket
     mode: tcp
@@ -42,6 +53,56 @@ sources:
       codec: bytes
 
 transforms:
+  # Um fluxo do goflow2 vira a linha da tabela fluxos. O país e a operadora são do endereço de fora da rede.
+  fluxos_linhas:
+    type: remap
+    inputs: [fluxos_repassados]
+    drop_on_abort: true
+    source: |
+      partes = parse_regex(string(.message) ?? "", r'^ROAR (?P<chave>\S+) (?P<fluxo>\{.*\})$') ?? {}
+      if partes.chave != "__CHAVE__" { abort }
+      fluxo = object(parse_json(string(partes.fluxo) ?? "") ?? {}) ?? {}
+      inicio = to_int(fluxo.time_flow_start_ns) ?? 0
+      if inicio <= 0 { inicio = to_int(fluxo.time_received_ns) ?? 0 }
+      quando = from_unix_timestamp(inicio, unit: "nanoseconds") ?? now()
+      origem = string(fluxo.src_addr) ?? ""
+      destino = string(fluxo.dst_addr) ?? ""
+      privadas = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "fc00::/7", "fe80::/10"]
+      origem_privada = length(filter(privadas) -> |_i, rede| { ip_cidr_contains(rede, origem) ?? false }) > 0
+      externo = if origem_privada { destino } else { origem }
+      pais = ""
+      operadora = ""
+      asn = ""
+      if externo != "" {
+        lugar, erro_lugar = get_enrichment_table_record("cidades", {"ip": externo})
+        if erro_lugar == null { pais = string(lugar.country_name) ?? "" }
+        rede, erro_rede = get_enrichment_table_record("operadoras", {"ip": externo})
+        if erro_rede == null {
+          operadora = string(rede.autonomous_system_organization) ?? ""
+          asn = to_string(rede.autonomous_system_number) ?? ""
+        }
+      }
+      . = {
+        "ocorrido_em": format_timestamp!(quando, "%Y-%m-%d %H:%M:%S%.3f", timezone: "UTC"),
+        "gerenciador": get_env_var!("GERENCIADOR_ID"),
+        "exportador": string(fluxo.sampler_address) ?? "",
+        "tipo": string(fluxo.type) ?? "",
+        "origem": origem,
+        "destino": destino,
+        "porta_origem": to_int(fluxo.src_port) ?? 0,
+        "porta_destino": to_int(fluxo.dst_port) ?? 0,
+        "protocolo": string(fluxo.proto) ?? "",
+        "bytes": to_int(fluxo.bytes) ?? 0,
+        "pacotes": to_int(fluxo.packets) ?? 0,
+        "amostragem": to_int(fluxo.sampling_rate) ?? 0,
+        "interface_entrada": to_int(fluxo.in_if) ?? 0,
+        "interface_saida": to_int(fluxo.out_if) ?? 0,
+        "tcp_flags": to_int(fluxo.tcp_flags) ?? 0,
+        "pais": pais,
+        "operadora": operadora,
+        "asn": asn
+      }
+
   # O receptor cifrado manda "ROAR <chave> <endereço do equipamento> <linha>". Sem a chave certa, a linha é descartada.
   syslog_repassado_ler:
     type: remap

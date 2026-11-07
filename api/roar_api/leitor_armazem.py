@@ -224,3 +224,31 @@ def ocupado(armazem, banco):
         chave = f"{dia[:4]}-{dia[4:6]}-{dia[6:8]}"
         dias.setdefault(chave, {"logs": 0, "alertas": 0})[tipo] += tamanho
     return {**total, "por_dia": [{"dia": d, **v} for d, v in sorted(dias.items())]}
+
+
+def fluxos(armazem, banco, horas, ip=None):
+    """Os fluxos de rede das últimas horas: totais, a série por hora, quem mais manda e recebe, as portas e os países de
+    destino, e os mais recentes. Com ip, só os fluxos em que ele aparece, de um lado ou do outro."""
+    t = Tradutor()
+    onde = f"ocorrido_em >= now64(3) - INTERVAL {int(horas)} HOUR"
+    if ip:
+        onde += f" AND (origem = {t.p(ip)} OR destino = {t.p(ip)})"
+    tabela = f"{banco}.fluxos"
+    total = armazem.linhas(f"SELECT count() AS fluxos, sum(bytes) AS bytes, sum(pacotes) AS pacotes, uniqExact(exportador) AS exportadores FROM {tabela} WHERE {onde}",
+                           t.parametros)[0]
+
+    def maiores(campo, limite=10):
+        return [{"valor": l["valor"], "bytes": int(l["bytes"]), "fluxos": int(l["fluxos"])} for l in armazem.linhas(
+            f"""SELECT {campo} AS valor, sum(bytes) AS bytes, count() AS fluxos FROM {tabela} WHERE {onde} AND notEmpty(toString(valor))
+                GROUP BY valor ORDER BY bytes DESC LIMIT {limite}""", t.parametros)]
+
+    horas_ = [{"hora": _iso(l["h"])[:13], "bytes": int(l["bytes"]), "fluxos": int(l["fluxos"])} for l in armazem.linhas(
+        f"""SELECT toUnixTimestamp(toStartOfHour(ocorrido_em)) AS h, sum(bytes) AS bytes, count() AS fluxos FROM {tabela} WHERE {onde}
+            GROUP BY h ORDER BY h""", t.parametros)]
+    recentes = armazem.linhas(f"""SELECT toString(ocorrido_em) AS quando, exportador, origem, destino, porta_origem, porta_destino, protocolo, bytes, pacotes, pais, operadora
+                                  FROM {tabela} WHERE {onde} ORDER BY ocorrido_em DESC LIMIT 100""", t.parametros)
+    return {
+        "total": {"fluxos": int(total["fluxos"]), "bytes": int(total["bytes"] or 0), "pacotes": int(total["pacotes"] or 0), "exportadores": int(total["exportadores"])},
+        "horas": horas_, "origens": maiores("origem"), "destinos": maiores("destino"), "portas": maiores("porta_destino"), "paises": maiores("pais"),
+        "recentes": [{**r, "porta_origem": int(r["porta_origem"]), "porta_destino": int(r["porta_destino"]), "bytes": int(r["bytes"]), "pacotes": int(r["pacotes"])} for r in recentes],
+    }

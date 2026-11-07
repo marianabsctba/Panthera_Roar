@@ -413,6 +413,7 @@ def ciclo(banco):
             continue
         try:
             encaminhar_webhooks(banco, gerenciador_id, cliente)
+            aplicar_fontes_de_fluxo(banco, gerenciador_id, cliente)
             buscar_apis(banco, gerenciador_id, cliente)
             fim.aplicar_caminhos(banco, gerenciador_id, cliente)
             fim.enviar_varreduras(banco, gerenciador_id, cliente)
@@ -435,27 +436,52 @@ def ciclo(banco):
     aplicar_armazenamento(banco)
 
 
-def aplicar_recepcao(banco, raiz=None):
-    """Rotas do receptor de syslog cifrado: os endereços das fontes cifradas de todas as organizações, cada um para o
-    gerenciador dono. Endereço já tomado por outra organização: a fonte mais nova é recusada, com o motivo."""
+def aplicar_recepcao(banco, raiz=None, raiz_dos_fluxos=None):
+    """Rotas do receptor da instalação: os endereços das fontes de syslog cifrado e os exportadores das fontes de fluxo,
+    de todas as organizações, cada um para o gerenciador dono. Endereço já tomado por outra organização: a fonte mais nova
+    é recusada, com o motivo. Também gira o arquivo do coletor de fluxos."""
+    from . import fluxos
+
     raiz = raiz or syslog_cifrado.PASTA
     if not (raiz / "configuracao").is_dir():
         return False  # Instalação sem o receptor preparado (infra/servicos.sh).
-    fontes = []
+    cifradas, de_fluxo = [], []
     for gerenciador_id, cliente in banco.gerenciadores():
         with banco.con.transaction():
             banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
             linhas = banco.con.execute(
-                """SELECT id, config, criada_em FROM fontes WHERE gerenciador_id = %s AND tipo = 'syslog' AND estado IN ('pendente', 'ativa')
-                   AND config->>'protocolo' = 'tls'""", (gerenciador_id,)).fetchall()
-        fontes += [{"id": i, "cliente": cliente, "gerenciador": gerenciador_id, "origens": c["origens"], "criada_em": em} for i, c, em in linhas]
-    rotas, recusadas = syslog_cifrado.distribuir(fontes)
-    for fonte in fontes:
-        if fonte["id"] in recusadas:
-            with banco.con.transaction():
-                banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(fonte["cliente"]),))
-                banco.con.execute("UPDATE fontes SET estado = 'recusada', mensagem = %s WHERE id = %s", (recusadas[fonte["id"]], fonte["id"]))
-    return syslog_cifrado.gravar_configuracao(syslog_cifrado.configuracao(rotas, syslog_cifrado.chave_do_repasse(raiz)), raiz)
+                """SELECT id, tipo, config, criada_em FROM fontes WHERE gerenciador_id = %s AND estado IN ('pendente', 'ativa')
+                   AND ((tipo = 'syslog' AND config->>'protocolo' = 'tls') OR tipo = 'fluxo')""", (gerenciador_id,)).fetchall()
+        for i, tipo, c, em in linhas:
+            (de_fluxo if tipo == "fluxo" else cifradas).append({"id": i, "cliente": cliente, "gerenciador": gerenciador_id, "origens": c["origens"], "criada_em": em})
+    chave = syslog_cifrado.chave_do_repasse(raiz)
+    mudou = False
+    for fontes, modelo, gravar, motivo in (
+            (cifradas, syslog_cifrado.configuracao, syslog_cifrado.gravar_configuracao, "O endereço {} já envia syslog cifrado para outra organização desta instalação."),
+            (de_fluxo, fluxos.configuracao, fluxos.gravar_configuracao, "O exportador {} já manda fluxos para outra organização desta instalação.")):
+        rotas, recusadas = syslog_cifrado.distribuir(fontes, motivo)
+        for fonte in fontes:
+            if fonte["id"] in recusadas:
+                with banco.con.transaction():
+                    banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(fonte["cliente"]),))
+                    banco.con.execute("UPDATE fontes SET estado = 'recusada', mensagem = %s WHERE id = %s", (recusadas[fonte["id"]], fonte["id"]))
+        mudou = gravar(modelo(rotas, chave), raiz) or mudou
+    if (raiz_dos_fluxos or fluxos.PASTA).joinpath("dados").is_dir():
+        fluxos.girar(raiz_dos_fluxos or fluxos.PASTA)
+    return mudou
+
+
+def validar_fluxo(origens):
+    """Os exportadores de uma fonte de fluxo: as mesmas regras de endereço do syslog."""
+    return validar_syslog("udp", origens)
+
+
+def aplicar_fontes_de_fluxo(banco, gerenciador_id, cliente):
+    """A fonte de fluxo não muda o gerenciador: fica ativa assim que o receptor tem a rota (aplicar_recepcao)."""
+    with banco.con.transaction():
+        banco.con.execute("SELECT set_config('roar.cliente', %s, true)", (str(cliente),))
+        banco.con.execute("UPDATE fontes SET estado = 'ativa', mensagem = NULL, aplicada_em = now() WHERE gerenciador_id = %s AND tipo = 'fluxo' AND estado = 'pendente'",
+                          (gerenciador_id,))
 
 
 def aplicar_armazenamento(banco):

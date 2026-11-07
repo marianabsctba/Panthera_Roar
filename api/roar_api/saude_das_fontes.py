@@ -18,6 +18,7 @@ DIAS_DO_NORMAL = 7
 MINIMO_DO_NORMAL = 60
 # A última hora com menos de um quinto do normal é queda.
 FRACAO_DA_QUEDA = 0.2
+PREFIXO_DO_FLUXO = "fluxo:"
 # Os módulos de nuvem aparecem com o próprio nome no lugar da origem.
 NOME_DO_MODULO = {"msgraph": "ms-graph", "aws": "Wazuh-AWS", "azure": "azure", "gcp": "Wazuh-GCloud"}
 
@@ -82,13 +83,17 @@ def somar(origens, agora=None):
 
 def origens_da_fonte(fonte, origens):
     """{local: origem} que pertencem à fonte: no syslog, os endereços da lista; na nuvem, o nome do módulo."""
-    if fonte["tipo"] == "syslog":
+    if fonte["tipo"] in ("syslog", "fluxo"):
+        # No fluxo, a origem é o exportador com "fluxo:" na frente, para não se misturar com o syslog do mesmo equipamento.
+        prefixo = PREFIXO_DO_FLUXO if fonte["tipo"] == "fluxo" else ""
         redes = [ipaddress.ip_network(r) for r in fonte["config"]["origens"]]
         achadas = {}
         for local, o in origens.items():
+            if not local.startswith(prefixo) or (not prefixo and local.startswith(PREFIXO_DO_FLUXO)):
+                continue
             try:
-                if any(ipaddress.ip_address(local) in rede for rede in redes):
-                    achadas[local] = o
+                if any(ipaddress.ip_address(local[len(prefixo):]) in rede for rede in redes):
+                    achadas[local[len(prefixo):]] = o
             except ValueError:
                 continue  # Agentes aparecem aqui com o caminho do arquivo, não com um endereço.
         return achadas
@@ -105,7 +110,7 @@ def da_fonte(fonte, origens, agora=None):
     proprias = origens_da_fonte(fonte, origens)
     total = somar(proprias.values(), agora)
     total["ultimo"] = _iso(total["ultimo"])
-    if fonte["tipo"] == "syslog":
+    if fonte["tipo"] in ("syslog", "fluxo"):
         equipamentos = []
         for local, o in proprias.items():
             conta = somar([o], agora)

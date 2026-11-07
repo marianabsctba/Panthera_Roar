@@ -134,6 +134,20 @@ transforms:
     condition: .tabela == "alertas"
 
 sinks:
+  # Os fluxos de rede (coletor.d/syslog.yaml, fluxos_linhas), direto à tabela deles.
+  armazem_fluxos:
+    type: clickhouse
+    inputs: [fluxos_linhas]
+    endpoint: http://roar-armazem:8123
+    database: "{{ARMAZEM_BANCO}}"
+    table: fluxos
+    auth: {strategy: basic, user: "{{ARMAZEM_USUARIO}}", password: "{{ARMAZEM_SENHA}}"}
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    batch: {max_events: 50000, timeout_secs: 2}
+    buffer: {type: memory, max_events: 100000, when_full: block}
+    healthcheck: {enabled: false}
   armazem_logs:
     type: clickhouse
     inputs: [para_logs]

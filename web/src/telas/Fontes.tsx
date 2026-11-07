@@ -44,6 +44,12 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
     { id: "syslog", rotulo: "Syslog", sigla: "SYS", resumo: "Firewall, switch e outros equipamentos que não aceitam agente.", prova: "Testado com envio real",
       passos: ["Em Conectar, cadastre os endereços dos equipamentos: o que estiver fora da lista é ignorado.", "Espere a fonte ficar ativa.", "No equipamento, aponte o envio de syslog para o endereço e a porta mostrados aqui."],
       cuidado: "Em TCP ou UDP, o syslog vai sem cifra: use na rede de confiança. Pela internet, use o syslog cifrado: o protocolo TLS, ao conectar.", tipos: ["syslog"] },
+    { id: "fluxo", rotulo: "NetFlow, IPFIX e sFlow", sigla: "FLX", resumo: "Quem conversa com quem na rede: os fluxos dos roteadores, switches e firewalls, direto ao armazém.",
+      prova: "Testado com envio real de NetFlow v5; v9, IPFIX e sFlow ainda não", tipos: ["fluxo"],
+      passos: ["Em Conectar, cadastre o endereço de onde o equipamento exporta os fluxos. O que vier de outro endereço é descartado.",
+        "No equipamento, ligue a exportação de fluxos (NetFlow v5 ou v9, IPFIX ou sFlow) e aponte para o endereço e a porta abaixo, em UDP.",
+        "Os fluxos aparecem em Fluxos de rede, no menu Investigar, em segundos."],
+      cuidado: "Os fluxos não passam pelas regras: ficam no armazém para consulta. Com amostragem ligada no equipamento, o volume mostrado é uma fração do real." },
   ] },
   { grupo: "Firewalls e rede", itens: [
     { id: "fortigate", rotulo: "FortiGate", logo: "fortinet", resumo: "Tráfego, bloqueios, VPN e acessos de administrador dos firewalls Fortinet.", prova: PROVA_DO_EQUIPAMENTO, tipos: ["syslog"], protocolo: "udp",
@@ -163,12 +169,14 @@ interface VisaoDeFontes {
   porta_syslog: number | null;
   /** Receptor de syslog cifrado da instalação; null quando ele não foi preparado. */
   porta_syslog_cifrado: number | null;
+  /** Coletor de fluxos de rede da instalação; null quando ele não foi preparado. */
+  portas_de_fluxo: { netflow: number; sflow: number } | null;
 }
 
 const SAUDE_DA_FONTE: Record<string, string> = { recebendo: "● Recebendo", parada: "▲ Parada", nunca_recebeu: "○ Nada recebido ainda", desconhecida: "? Não foi possível conferir" };
 const ESTADOS_DE_FONTE: Record<string, string> = { pendente: "Aplicando", recusada: "Recusada", ativa: "Ativa" };
 const TIPOS_DE_FONTE: Record<string, string> = {
-  syslog: "Syslog", webhook: "Webhook", api: "API", github: "GitHub", office365: "Microsoft 365", msgraph: "Microsoft Graph", aws: "AWS CloudTrail",
+  syslog: "Syslog", fluxo: "NetFlow, IPFIX e sFlow", webhook: "Webhook", api: "API", github: "GitHub", office365: "Microsoft 365", msgraph: "Microsoft Graph", aws: "AWS CloudTrail",
   azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", slack: "Aviso no Slack", pagerduty: "Aviso no PagerDuty", maltiverse: "Consulta no Maltiverse", virustotal: "Consulta no VirusTotal",
 };
 const CAMPOS_DA_CONFIG: Record<string, string> = {
@@ -183,6 +191,7 @@ const temCredencial = (f: Fonte) => Boolean(f.config.segredo) || f.tipo === "web
 
 function detalheDaFonte(f: Fonte) {
   const c = f.config;
+  if (f.tipo === "fluxo") return ((c.origens as string[] | undefined) ?? []).join(", ");
   if (f.tipo === "syslog") return `${String(c.protocolo ?? "").toUpperCase()}: ${((c.origens as string[] | undefined) ?? []).join(", ")}`;
   const direto = c.organizacao ?? c.locatario ?? c.endereco ?? c.bucket ?? c.dominio ?? c.projeto;
   if (direto !== undefined && direto !== null) return String(direto);
@@ -359,6 +368,34 @@ function FormularioDeSyslog({ item, aoFechar, aoCriar, portaCifrada }: PropsDoFo
         </SimpleGrid>
         {protocolo === "tls" && <Text size="xs" c="dimmed">Cifrado: o equipamento manda para a porta {portaCifrada}, em TCP com TLS, e precisa confiar no certificado da autoridade, que se baixa no cartão, atrás desta janela. Cadastre o endereço público com que o equipamento chega aqui.</Text>}
         <Textarea label="Endereços que podem enviar, um por linha" placeholder={"192.168.10.1\n10.20.0.0/24"} rows={3} spellCheck={false} value={origens} onChange={(e) => setOrigens(e.currentTarget.value)} />
+        <Erro texto={erro} />
+        <Rodape aoFechar={aoFechar} rotulo="Salvar" ocupado={ocupado} />
+      </Stack>
+    </form>
+  );
+}
+
+function FormularioDeFluxo({ aoFechar, aoCriar }: PropsDoFormulario) {
+  const [nome, setNome] = useState("");
+  const [origens, setOrigens] = useState("");
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const salvar = async (e: FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    if (!nome.trim()) return setErro("Dê um nome ao equipamento.");
+    setOcupado(true);
+    const r = await enviar("/api/fontes/fluxo", { nome: nome.trim(), origens: origens.split("\n").map((l) => l.trim()).filter(Boolean) });
+    setOcupado(false);
+    if (!r.ok) return setErro(await detalhe(r, "Confira os endereços."));
+    aoCriar();
+    aoFechar();
+  };
+  return (
+    <form onSubmit={salvar} noValidate>
+      <Stack gap="sm">
+        <TextInput label="Nome" placeholder="Roteador da matriz" maxLength={120} value={nome} onChange={(e) => setNome(e.currentTarget.value)} data-autofocus />
+        <Textarea label="Endereços que exportam os fluxos, um por linha" placeholder={"192.168.10.1\n10.20.0.0/24"} rows={3} spellCheck={false} value={origens} onChange={(e) => setOrigens(e.currentTarget.value)} />
         <Erro texto={erro} />
         <Rodape aoFechar={aoFechar} rotulo="Salvar" ocupado={ocupado} />
       </Stack>
@@ -582,7 +619,7 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
   const podeConectar = item ? pode(item.permissao ?? "gerir_fontes") : false;
   const tipos = item ? item.tipos ?? [item.tipo ?? ""] : [];
   const fontes = item ? fontesDoConector(item, visao.fontes) : [];
-  const Formulario = tipos.includes("syslog") ? FormularioDeSyslog : item?.id === "webhook" ? FormularioDeWebhook : item?.id === "api" ? FormularioDeApi : FormularioDeNuvem;
+  const Formulario = tipos.includes("fluxo") ? FormularioDeFluxo : tipos.includes("syslog") ? FormularioDeSyslog : item?.id === "webhook" ? FormularioDeWebhook : item?.id === "api" ? FormularioDeApi : FormularioDeNuvem;
   const prova = item && PROVAS_BOAS.has(item.id) ? "pronto" : "outro";
 
   return (
@@ -611,6 +648,9 @@ function GavetaDoConector({ item, visao, aoFechar, aoMudar, aoAbrirFonte }: { it
             <Text size="sm">Aponte {item.id === "syslog" ? "os equipamentos" : "o equipamento"} para <span className="mono">{visao.endereco}</span>, porta <span className="mono">{visao.porta_syslog}</span>{item.protocolo === "udp" ? ", em UDP" : ""}.</Text>
           )}
           {item.comando && visao.porta_syslog && visao.endereco && <BlocoDeComando texto={item.comando(visao.endereco, visao.porta_syslog)} />}
+          {tipos.includes("fluxo") && visao.portas_de_fluxo && (
+            <Text size="sm">Aponte a exportação para <span className="mono">{visao.endereco}</span>, em UDP: porta <span className="mono">{visao.portas_de_fluxo.netflow}</span> para NetFlow e IPFIX, <span className="mono">{visao.portas_de_fluxo.sflow}</span> para sFlow.</Text>
+          )}
           {tipos.includes("syslog") && visao.porta_syslog_cifrado && <SyslogCifrado porta={visao.porta_syslog_cifrado} endereco={visao.endereco} />}
           {item.amostra && pode("gerir_fontes") && <TesteDeLinha key={item.id} amostra={item.amostra} />}
 
