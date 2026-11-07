@@ -63,7 +63,7 @@ def main():
     except ET.ParseError as erro:
         registrar("decodificadores e regras são XML válido", False, str(erro))
     ids = [int(i) for i in re.findall(r'<rule id="(\d+)"', regras)]
-    registrar("as regras ficam na faixa reservada (100910 a 100929)", ids and all(100910 <= i <= 100929 for i in ids), str(ids))
+    registrar("as regras ficam na faixa reservada (100910 a 100949)", ids and all(100910 <= i <= 100949 for i in ids), str(ids))
 
     print("\n== Nomes de campo dos firewalls na ingestão", flush=True)
     registrar("Palo Alto: o endereço sai de source_address", primeiro_campo({"source_address": "198.51.100.7"}, CAMPOS_DE_IP_DE_ORIGEM) == "198.51.100.7")

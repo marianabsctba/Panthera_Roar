@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape
 
 import requests
 
-from . import coletor_syslog, rede_externa, syslog_cifrado
+from . import coletor_syslog, identidade, rede_externa, syslog_cifrado
 
 log = logging.getLogger("roar.fontes")
 EVENTOS_POR_LOTE = 100
@@ -104,6 +104,12 @@ def validar_nuvem(tipo, campos):
     if tipo == "gcp":
         return {"projeto": _campo(campos, "projeto", PROJETO_DO_GOOGLE, "Informe o identificador do projeto no Google Cloud."),
                 "assinatura": _campo(campos, "assinatura", ASSINATURA_DO_GOOGLE, "Informe o nome da assinatura do Pub/Sub.")}
+    if tipo in identidade.TIPOS:
+        # Okta e Google Workspace: buscados pelo Roar (identidade.py), não por um módulo do gerenciador.
+        try:
+            return identidade.validar(tipo, campos)
+        except ValueError as erro:
+            raise FonteInvalida(str(erro))
     if tipo in TIPOS_DE_AVISO:
         try:
             nivel = int(campos.get("nivel", NIVEL_PADRAO_DO_AVISO))
@@ -117,6 +123,12 @@ def validar_nuvem(tipo, campos):
 
 def validar_segredo(tipo, segredo):
     """O que dá para conferir sem chamar o serviço. Uma URL de aviso errada mandaria alertas para outro lugar."""
+    if tipo in identidade.TIPOS:
+        try:
+            identidade.validar_segredo(tipo, segredo)
+        except ValueError as erro:
+            raise FonteInvalida(str(erro))
+        return
     if tipo == "gcp":
         try:
             dados = json.loads(segredo)
@@ -415,6 +427,7 @@ def ciclo(banco):
             encaminhar_webhooks(banco, gerenciador_id, cliente)
             aplicar_fontes_de_fluxo(banco, gerenciador_id, cliente)
             buscar_apis(banco, gerenciador_id, cliente)
+            identidade.coletar(banco, gerenciador_id, cliente)
             fim.aplicar_caminhos(banco, gerenciador_id, cliente)
             fim.enviar_varreduras(banco, gerenciador_id, cliente)
             fim.atualizar_base(banco, gerenciador_id, cliente)

@@ -1,5 +1,6 @@
 <!--
-  Regras do Panthera Roar para os decodificadores de fabricantes (decodificadores.xml). Faixa reservada: 100910 a 100929.
+  Regras do Panthera Roar para os decodificadores de fabricantes (decodificadores.xml) e para as fontes de identidade
+  (roar_ingestao.identidade: Okta e Google Workspace, que chegam em JSON). Faixa reservada: 100910 a 100949.
 -->
 <group name="roar,fabricantes,mikrotik,">
 
@@ -33,6 +34,177 @@
     <if_matched_sid>100911</if_matched_sid>
     <same_source_ip />
     <description>MikroTik: muitas tentativas de login recusadas vindas de $(srcip)</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failures,</group>
+  </rule>
+
+</group>
+
+<!-- Okta: o log do sistema, plano (identidade.evento_do_okta). -->
+<group name="roar,identidade,okta,">
+
+  <rule id="100930" level="2">
+    <decoded_as>json</decoded_as>
+    <field name="roar_fonte">^okta$</field>
+    <description>Okta: $(mensagem) ($(srcuser))</description>
+  </rule>
+
+  <!-- A regra 1002 do Wazuh pega antes qualquer log com "failure" ou "error"; esta é a mesma base, vinda de lá. -->
+  <rule id="100938" level="2">
+    <if_sid>1002</if_sid>
+    <field name="roar_fonte">^okta$</field>
+    <description>Okta: $(mensagem) ($(srcuser))</description>
+  </rule>
+
+  <rule id="100931" level="3">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^user.session.start$</field>
+    <field name="resultado">^SUCCESS$</field>
+    <description>Okta: $(srcuser) entrou, vindo de $(srcip)</description>
+    <group>authentication_success,</group>
+  </rule>
+
+  <rule id="100932" level="5">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^user.session.start$|^user.authentication.sso$|^user.authentication.auth_via_\.+$</field>
+    <field name="resultado">^FAILURE$|^DENY$</field>
+    <description>Okta: login recusado para $(srcuser), vindo de $(srcip): $(motivo)</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failed,</group>
+  </rule>
+
+  <rule id="100933" level="7">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^user.mfa.okta_verify.deny_push$|^user.authentication.auth_via_mfa$|^system.push.send_factor_verify_push$</field>
+    <field name="resultado">^FAILURE$|^DENY$</field>
+    <description>Okta: segundo fator negado para $(srcuser), vindo de $(srcip)</description>
+    <mitre>
+      <id>T1621</id>
+    </mitre>
+    <group>authentication_failed,</group>
+  </rule>
+
+  <rule id="100934" level="8">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^user.account.lock$|^user.account.lock.limit$</field>
+    <description>Okta: conta de $(srcuser) bloqueada por tentativas</description>
+    <group>authentication_failures,</group>
+  </rule>
+
+  <rule id="100935" level="10">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^user.account.privilege.grant$|^group.privilege.grant$|^user.mfa.factor.deactivate$|^user.mfa.factor.reset_all$|^policy.lifecycle.update$</field>
+    <description>Okta: mudança sensível ($(evento)) feita por $(srcuser)</description>
+    <mitre>
+      <id>T1098</id>
+    </mitre>
+    <group>account_changed,</group>
+  </rule>
+
+  <rule id="100936" level="10">
+    <if_sid>100930, 100938</if_sid>
+    <field name="evento">^security.threat.detected$|^security.request.blocked$|^user.session.impersonation.initiate$</field>
+    <description>Okta: $(mensagem), vindo de $(srcip)</description>
+    <group>attack,</group>
+  </rule>
+
+  <rule id="100937" level="10" frequency="6" timeframe="120">
+    <if_matched_sid>100932</if_matched_sid>
+    <same_source_ip />
+    <description>Okta: muitas tentativas de login recusadas vindas de $(srcip)</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failures,</group>
+  </rule>
+
+</group>
+
+<!-- Google Workspace: os relatórios de login, administração e Drive, planos (identidade.eventos_do_workspace). -->
+<group name="roar,identidade,google_workspace,">
+
+  <rule id="100940" level="2">
+    <decoded_as>json</decoded_as>
+    <field name="roar_fonte">^google_workspace$</field>
+    <description>Google Workspace: $(evento) em $(aplicacao), por $(srcuser)</description>
+  </rule>
+
+  <!-- A regra 1002 do Wazuh pega antes qualquer log com "failure" ou "error"; esta é a mesma base, vinda de lá. -->
+  <rule id="100948" level="2">
+    <if_sid>1002</if_sid>
+    <field name="roar_fonte">^google_workspace$</field>
+    <description>Google Workspace: $(evento) em $(aplicacao), por $(srcuser)</description>
+  </rule>
+
+  <rule id="100941" level="3">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^login$</field>
+    <field name="evento">^login_success$</field>
+    <description>Google Workspace: $(srcuser) entrou, vindo de $(srcip)</description>
+    <group>authentication_success,</group>
+  </rule>
+
+  <rule id="100942" level="5">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^login$</field>
+    <field name="evento">^login_failure$|^login_challenge$</field>
+    <description>Google Workspace: login recusado para $(srcuser), vindo de $(srcip)</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failed,</group>
+  </rule>
+
+  <rule id="100943" level="10">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^login$</field>
+    <field name="evento">^suspicious_login$|^suspicious_login_less_secure_app$|^suspicious_programmatic_login$|^gov_attack_warning$|^account_disabled_hijacked$</field>
+    <description>Google Workspace: o Google apontou risco no login de $(srcuser) ($(evento))</description>
+    <group>attack,</group>
+  </rule>
+
+  <rule id="100944" level="8">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^login$</field>
+    <field name="evento">^2sv_disable$|^recovery_info_change$|^recovery_phone_edit$</field>
+    <description>Google Workspace: $(srcuser) mexeu na verificação em duas etapas ou na recuperação da conta ($(evento))</description>
+    <mitre>
+      <id>T1556</id>
+    </mitre>
+    <group>account_changed,</group>
+  </rule>
+
+  <rule id="100945" level="10">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^admin$</field>
+    <field name="evento">^ASSIGN_ROLE$|^GRANT_ADMIN_PRIVILEGE$|^CREATE_ROLE$|^ADD_PRIVILEGE$|^CHANGE_PASSWORD$|^TURN_OFF_2_STEP_VERIFICATION$</field>
+    <description>Google Workspace: mudança de administração ($(evento)) feita por $(srcuser)</description>
+    <mitre>
+      <id>T1098</id>
+    </mitre>
+    <group>account_changed,</group>
+  </rule>
+
+  <rule id="100946" level="7">
+    <if_sid>100940, 100948</if_sid>
+    <field name="aplicacao">^drive$</field>
+    <field name="evento">^change_visibility$|^change_document_visibility$</field>
+    <field name="parametros.visibility">^people_with_link$|^public_on_the_web$|^shared_externally$</field>
+    <description>Google Workspace: arquivo do Drive aberto para fora ($(parametros.visibility)) por $(srcuser)</description>
+    <mitre>
+      <id>T1567</id>
+    </mitre>
+    <group>data_exfiltration,</group>
+  </rule>
+
+  <rule id="100947" level="10" frequency="6" timeframe="120">
+    <if_matched_sid>100942</if_matched_sid>
+    <same_source_ip />
+    <description>Google Workspace: muitas tentativas de login recusadas vindas de $(srcip)</description>
     <mitre>
       <id>T1110</id>
     </mitre>

@@ -90,6 +90,12 @@ const CATALOGO: { grupo: string; itens: Conector[] }[] = [
     { id: "gcp", rotulo: "Google Cloud Pub/Sub", logo: "googlecloud", resumo: "Registros do Google Cloud, entregues por uma assinatura do Pub/Sub.", prova: SEM_CONTA_REAL,
       passos: ["Encaminhe os registros para um tópico do Pub/Sub e crie uma assinatura.", "Em IAM e administrador, crie uma conta de serviço com os papéis Pub/Sub Publisher e Pub/Sub Subscriber.", "Gere uma chave em JSON para essa conta.", "Em Conectar, preencha o projeto, a assinatura e cole o JSON."],
       cuidado: "Cada cliente pode ter uma assinatura do Google Cloud: é um limite do coletor.", tipo: "gcp" },
+    { id: "okta", rotulo: "Okta", logo: "okta", resumo: "Logins, segundo fator, bloqueios e mudanças de privilégio do log do sistema do Okta.", prova: SEM_CONTA_REAL,
+      passos: ["No painel de administração do Okta, abra Security > API, aba Tokens.", "Crie um token com um administrador só de leitura (Read-Only Administrator) e copie: ele aparece uma única vez.", "Em Conectar, preencha o domínio, como empresa.okta.com, e o token."],
+      cuidado: "O token vale com as permissões de quem o criou: use um administrador só de leitura.", tipo: "okta" },
+    { id: "workspace", rotulo: "Google Workspace", logo: "google", resumo: "Logins, administração e compartilhamento do Drive, dos relatórios de auditoria.", prova: SEM_CONTA_REAL,
+      passos: ["No Google Cloud, crie uma conta de serviço, ative a Admin SDK API e gere uma chave em JSON.", "No Admin Console, abra Segurança > Acesso e controle de dados > Controles de API > Delegação em todo o domínio.", "Adicione o client ID da conta de serviço com o escopo https://www.googleapis.com/auth/admin.reports.audit.readonly.", "Em Conectar, preencha o e-mail de um administrador e cole o JSON."],
+      cuidado: "O Google demora de minutos a horas para liberar os relatórios: o Roar volta três horas a cada busca e não repete o que já entregou.", tipo: "workspace" },
     { id: "office365", rotulo: "Microsoft 365", sigla: "365", resumo: "Atividade de Exchange, SharePoint, OneDrive e Teams, e administração.", prova: SEM_CONTA_REAL,
       passos: ["No Entra ID, registre um aplicativo e crie um segredo para ele.", "Dê ao aplicativo a permissão de leitura do feed de atividades da API de gerenciamento do Office 365.", "Em Conectar, preencha o locatário, o aplicativo e o segredo."], tipo: "office365" },
     { id: "msgraph", rotulo: "Microsoft Graph", sigla: "GR", resumo: "Alertas e incidentes de segurança, entradas e auditoria do diretório.", prova: SEM_CONTA_REAL,
@@ -127,6 +133,8 @@ const CONECTORES: Record<string, { segredo: string; longo?: boolean; campos: Cam
   aws: { segredo: "Chave secreta", campos: [{ id: "bucket", rotulo: "Bucket dos registros" }, { id: "chave_de_acesso", rotulo: "Chave de acesso" }] },
   azure: { segredo: "Segredo do aplicativo", campos: [{ id: "dominio", rotulo: "Domínio do locatário" }, { id: "aplicativo", rotulo: "Aplicativo (client ID)" }, { id: "workspace", rotulo: "Workspace" }] },
   gcp: { segredo: "Arquivo JSON da conta de serviço", longo: true, campos: [{ id: "projeto", rotulo: "Projeto" }, { id: "assinatura", rotulo: "Assinatura" }] },
+  okta: { segredo: "Token da API", campos: [{ id: "dominio", rotulo: "Domínio do Okta" }] },
+  workspace: { segredo: "Arquivo JSON da conta de serviço", longo: true, campos: [{ id: "administrador", rotulo: "E-mail de um administrador" }] },
   slack: { segredo: "Endereço do webhook do Slack", campos: [CAMPO_NIVEL], nota: "Os alertas a partir deste nível saem do ambiente para o Slack, com os dados que trazem." },
   pagerduty: { segredo: "Chave da integração", campos: [CAMPO_NIVEL], nota: "Os alertas a partir deste nível saem do ambiente para o PagerDuty, com os dados que trazem." },
   maltiverse: { segredo: "Chave da API", campos: [CAMPO_NIVEL], nota: "Endereços e hashes dos alertas são enviados para consulta em um serviço externo." },
@@ -177,11 +185,12 @@ const SAUDE_DA_FONTE: Record<string, string> = { recebendo: "● Recebendo", par
 const ESTADOS_DE_FONTE: Record<string, string> = { pendente: "Aplicando", recusada: "Recusada", ativa: "Ativa" };
 const TIPOS_DE_FONTE: Record<string, string> = {
   syslog: "Syslog", fluxo: "NetFlow, IPFIX e sFlow", webhook: "Webhook", api: "API", github: "GitHub", office365: "Microsoft 365", msgraph: "Microsoft Graph", aws: "AWS CloudTrail",
-  azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", slack: "Aviso no Slack", pagerduty: "Aviso no PagerDuty", maltiverse: "Consulta no Maltiverse", virustotal: "Consulta no VirusTotal",
+  azure: "Azure Log Analytics", gcp: "Google Cloud Pub/Sub", okta: "Okta", workspace: "Google Workspace",
+  slack: "Aviso no Slack", pagerduty: "Aviso no PagerDuty", maltiverse: "Consulta no Maltiverse", virustotal: "Consulta no VirusTotal",
 };
 const CAMPOS_DA_CONFIG: Record<string, string> = {
   protocolo: "Protocolo", origens: "Endereços", organizacao: "Organização", locatario: "Locatário", aplicativo: "Aplicativo", bucket: "Bucket", dominio: "Domínio", workspace: "Workspace",
-  projeto: "Projeto", assinatura: "Assinatura", nivel: "A partir do nível", endereco: "Endereço", caminho: "Onde está a lista", cabecalho: "Cabeçalho", intervalo_minutos: "Buscar a cada (minutos)",
+  projeto: "Projeto", assinatura: "Assinatura", nivel: "A partir do nível", endereco: "Endereço", caminho: "Onde está a lista", cabecalho: "Cabeçalho", intervalo_minutos: "Buscar a cada (minutos)", administrador: "Administrador",
 };
 
 const abaixoDoNormal = (f: Fonte) => Boolean(f.volume?.abaixo_do_normal || f.volume?.equipamentos?.some((q) => q.abaixo_do_normal));
@@ -193,7 +202,7 @@ function detalheDaFonte(f: Fonte) {
   const c = f.config;
   if (f.tipo === "fluxo") return ((c.origens as string[] | undefined) ?? []).join(", ");
   if (f.tipo === "syslog") return `${String(c.protocolo ?? "").toUpperCase()}: ${((c.origens as string[] | undefined) ?? []).join(", ")}`;
-  const direto = c.organizacao ?? c.locatario ?? c.endereco ?? c.bucket ?? c.dominio ?? c.projeto;
+  const direto = c.organizacao ?? c.locatario ?? c.endereco ?? c.bucket ?? c.dominio ?? c.projeto ?? c.administrador;
   if (direto !== undefined && direto !== null) return String(direto);
   if (c.nivel !== undefined) return `A partir do nível ${String(c.nivel)}`;
   return f.tipo === "webhook" ? "Token guardado" : "-";

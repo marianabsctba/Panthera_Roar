@@ -4742,7 +4742,7 @@ def ver_fluxos(request: Request, sessao=Depends(exige(permissoes.VER)), horas: i
 
 class FonteDeNuvem(BaseModel):
     nome: str = Field(min_length=1, max_length=120)
-    tipo: str = Field(pattern="^(github|office365|msgraph|aws|azure|gcp|slack|pagerduty|virustotal|maltiverse)$")
+    tipo: str = Field(pattern="^(github|office365|msgraph|aws|azure|gcp|okta|workspace|slack|pagerduty|virustotal|maltiverse)$")
     campos: dict[str, str]
     # O arquivo de conta de serviço do Google Cloud passa de 2 KB com facilidade.
     segredo: str = Field(min_length=1, max_length=20_000)

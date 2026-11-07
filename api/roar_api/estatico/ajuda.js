@@ -280,6 +280,13 @@ export const AJUDA = [
       ] },
       "O receptor só aceita os endereços cadastrados. Um mesmo endereço não pode mandar para duas organizações da instalação: a fonte mais nova é recusada, com o motivo. A saúde da fonte mostra cada equipamento do mesmo jeito que no syslog comum.",
       { aviso: "Aceita TLS 1.2. Equipamento que só fala TLS 1.0 ou 1.1 não conecta, de propósito: essas versões são inseguras." },
+      { h: "Okta e Google Workspace" },
+      "Em Nuvem e SaaS, os cartões Okta e Google Workspace trazem quem entrou, de onde, e o que mudou nas contas. O Roar busca a cada 5 minutos e entrega só o novo. Os alertas já vêm prontos: login recusado, muitas tentativas do mesmo endereço, segundo fator negado, conta bloqueada, mudança de privilégio ou de administração, login que o Google achou suspeito e arquivo do Drive aberto para fora.",
+      { lista: [
+        "Okta: crie um token da API com um administrador só de leitura e, em Conectar, preencha o domínio (como empresa.okta.com) e o token.",
+        "Google Workspace: crie uma conta de serviço com a Admin SDK API ativa, dê a ela delegação no domínio com o escopo de leitura da auditoria e, em Conectar, preencha o e-mail de um administrador e cole o JSON da chave.",
+      ] },
+      { aviso: "Na primeira busca vem só o último dia. O Google libera os relatórios com atraso de minutos a horas: o Roar volta três horas a cada busca e não repete o que já entregou. Testados com serviços de exemplo, ainda não com conta real." },
       { h: "Saúde de cada fonte" },
       "Em Fontes configuradas, a coluna Últimas 24 h mostra quantos eventos cada fonte mandou, com um gráfico por hora. Clique na fonte para ver o resto:",
       { lista: [
