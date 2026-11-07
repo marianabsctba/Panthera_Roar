@@ -162,6 +162,8 @@ Limites:
 
 Triagem separada do fluxo principal, com análise rápida e aprofundamento quando o caso parece grave. Usa decisões humanas anteriores do mesmo cliente como contexto, sem misturar clientes.
 
+Primeiro passo, sem IA: a investigação do alerta (`api/roar_api/investigacao.py`, rota `/api/eventos/{id}/investigacao`, painel Investigação na fila e nos eventos). Perguntas fixas, nas 24 horas antes e depois: o que mais veio do endereço, se alguém entrou depois das falhas, o que mais aconteceu com a conta, se o endereço é conhecido dela, o risco da pessoa, os alertas graves do ativo e, com o armazém, os logs e os fluxos de rede do endereço. Cada resposta tem tom (agrava, atenua, informa), a descrição da consulta e até cinco alertas que a provam. A IA que vier depois recebe este pacote, mascarado, e só pode citar alertas que estejam nele: o Roar confere cada citação. `testes/fase4/testar_investigacao.py` monta uma conta invadida e um falso positivo e confere as respostas, a máscara e o isolamento.
+
 ### Fase 4: tela e automação
 
 Primeira parte pronta, só de leitura: login, panorama com gráficos e fila de alertas com as evidências. `testes/fase4/testar_api.py` comprova o acesso e o isolamento, e `testes/fase4/semear_demonstracao.py` cria dados de exemplo para ver a tela.

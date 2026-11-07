@@ -51,8 +51,10 @@ from requests.adapters import HTTPAdapter
 # O mesmo conversor que a instalação das regras usa.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestao"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motor"))
+# A investigação do alerta usa a mesma chave de pessoa que o motor de risco.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ueba"))
 from roar_api import consulta as linguagem_de_consulta  # noqa: E402
-from roar_api import buscas as blocos_de_busca, correcao, leitor_armazem, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
+from roar_api import buscas as blocos_de_busca, correcao, investigacao, leitor_armazem, nota_externa, saml, entrada as outras_entradas, evidencia, listas as listas_de_observacao, mfa, modulos, normas as catalogo_de_normas, ocsf, ofuscacao, parsers as parsers_proprios, permissoes, relatorios, risco_de_ativos, saude_das_fontes  # noqa: E402
 from roar_ingestao import avisos as avisos_por_email, cofre, copia_do_armazem, copia_fria, fim, rede_externa  # noqa: E402
 from roar_ingestao import selo as selagem  # noqa: E402
 from roar_ingestao import armazem as armazem_de_eventos  # noqa: E402
@@ -1796,6 +1798,18 @@ def contexto_do_evento(identificador: int, request: Request, sessao=Depends(exig
             sinais.append({"tom": "atenua", "texto": f"{i['chave']} é um site popular", "detalhe": f"Posição {i['rotulo']} no ranking de sites. Site popular também pode hospedar coisa ruim."})
         grupos = [{"tecnica": i["chave"], "grupos": i["rotulo"], "total": i["detalhe"], "endereco": i["endereco"]} for i in itens("attack", vistos["tecnicas"])[:3]]
     return {"sinais": sinais, "origem": origem, "grupos": grupos}
+
+
+@app.get("/api/eventos/{identificador}/investigacao")
+def investigacao_do_evento(identificador: int, request: Request, sessao=Depends(exige(permissoes.VER, mascarar=True))):
+    """As perguntas de um analista sobre o alerta, respondidas com consultas fixas e os alertas que provam cada resposta."""
+    _inteiro_valido(identificador)
+    with do_cliente(request, sessao) as con:
+        onde = _armazem_da_organizacao(request, con, sessao)
+        pacote = investigacao.investigar(con, identificador, onde.get("armazem"), onde.get("banco"))
+    if pacote is None:
+        raise HTTPException(status_code=404)
+    return pacote
 
 
 @app.get("/api/eventos/{identificador}/bruto")

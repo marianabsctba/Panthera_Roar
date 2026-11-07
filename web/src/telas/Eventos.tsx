@@ -1,5 +1,6 @@
 import { Badge, ActionIcon, Anchor, Box, Button, CopyButton, Drawer, Group, Pill, Select, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
 import { PainelDeContexto } from "./Contexto";
+import { PainelDeInvestigacao } from "./Investigacao";
 import { IconCheck, IconCopy } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -84,6 +85,7 @@ function CorpoDoEvento({ evento, aoFiltrar }: { evento: EventoResumo; aoFiltrar?
   return (
     <Stack gap="md">
       <PainelDeContexto evento={evento.id} />
+      <PainelDeInvestigacao evento={evento.id} />
       <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="sm">
         {evento.ocorrido_em && <Fato rotulo="Quando" valor={<Data valor={evento.ocorrido_em} />} />}
         {evento.severidade && <Fato rotulo="Severidade" valor={<Severidade valor={evento.severidade} />} />}

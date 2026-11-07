@@ -1,6 +1,7 @@
 import { ActionIcon, Alert, Badge, Box, Button, Drawer, Group, List, Modal, NumberInput, Progress, Radio, ScrollArea, Select, SimpleGrid, Stack, Tabs, Text, Textarea, TextInput, Title, Tooltip, UnstyledButton } from "@mantine/core";
 import { PorNumCaso } from "./Casos";
 import { PainelDeContexto } from "./Contexto";
+import { PainelDeInvestigacao } from "./Investigacao";
 import { useMediaQuery } from "@mantine/hooks";
 import { IconRefresh } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -508,6 +509,7 @@ function DetalheDoGrupo({ id, aoAbrirEvento, aoAbrirEventos }: { id: number; aoA
         <BotaoAutomatizar criar={() => rascunhoDeGrupo(dados)} />
       </TopoDoDetalhe>
       {eventos[0] && <PainelDeContexto evento={eventos[0].id} />}
+      {eventos[0] && <PainelDeInvestigacao evento={eventos[0].id} />}
       <SimpleGrid cols={{ base: 2, sm: 3, xl: 5 }} spacing="sm">
         <Fato rotulo="Eventos" valor={numero(total)} />
         <Fato rotulo="Origem" valor={grupo.ip_origem ?? "Sem origem"} mono={Boolean(grupo.ip_origem)} aoClicar={grupo.ip_origem ? () => aoAbrirEventos({ rotulo: `Eventos vindos de ${grupo.ip_origem}`, consulta: { origem: grupo.ip_origem! } }) : undefined} />

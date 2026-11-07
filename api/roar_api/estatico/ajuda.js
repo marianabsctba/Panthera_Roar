@@ -72,6 +72,15 @@ export const AJUDA = [
         "O normal da pessoa: os horários, ativos, endereços e privilégios que ela costuma usar. É contra isso que cada primeira vez é medida.",
         "Pares: quem acessa os mesmos ativos. Quando a novidade já é rotina dos pares, ela soma menos.",
       ] },
+      { h: "Ao abrir um alerta: Investigação" },
+      "Logo abaixo do contexto, o Roar já fez as perguntas que um analista faria, olhando as 24 horas antes e depois do alerta, e responde cada uma:",
+      { lista: [
+        "O que mais veio desse endereço, e se alguém conseguiu entrar a partir dele depois das falhas.",
+        "O que mais aconteceu com a conta, se ela costuma vir desse endereço e se a pessoa já vinha se comportando diferente.",
+        "O que mais aconteceu no ativo, e quão crítico ele é.",
+        "Com o armazém de eventos: quanto o endereço aparece nos logs e se ele trocou tráfego com máquinas da rede (NetFlow, IPFIX e sFlow).",
+      ] },
+      "O ícone vermelho pesa contra, o verde alivia e o cinza só informa. Cada resposta diz como foi achada e lista os alertas que a provam: clique num deles para ver como chegou. Não há IA aqui, só consultas fixas, então o mesmo alerta dá sempre a mesma resposta.",
       { h: "Encerrar um risco" },
       "Clique em Encerrar e diga o que era. A escolha ensina o Roar:",
       { chaves: [
